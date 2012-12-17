@@ -1,13 +1,27 @@
 #!/usr/bin/env python
 '''
-Interface to run nonparametric divergence estimation.
+Script to run nonparametric divergence estimation via k-nearest-neighbor
+distances. Based on the method of
+    Barnabas Poczos, Liang Xiong, Jeff Schneider (2011).
+    Nonparametric divergence estimation with applications to machine learning on distributions.
+    Uncertainty in Artificial Intelligence.
+    http://autonlab.org/autonweb/20287.html
 
-This is intended to be run as a script, not imported from other code,
-and doesn't work on Windows. This is so it can pass data to fork()ed processes
-with having to pickle it and send it through interprocess communication.
+Code by Liang Xiong and Dougal J. Sutherland - {lxiong,dsutherl}@cs.cmu.edu
+
+The main estimator part only works when run as __main__; it can't be called
+directly from other code, because it needs to do gross things with global
+variables to pass data to fork()ed processes without having to pickle it.
+For this reason it also does not work on Windows.
+
+Written for Python 2.7 but with Python 3.2+ compatability in mind; currently
+untested on 3.x because I only have 3.3 installed, and h5py is still broken
+there. Uses some functionality not included in 2.6, but replacing the
+itertools.combinations_with_replacement() and installing the argparse package
+should probably be enough to get that to work if you need it to.
 '''
 
-from __future__ import division, print_function, absolute_import
+from __future__ import division, print_function
 
 import os
 assert os.name == 'posix', 'the os should support fork()'
@@ -16,15 +30,22 @@ import argparse
 import functools
 import itertools
 import multiprocessing as mp
+import warnings
 import sys
 
 import h5py
 import numpy as np
 import progressbar as pb
 import scipy.io
+from scipy.special import gamma, gammaln
 
-from sdmpy.knn import knn_search
-import sdmpy.div_estimation as div_est
+try:
+    from pyflann import FLANN
+    searcher = FLANN()
+except ImportError:
+    warnings.warn('Cannot find FLANN. KNN searches will be much slower.')
+    searcher = None
+
 
 if sys.version_info.major == 2:
     izip = itertools.izip
@@ -37,7 +58,188 @@ else:
     def strict_map(*args, **kwargs):
         return list(map(*args, **kwargs))
 
+
 ################################################################################
+### Various small utilities.
+
+eps = np.spacing(1)
+
+def col(a): return a.reshape((-1, 1))
+def row(a): return a.reshape((1, -1))
+def get_col(X, c): return X[:,c].ravel()
+
+def is_integer(x):
+    return np.isscalar(x) and \
+            issubclass(np.asanyarray(x).dtype.type, np.integer)
+
+TAIL_DEFAULT = 0.01
+def fix_terms(terms, tail=TAIL_DEFAULT):
+    '''Removes the tails from terms, for a more robust estimate of the mean.'''
+    terms = terms[np.logical_not(np.isnan(terms))]
+    n = terms.size
+
+    if n >= 3:
+        terms = np.sort(terms)
+        terms = terms[max(1, round(n*tail)) : min(n-1, round(n*(1-tail)))]
+
+    return terms[np.isfinite(terms)]
+
+
+################################################################################
+### Nearest neighbor searches.
+
+def l2_dist_sq(A, B):
+    '''
+    Calculates pairwise squared Euclidean distances between points in A and
+    in B, which are row-instance data matrices.
+    Returns a matrix whose (i,j)th element is the distance from the ith point
+    in A to the jth point in B.
+    '''
+    return -2 * np.dot(A, B.T) + col((A**2).sum(1)) + (B**2).sum(1)
+
+
+def knn_search(x, y, K, min_dist=None):
+    '''
+    Calculates distances to the first K closest elements of y for each x,
+    which are row-instance data matrices.
+
+    Returns a matrix whose (i,j)th element is the distance from the ith point
+    in x to the jth-closest point in y.
+
+    By default, clamps minimum distance to min(1e-2, 1e-100 ** (1/dim));
+    setting min_dist to a number changes this value. Use 0 for no clamping.
+    '''
+    N, dim = x.shape
+    M, dim2 = y.shape
+    if dim != dim2:
+        raise TypeError("x and y must have same second dimension")
+    if not is_integer(K) and K >= 1:
+        raise TypeError("K must be a positive integer")
+
+    if searcher is not None:
+        algorithm = 'linear' if dim > 5 else 'kdtree'
+        idx, dist = searcher.nn(y, x, K, algorithm=algorithm)
+    else:
+        D = l2_dist_sq(x, y)
+        idx = np.argsort(D, 1)[:, :K]
+        dist = D[np.repeat(col(np.arange(N)), K, axis=1), idx]
+
+    idx = idx.astype('uint16')
+    dist = np.sqrt(dist.astype('float64'))
+
+    # protect against identical points
+    if min_dist is None:
+        min_dist = min(1e-2, 1e-100**(1.0/dim))
+    elif min_dist <= 0:
+        return dist, idx
+    return np.maximum(min_dist, dist), idx
+
+
+################################################################################
+### Estimators of various divergences based on nearest-neighbor distances.
+
+def l2(xx, xy, yy, yx, Ks, dim, tail=TAIL_DEFAULT, **opts):
+    '''
+    Estimate the L2 distance between two divergences, based on kNN distances.
+    Returns a vector: one element for each K in opt['Ks'].
+    '''
+    fix = functools.partial(fix_terms, tail=tail)
+
+    if xy is None: # identical bags
+        return np.zeros(len(Ks))
+
+    N = xx.shape[0]
+    M = yy.shape[0]
+    c = np.pi**(dim*0.5) / gamma(dim*0.5 + 1)
+
+    rs = []
+    for K in Ks:
+        rho_x, nu_x = get_col(xx, K-1), get_col(xy, K-1)
+        rho_y, nu_y = get_col(yy, K-1), get_col(yx, K-1)
+
+        total = (fix((K-1) / ((N-1)*c) / (rho_x ** dim)).mean()
+               + fix((K-1) / ((M-1)*c) / (rho_y ** dim)).mean()
+               - fix((K-1) / (  M  *c) / ( nu_x ** dim)).mean()
+               - fix((K-1) / (  N  *c) / ( nu_y ** dim)).mean())
+
+        rs.append(np.sqrt(max(0, total)))
+
+    return np.array(rs)
+l2.is_symmetric = True
+l2.name = 'NP-L2'
+
+def alpha_div(xx, xy, yy, yx, alphas, Ks, dim, tail=TAIL_DEFAULT, **opts):
+    '''
+    Estimate the alpha divergence between distributions, based on kNN distances.
+    Used in Renyi and Hellinger divergence estimation.
+    Returns a matrix: each row corresponds to an alpha, each column to a K.
+    '''
+    alphas = np.asarray(alphas)
+    fix = functools.partial(fix_terms, tail=tail)
+
+    N = xx.shape[0]
+    M = yy.shape[0]
+
+    rs = np.empty((len(alphas), len(Ks)))
+    for knd, K in enumerate(Ks):
+        K = Ks[knd]
+
+        rho, nu = get_col(xx, K-1), get_col(xy, K-1)
+        ratios = fix(rho / nu)
+
+        for ind, alpha in enumerate(alphas):
+            es = (((N-1) / M) ** (1-alpha)) * (ratios ** (dim*(1-alpha))).mean()
+            B = np.exp(gammaln(K)*2 - gammaln(K+1-alpha) - gammaln(K+alpha-1))
+
+            rs[ind, knd] = es * B
+
+    return rs
+alpha_div.is_symmetric = False
+alpha_div.name = 'NP-A'
+
+def renyi(xx, xy, yy, yx, alphas, Ks, **opts):
+    '''
+    Estimate the Renyi-alpha divergence between distributions, based on kNN
+    distances.
+    Returns a matrix: each row corresponds to an alpha, each column to a K.
+    '''
+    alphas = np.asarray(alphas)
+    Ks = np.asarray(Ks)
+
+    if xy is None: # identical bags
+        return np.zeros((len(alphas), len(Ks)))
+
+    alphas[alphas == 1] = 0.99 # approximate KL
+    est = alpha_div(xx, xy, yy, yx, alphas=alphas, Ks=Ks, **opts)
+    return np.maximum(0, np.log(np.maximum(est, eps)) / (col(alphas) - 1))
+renyi.is_symmetric = False
+renyi.name = 'NP-R'
+
+
+def hellinger(xx, xy, yy, yx, Ks, dim, tail=TAIL_DEFAULT, **opts):
+    '''
+    Estimate the Hellinger distance between distributions, based on kNN
+    distances.
+    Returns a vector: one element for each K.
+    '''
+    if xy is None: # identical bags
+        return np.zeros(len(Ks))
+
+    est = alpha_div(xx, xy, yy, yx, alphas=[0.5], Ks=Ks, dim=dim, tail=tail)
+    return np.sqrt(np.maximum(0, 1 - est))
+hellinger.is_symmetric = False # the metric is symmetric, but estimator is not
+hellinger.name = 'NP-H'
+
+func_mapping = {
+    'l2': l2,
+    'alpha': alpha_div,
+    'renyi': renyi,
+    'hellinger': hellinger,
+}
+
+
+################################################################################
+### Parallelization helpers for computing estimators.
 
 def handle_divs(funcs, opts, xx, xy, yy, yx, rt=None):
     '''
@@ -89,7 +291,9 @@ def process_pair(funcs, opts, row, col):
 
     return row, col, np.hstack(r), np.hstack(rt)
 
+
 ################################################################################
+### Argument handling.
 
 def parse_args():
     parser = argparse.ArgumentParser(description=
@@ -109,10 +313,14 @@ def parse_args():
 
     parser.add_argument('--div-funcs', nargs='*',
         default=['hellinger', 'l2', 'renyi:.5,.7,.9,1'], # XXX .99'],
-        help="The divergences to estimate.")
+        help="The divergences to estimate. Default: %(default)s.")
 
     parser.add_argument('-K', nargs='*', type=int, default=[1,3,5,10],
         help="The numbers of nearest neighbors to calculate.")
+
+    parser.add_argument('--trim-tails', type=float, default=TAIL_DEFAULT,
+        help="How much to trim off the ends of things we take the mean of; "
+             "default %(default)s.", metavar='PORTION')
 
     # TODO: FLANN nearest-neighbor algorithm selection
 
@@ -124,6 +332,7 @@ def parse_args():
 
 
 def read_data(input_file, input_var, n_points=0):
+    "Reads input data into the global variable 'bags'."
     with h5py.File(input_file, 'r') as f:
         for row in f[input_var]:
             for ptr in row:
@@ -134,6 +343,7 @@ def read_data(input_file, input_var, n_points=0):
                 bags.append(x) # add to global variable
 
 ################################################################################
+### Convenience stuff related to multiprocessing.Pool
 
 def _apply(func_args):
     func, args = func_args
@@ -179,6 +389,7 @@ def make_pool(n_proc):
     return pool
 
 ################################################################################
+### Progress-bar handling with multiprocessing pools
 
 def progress(counter=True, **kwargs):
     try:
@@ -211,18 +422,7 @@ def map_unordered_with_progressbar(pool, func, jobs):
     return values
 
 ################################################################################
-
-func_mapping = {
-    'hellinger': div_est.hellinger,
-    'renyi': div_est.renyi,
-    'l2': div_est.l2,
-}
-name_mapping = {
-    'hellinger': 'NP-H',
-    'renyi': 'NP-R',
-    'l2': 'NP-L2',
-}
-
+### The main dealio
 
 if __name__ == '__main__':
     args = parse_args()
@@ -230,24 +430,29 @@ if __name__ == '__main__':
     # TODO: allow different options for different functions
     opts = {}
     opts['Ks'] = np.sort(args.K)
-    opts['tail'] = 0.05
+    opts['tail'] = args.trim_tails
     opts['alphas'] = []
 
     funcs = []
     div_names = []
     for func_spec in args.div_funcs:
-        if func_spec.startswith('renyi:'):
-            alphas = [float(a) for a in func_spec[len('renyi:'):].split(',')]
-            opts['alphas'] = np.sort(alphas)
-            func_spec = 'renyi'
-            funcs.append(func_mapping['renyi'])
-            for alpha in opts['alphas']:
-                for K in opts['Ks']:
-                    div_names.append('NP-R[a={},K={}]'.format(alpha, K))
+        if ':' in func_spec:
+            func_name, alpha_spec = func_spec.split(':', 2)
+
+            alphas = np.sort([float(a) for a in alpha_spec.split(',')])
+            if opts['alphas'] and not np.all(opts['alphas'] == alphas):
+                raise ValueError("Can't do conflicting alpha options yet.")
+            opts['alphas'] = alphas
+
+            func = func_mapping[func_name]
+            funcs.append(func)
+            div_names.extend(['{}[a={},K={}]'.format(func.name, al, K)
+                              for al in opts['alphas'] for K in opts['Ks']])
         else:
-            funcs.append(func_mapping[func_spec])
-            name = name_mapping[func_spec]
-            div_names.extend(['{}[K={}]'.format(name, K) for K in opts['Ks']])
+            func = func_mapping[func_spec]
+            funcs.append(func)
+            div_names.extend(['{}[K={}]'.format(func.name, K)
+                              for K in opts['Ks']])
 
     status = functools.partial(print, file=sys.stderr)
 
