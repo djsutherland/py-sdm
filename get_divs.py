@@ -9,10 +9,9 @@ distances. Based on the method of
 
 Code by Liang Xiong and Dougal J. Sutherland - {lxiong,dsutherl}@cs.cmu.edu
 
-The main estimator part only works when run as __main__; it can't be called
-directly from other code, because it needs to do gross things with global
-variables to pass data to fork()ed processes without having to pickle it.
-For this reason it also does not work on Windows.
+Code does not run on Windows, because it does mildly disgusting things with
+global variables to be able to pass data to fork()ed processes without having
+to pickle/unpickle/copy it.
 
 Written for Python 2.7 but with Python 3.2+ compatability in mind; currently
 untested on 3.x because I only have 3.3 installed, and h5py is still broken
@@ -27,11 +26,14 @@ import os
 assert os.name == 'posix', 'the os should support fork()'
 
 import argparse
+from contextlib import contextmanager
 import functools
 import itertools
 import multiprocessing as mp
-import warnings
+import random
+import string
 import sys
+import warnings
 
 import h5py
 import numpy as np
@@ -51,9 +53,11 @@ if sys.version_info.major == 2:
     izip = itertools.izip
     imap = itertools.imap
     strict_map = map
+    lazy_range = xrange
 else:
     izip = zip
     imap = map
+    lazy_range = range
     @functools.wraps(map)
     def strict_map(*args, **kwargs):
         return list(map(*args, **kwargs))
@@ -134,6 +138,9 @@ def knn_search(x, y, K, min_dist=None):
         return dist, idx
     return np.maximum(min_dist, dist), idx
 
+def knn_search_forked(bags, i, j, K, min_dist=None):
+    bags = bags.value()
+    return knn_search(bags[i], bags[j], K, min_dist=min_dist)
 
 ################################################################################
 ### Estimators of various divergences based on nearest-neighbor distances.
@@ -262,12 +269,16 @@ def handle_divs(funcs, opts, xx, xy, yy, yx, rt=None):
     # NOTE: if we add div funcs that need the index, pass those.
 
 
-# Will store the global data.
-bags = []
-xxs = []
-
-def process_pair(funcs, opts, row, col):
+def process_pair(funcs, opts, bags, xxs, row, col):
+    '''
+    Does nearest-neighbor searches and computes the divergences between
+    the row-th and col-th bags. xxs is a list of nearest-neighbor searches
+    within each bag.
+    '''
     handle = functools.partial(handle_divs, funcs, opts)
+
+    bags = bags.value()
+    xxs = xxs.value()
 
     if row == col: # XXX support searches from X to Y
         xx = xxs[row]
@@ -295,44 +306,34 @@ def process_pair(funcs, opts, row, col):
 ################################################################################
 ### Argument handling.
 
-def parse_args():
-    parser = argparse.ArgumentParser(description=
-            "Compute divergences and set kernels based on KNN statistics.")
 
-    parser.add_argument('input_mat_file',
-        help="The input file, an HDF5 file (e.g. .mat with -v7.3).")
-    parser.add_argument('var_name',
-        help="The name of the cell array of row-instance data matrices.")
-    parser.add_argument('output_mat_file', nargs='?',
-        help="Name of the output file; defaults to input_mat_file.py_divs.mat.")
+def process_func_specs(div_specs, Ks):
+    alphas = []
+    funcs = []
+    div_names = []
+    for func_spec in div_specs:
+        if ':' in func_spec:
+            func_name, alpha_spec = func_spec.split(':', 2)
 
-    parser.add_argument('--n-proc', type=int, default=None,
-        help="Number of processes to use; default is as many as CPU cores.")
-    parser.add_argument('--n-points', type=int, default=None,
-        help="The number of points to use per group; defaults to all.")
+            new_alphas = np.sort([float(a) for a in alpha_spec.split(',')])
+            if alphas and not np.all(alphas == new_alphas):
+                raise ValueError("Can't do conflicting alpha options yet.")
+            alphas = new_alphas
 
-    parser.add_argument('--div-funcs', nargs='*',
-        default=['hellinger', 'l2', 'renyi:.5,.7,.9,1'], # XXX .99'],
-        help="The divergences to estimate. Default: %(default)s.")
-
-    parser.add_argument('-K', nargs='*', type=int, default=[1,3,5,10],
-        help="The numbers of nearest neighbors to calculate.")
-
-    parser.add_argument('--trim-tails', type=float, default=TAIL_DEFAULT,
-        help="How much to trim off the ends of things we take the mean of; "
-             "default %(default)s.", metavar='PORTION')
-
-    # TODO: FLANN nearest-neighbor algorithm selection
-
-    args = parser.parse_args()
-    if args.output_mat_file is None:
-        args.output_mat_file = args.input_mat_file + '.py_divs.mat'
-
-    return args
+            func = func_mapping[func_name]
+            funcs.append(func)
+            div_names.extend(['{}[a={},K={}]'.format(func.name, al, K)
+                              for al in alphas for K in Ks])
+        else:
+            func = func_mapping[func_spec]
+            funcs.append(func)
+            div_names.extend(['{}[K={}]'.format(func.name, K)
+                              for K in Ks])
+    return funcs, div_names, alphas
 
 
 def read_data(input_file, input_var, n_points=0):
-    "Reads input data into the global variable 'bags'."
+    bags = []
     with h5py.File(input_file, 'r') as f:
         for row in f[input_var]:
             for ptr in row:
@@ -341,6 +342,7 @@ def read_data(input_file, input_var, n_points=0):
                 if n_points and n_points < x.shape[0]:
                     x = x[np.random.permutation(x.shape[0] - 1)[:n_points]]
                 bags.append(x) # add to global variable
+    return bags
 
 ################################################################################
 ### Convenience stuff related to multiprocessing.Pool
@@ -388,6 +390,43 @@ def make_pool(n_proc):
     patch_starmap(pool)
     return pool
 
+@contextmanager
+def get_pool(n_proc):
+    pool = make_pool(n_proc)
+    yield pool
+    pool.close()
+    pool.join()
+
+_data_name_cands = (
+    '_data_' + ''.join(random.sample(string.ascii_lowercase, 10))
+    for _ in itertools.count())
+
+class ForkedData(object):
+    '''
+    Class used to pass data to child processes in multiprocessing
+    without really pickling/unpickling it. Only works on POSIX.
+
+    Intended use:
+        - The master process makes the data somehow, and does e.g.
+            data = ForkedData(the_value)
+        - Master process constructs a multiprocessing.Pool *after*
+          the ForkedData construction, so that the forked processes
+          inherit the new global.
+        - Master calls e.g. pool.map with data as an argument.
+        - Child gets the real value through data.value(), and uses it
+          read-only.
+    '''
+    def __init__(self, val):
+        g = globals()
+        self.name = next(n for n in _data_name_cands if n not in g)
+        g[self.name] = val
+
+    def __del__(self):
+        del globals()[self.name]
+
+    def value(self):
+        return globals()[self.name]
+
 ################################################################################
 ### Progress-bar handling with multiprocessing pools
 
@@ -424,68 +463,75 @@ def map_unordered_with_progressbar(pool, func, jobs):
 ################################################################################
 ### The main dealio
 
-if __name__ == '__main__':
-    args = parse_args()
+def get_divs(bags, specs, Ks, n_proc=None,
+             tail=TAIL_DEFAULT,
+             status_fn=True, progressbar=None,
+             return_opts=False):
+    '''
+    Gets the divergences between bags.
+        bags: a list of row-instance feature matrices
+        specs: a list of strings of divergence specs
+        Ks: a K values
+        n_proc: number of processes to use; None for # of cores
+        tail: an argument for fix_terms (above)
+        status_fn: a function to print out status messages
+            None means don't print any; True prints to stderr
+        progressbar: show a progress bar on stderr. default: (status_fn is True)
+        return_opts: return a dictionary of options used as second value
+    '''
+    # TODO: document progressbar specs
+    # TODO: other kinds of callbacks for showing progress bars
 
-    # TODO: allow different options for different functions
+    if progressbar is None:
+        progressbar = status_fn is True
+
     opts = {}
-    opts['Ks'] = np.sort(args.K)
-    opts['tail'] = args.trim_tails
-    opts['alphas'] = []
+    opts['Ks'] = np.sort(np.ravel(Ks))
+    opts['tail'] = tail
+    funcs, opts['div_names'], opts['alphas'] = \
+            process_func_specs(specs, opts['Ks'])
 
-    funcs = []
-    div_names = []
-    for func_spec in args.div_funcs:
-        if ':' in func_spec:
-            func_name, alpha_spec = func_spec.split(':', 2)
+    if status_fn is True:
+        status_fn = functools.partial(print, file=sys.stderr)
+    elif status_fn is None:
+        status_fn = lambda *args, **kwargs: None
 
-            alphas = np.sort([float(a) for a in alpha_spec.split(',')])
-            if opts['alphas'] and not np.all(opts['alphas'] == alphas):
-                raise ValueError("Can't do conflicting alpha options yet.")
-            opts['alphas'] = alphas
-
-            func = func_mapping[func_name]
-            funcs.append(func)
-            div_names.extend(['{}[a={},K={}]'.format(func.name, al, K)
-                              for al in opts['alphas'] for K in opts['Ks']])
-        else:
-            func = func_mapping[func_spec]
-            funcs.append(func)
-            div_names.extend(['{}[K={}]'.format(func.name, K)
-                              for K in opts['Ks']])
-
-    status = functools.partial(print, file=sys.stderr)
-
-    status('Reading data...')
-    read_data(args.input_mat_file, args.var_name, args.n_points)
 
     num_bags = len(bags)
     opts['dim'] = dim = bags[0].shape[1]
     assert all(bag.shape[1] == dim for bag in bags)
-    max_K = max(args.K)
+    max_K = opts['Ks'][-1]
 
-    status('kNN processing: {} bags, dimension {}, # points {} to {}, K = {}'
+    status_fn('kNN processing: {} bags, dimension {}, # points {} to {}, K = {}'
             .format(num_bags, dim,
                     min(b.shape[0] for b in bags),
                     max(b.shape[0] for b in bags),
                     max_K))
 
-    status('Preparing...')
-    pool = make_pool(args.n_proc)
+    status_fn('Preparing...')
+    bag_data = ForkedData(bags)
 
-    # x-to-x search needs to throw away closest neighbor of self for each pt
-    xxs = pool.starmap(knn_search, bags, bags, itertools.repeat(max_K+1))
-    xxs = [(xx[:,1:], xxi[:,1:]) for xx, xxi in xxs]
+    # do kNN searches within each bag
+    # need to throw away the closest neighbor, which will always be self
+    with get_pool(n_proc) as pool:
+        xxs = [(xx[:,1:], xxi[:,1:]) for xx, xxi
+           in pool.starmap(knn_search_forked,
+               itertools.repeat(bag_data),
+               lazy_range(num_bags),
+               lazy_range(num_bags),
+               itertools.repeat(max_K+1))]
 
-    # put xxs into the forked space
-    pool.close()
-    pool = make_pool(args.n_proc)
+    xxs_data = ForkedData(xxs)
 
     jobs = list(itertools.combinations_with_replacement(range(num_bags), 2))
-    processor = functools.partial(process_pair, funcs, opts)
+    processor = functools.partial(process_pair, funcs, opts, bag_data, xxs_data)
 
-    status('Starting for real...')
-    rs = map_unordered_with_progressbar(pool, processor, jobs)
+    status_fn('Doing the real work...')
+    with get_pool(n_proc) as pool:
+        if progressbar:
+            rs = map_unordered_with_progressbar(pool, processor, jobs)
+        else:
+            rs = pool.map(processor, jobs)
 
     R = np.empty((num_bags, num_bags, rs[0][2].size), dtype=np.float32)
     R.fill(np.nan)
@@ -493,9 +539,61 @@ if __name__ == '__main__':
         R[i, j, :] = r
         R[j, i, :] = rt
 
-    status("Outputting results to", args.output_mat_file)
+    return (R, opts) if return_opts else R
+
+################################################################################
+### Command line interface
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=
+            "Compute divergences and set kernels based on KNN statistics.")
+
+    parser.add_argument('input_mat_file',
+        help="The input file, an HDF5 file (e.g. .mat with -v7.3).")
+    parser.add_argument('var_name',
+        help="The name of the cell array of row-instance data matrices.")
+    parser.add_argument('output_mat_file', nargs='?',
+        help="Name of the output file; defaults to input_mat_file.py_divs.mat.")
+
+    parser.add_argument('--n-proc', type=int, default=None,
+        help="Number of processes to use; default is as many as CPU cores.")
+    parser.add_argument('--n-points', type=int, default=None,
+        help="The number of points to use per group; defaults to all.")
+
+    parser.add_argument('--div-funcs', nargs='*',
+        default=['hellinger', 'l2', 'renyi:.5,.7,.9,1'], # XXX .99'],
+        help="The divergences to estimate. Default: %(default)s.")
+
+    parser.add_argument('-K', nargs='*', type=int, default=[1,3,5,10],
+        help="The numbers of nearest neighbors to calculate.")
+
+    parser.add_argument('--trim-tails', type=float, default=TAIL_DEFAULT,
+        help="How much to trim off the ends of things we take the mean of; "
+             "default %(default)s.", metavar='PORTION')
+
+    # TODO: FLANN nearest-neighbor algorithm selection
+
+    args = parser.parse_args()
+    if args.output_mat_file is None:
+        args.output_mat_file = args.input_mat_file + '.py_divs.mat'
+
+    return args
+
+
+if __name__ == '__main__':
+    args = parse_args()
+
+    status_fn = functools.partial(print, file=sys.stderr)
+
+    status_fn('Reading data...')
+    bags = read_data(args.input_mat_file, args.var_name, args.n_points)
+
+    R, opts = get_divs(bags, args.div_funcs, args.K,
+                 n_proc=args.n_proc, tail=args.trim_tails,
+                 return_opts=True)
+
+    status_fn("Outputting results to", args.output_mat_file)
     opts['Ds'] = R
-    opts['div_names'] = div_names
     scipy.io.savemat(args.output_mat_file, opts, oned_as='column')
 
     assert not np.any(np.isnan(R)), 'nan found in the result'
