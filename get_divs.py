@@ -34,10 +34,10 @@ import random
 import string
 import sys
 import warnings
+import weakref
 
 import h5py
 import numpy as np
-import progressbar as pb
 import scipy.io
 from scipy.special import gamma, gammaln
 
@@ -139,7 +139,7 @@ def knn_search(x, y, K, min_dist=None):
     return np.maximum(min_dist, dist), idx
 
 def knn_search_forked(bags, i, j, K, min_dist=None):
-    bags = bags.value()
+    bags = bags.value
     return knn_search(bags[i], bags[j], K, min_dist=min_dist)
 
 ################################################################################
@@ -277,8 +277,8 @@ def process_pair(funcs, opts, bags, xxs, row, col):
     '''
     handle = functools.partial(handle_divs, funcs, opts)
 
-    bags = bags.value()
-    xxs = xxs.value()
+    bags = bags.value
+    xxs = xxs.value
 
     if row == col: # XXX support searches from X to Y
         xx = xxs[row]
@@ -331,18 +331,20 @@ def process_func_specs(div_specs, Ks):
                               for K in Ks])
     return funcs, div_names, alphas
 
-
-def read_data(input_file, input_var, n_points=0):
+def read_cell_array(f, data, n_points=None):
     bags = []
-    with h5py.File(input_file, 'r') as f:
-        for row in f[input_var]:
-            for ptr in row:
-                x = np.asarray(f[ptr])
-                x = np.ascontiguousarray(x.T, dtype=np.float32)
-                if n_points and n_points < x.shape[0]:
-                    x = x[np.random.permutation(x.shape[0] - 1)[:n_points]]
-                bags.append(x) # add to global variable
+    for row in data:
+        for ptr in row:
+            x = np.asarray(f[ptr])
+            x = np.ascontiguousarray(x.T, dtype=np.float32)
+            if n_points and n_points < x.shape[0]:
+                x = x[np.random.permutation(x.shape[0])[:n_points]]
+            bags.append(x)
     return bags
+
+def read_data(input_file, input_var, n_points=None):
+    with h5py.File(input_file, 'r') as f:
+        return read_cell_array(f, f[input_var], n_points)
 
 ################################################################################
 ### Convenience stuff related to multiprocessing.Pool
@@ -368,6 +370,7 @@ def make_pool(n_proc):
         pool = mp.Pool(n_proc)
     else:
         class ImmediateResult(object):
+            "Duck-type like multiprocessing.pool.MapResult."
             def __init__(self, value): self.value = value
             def get(self, timeout=None): return self.value
             def wait(self, timeout=None): pass
@@ -376,14 +379,19 @@ def make_pool(n_proc):
 
         class DummyPool(object):
             def close(self): pass
+            def join(self): pass
 
             def apply_async(self, func, args, kwds=None, callback=None):
                 val = func(*args, **(kwds or {}))
                 callback(val)
                 return ImmediateResult(val)
 
-            def map(self, func, args): return strict_map(func, args)
-            def imap_unordered(self, func, args): return imap(func, args)
+            def map(self, func, args, chunksize=None):
+                return strict_map(func, args)
+            def imap(self, func, args, chunksize=None):
+                return imap(func, args)
+            def imap_unordered(self, func, args, chunksize=None):
+                return imap(func, args)
 
         pool = DummyPool()
 
@@ -403,34 +411,42 @@ _data_name_cands = (
 
 class ForkedData(object):
     '''
-    Class used to pass data to child processes in multiprocessing
-    without really pickling/unpickling it. Only works on POSIX.
+    Class used to pass data to child processes in multiprocessing without
+    really pickling/unpickling it. Only works on POSIX.
 
     Intended use:
         - The master process makes the data somehow, and does e.g.
             data = ForkedData(the_value)
+        - The master makes sure to keep a reference to the ForkedData object
+          until the children are all done with it, since the global reference
+          is deleted to avoid memory leaks when the ForkedData object dies.
         - Master process constructs a multiprocessing.Pool *after*
           the ForkedData construction, so that the forked processes
           inherit the new global.
         - Master calls e.g. pool.map with data as an argument.
-        - Child gets the real value through data.value(), and uses it
-          read-only.
+        - Child gets the real value through data.value, and uses it read-only.
     '''
+    # TODO: does data really need to be used read-only? don't think so...
+    # TODO: more flexible garbage collection options
     def __init__(self, val):
         g = globals()
         self.name = next(n for n in _data_name_cands if n not in g)
         g[self.name] = val
+        self.master_pid = os.getpid()
 
-    def __del__(self):
-        del globals()[self.name]
-
+    @property
     def value(self):
         return globals()[self.name]
+
+    def __del__(self):
+        if os.getpid() == self.master_pid:
+            del globals()[self.name]
 
 ################################################################################
 ### Progress-bar handling with multiprocessing pools
 
 def progress(counter=True, **kwargs):
+    import progressbar as pb
     try:
         widgets = kwargs.pop('widgets')
     except KeyError:
@@ -580,7 +596,7 @@ def parse_args():
     return args
 
 
-if __name__ == '__main__':
+def main():
     args = parse_args()
 
     status_fn = functools.partial(print, file=sys.stderr)
@@ -598,3 +614,6 @@ if __name__ == '__main__':
 
     assert not np.any(np.isnan(R)), 'nan found in the result'
     assert not np.any(np.isinf(R)), 'inf found in the result'
+
+if __name__ == '__main__':
+    main()
