@@ -287,7 +287,7 @@ def handle_divs(funcs, opts, xx, xy, yy, yx, rt=None):
     # NOTE: if we add div funcs that need the index, pass those.
 
 
-def process_pair(funcs, opts, bags, xxs, row, col):
+def process_pair(funcs, opts, bags, xxs, row, col, symm=True):
     '''
     Does nearest-neighbor searches and computes the divergences between
     the row-th and col-th bags. xxs is a list of nearest-neighbor searches
@@ -298,10 +298,11 @@ def process_pair(funcs, opts, bags, xxs, row, col):
     bags = bags.value
     xxs = xxs.value
 
-    if row == col: # XXX support searches from X to Y
+    if row == col:
         xx = xxs[row]
         r = handle(xx, (None,None), (None,None), (None,None))
-        rt = r
+        if symm:
+            rt = r
     else:
         xbag, ybag = bags[row], bags[col]
         xx, yy = xxs[row], xxs[col]
@@ -311,14 +312,14 @@ def process_pair(funcs, opts, bags, xxs, row, col):
         yx = knn_search(ybag, xbag, mK)
 
         r = handle(xx, xy, yy, yx)
-        rt = handle(yy, yx, xx, xy, r)
+        if symm:
+            rt = handle(yy, yx, xx, xy, r)
 
-    # XXX what's going on here?
-    for ind in range(len(r)):
-        r[ind] = np.asarray(r[ind], dtype='float32').ravel()
-        rt[ind] = np.asarray(rt[ind], dtype='float32').ravel()
+    r = np.hstack([np.asarray(a, dtype='float32').flat for a in r])
+    if symm:
+        rt = np.hstack([np.asarray(a, dtype='float32').flat for a in rt])
 
-    return row, col, np.hstack(r), np.hstack(rt)
+    return row, col, r, (rt if symm else None)
 
 
 ################################################################################
@@ -497,13 +498,18 @@ def map_unordered_with_progressbar(pool, func, jobs):
 ################################################################################
 ### The main dealio
 
-def get_divs(bags, specs, Ks, n_proc=None,
+def get_divs(bags,
+             mask=None,
+             specs=['renyi:.9'],
+             Ks=[3],
+             n_proc=None,
              tail=TAIL_DEFAULT,
              status_fn=True, progressbar=None,
              return_opts=False):
     '''
     Gets the divergences between bags.
-        bags: a list of row-instance feature matrices
+        bags: a length n list of row-instance feature matrices
+        mask: an n x n boolean array: whether to estimate each div pair
         specs: a list of strings of divergence specs
         Ks: a K values
         n_proc: number of processes to use; None for # of cores
@@ -512,6 +518,7 @@ def get_divs(bags, specs, Ks, n_proc=None,
             None means don't print any; True prints to stderr
         progressbar: show a progress bar on stderr. default: (status_fn is True)
         return_opts: return a dictionary of options used as second value
+    Returns a matrix of size  n x n x num_div_funcs
     '''
     # TODO: document progressbar specs
     # TODO: other kinds of callbacks for showing progress bars
@@ -530,11 +537,14 @@ def get_divs(bags, specs, Ks, n_proc=None,
     elif status_fn is None:
         status_fn = lambda *args, **kwargs: None
 
-
     num_bags = len(bags)
     opts['dim'] = dim = bags[0].shape[1]
     assert all(bag.shape[1] == dim for bag in bags)
     max_K = opts['Ks'][-1]
+
+    if mask is not None:
+        assert mask.dtype == np.dtype('bool')
+        assert mask.shape == (num_bags, num_bags)
 
     status_fn('kNN processing: {} bags, dimension {}, # points {} to {}, K = {}'
             .format(num_bags, dim,
@@ -557,8 +567,17 @@ def get_divs(bags, specs, Ks, n_proc=None,
 
     xxs_data = ForkedData(xxs)
 
-    jobs = list(itertools.combinations_with_replacement(range(num_bags), 2))
     processor = functools.partial(process_pair, funcs, opts, bag_data, xxs_data)
+    all_pairs = itertools.combinations_with_replacement(range(num_bags), 2)
+    if mask is None:
+        jobs = list(all_pairs)
+    else:
+        jobs = [] # probably a nicer way to do this...
+        for i, j in all_pairs:
+            if mask[i, j]:
+                jobs.append((i, j, mask[j, i]))
+            elif mask[j, i]:
+                jobs.append((j, i, False))
 
     status_fn('Doing the real work...')
     with get_pool(n_proc) as pool:
@@ -571,7 +590,8 @@ def get_divs(bags, specs, Ks, n_proc=None,
     R.fill(np.nan)
     for i, j, r, rt in rs:
         R[i, j, :] = r
-        R[j, i, :] = rt
+        if rt is not None:
+            R[j, i, :] = rt
 
     return (R, opts) if return_opts else R
 
@@ -595,7 +615,7 @@ def parse_args():
         help="The number of points to use per group; defaults to all.")
 
     parser.add_argument('--div-funcs', nargs='*',
-        default=['hellinger', 'l2', 'renyi:.5,.7,.9,1'], # XXX .99'],
+        default=['hellinger', 'l2', 'renyi:.5,.7,.9,.99'],
         help="The divergences to estimate. Default: %(default)s.")
 
     parser.add_argument('-K', nargs='*', type=positive_int, default=[1,3,5,10],
@@ -622,7 +642,7 @@ def main():
     status_fn('Reading data...')
     bags = read_data(args.input_mat_file, args.var_name, args.n_points)
 
-    R, opts = get_divs(bags, args.div_funcs, args.K,
+    R, opts = get_divs(bags, specs=args.div_funcs, Ks=args.K,
                  n_proc=args.n_proc, tail=args.trim_tails,
                  return_opts=True)
 

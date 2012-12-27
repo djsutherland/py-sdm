@@ -110,8 +110,8 @@ def try_params(km, labels, train_idx, test_idx, C, params):
 def _assign_score(scores, C_vals, sigma_vals, print_fn,
                  C_idx, sigma_idx, f_idx, val):
     scores[C_idx, sigma_idx, f_idx] = val
-    print_fn('C {}, sigma {}, fold {}: acc {}'.format(
-        C_vals[C_idx], sigma_vals[sigma_idx], f_idx, val))
+    #print_fn('C {}, sigma {}, fold {}: acc {}'.format(
+    #    C_vals[C_idx], sigma_vals[sigma_idx], f_idx, val))
 
 def tune_params(divs, labels,
                 num_folds=DEFAULT_TUNING_FOLDS,
@@ -209,7 +209,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
                  tuning_cache_size=DEFAULT_SVM_CACHE,
                  svm_tol=DEFAULT_SVM_TOL,
                  tuning_svm_tol=DEFAULT_SVM_TOL,
-                 status_fn=False, progressbar=None,
+                 status_fn=None, progressbar=None,
                  tail=TAIL_DEFAULT):
         self.div_func = div_func
         self.K = K
@@ -245,8 +245,6 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         y: a vector of nonnegative integer class labels.
             -1 corresponds to data that should be used semi-supervised, ie
             used in projecting the Gram matrix, but not in training the SVM.
-            To do transduction, call fit() with the test data labeled as -1
-            and then call predict() on the test data (or use transduct() below).
 
         divs: precomputed divergences among the passed points
         '''
@@ -260,6 +258,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         train_idx = y != -1
         train_y = y[train_idx]
         assert train_y.size >= 2
+        self.train_bags_ = [X[i] for i, b in enumerate(train_idx) if b]
 
         # get divergences
         if divs is None:
@@ -306,11 +305,36 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         self.svm_ = clf
 
 
-    def predict(self, data):
-        # TODO: find the new divergences
-        raise NotImplementedError
-        test_km = None
-        return self.svm_.predict(test_km)
+    def predict(self, data, divs=None):
+        n_train = len(self.train_bags_)
+        n_test = len(data)
+
+        if divs is None:
+            self.status_fn('Getting test bag divergences...')
+
+            mask = np.zeros((n_train + n_test, n_train + n_test), dtype=bool)
+            mask[:n_train,-n_test:] = True
+            mask[-n_test:,:n_train] = True
+
+            divs = np.squeeze(get_divs(
+                    self.train_bags_ + data, mask=mask,
+                    specs=[self.div_func], Ks=[self.K],
+                    n_proc=self.n_proc, tail=self.tail,
+                    status_fn=self.status_fn, progressbar=self.progressbar))
+            divs = (divs[-n_test:,:n_train] + divs[:n_train,-n_test].T) / 2
+        else:
+            assert divs.shape == (n_test, n_train)
+            divs = divs.copy()
+
+        # pass divs through a gaussian kernel
+        divs /= self.sigma_
+        divs **= 2
+        divs /= -2
+        np.exp(divs, divs)
+
+        # TODO: smarter projection options for inductive use
+
+        return self.svm_.predict(divs)
 
 
 def transduct(train_bags, train_labels, test_bags,
@@ -408,6 +432,14 @@ def parse_args():
     parser.add_argument('output_file', nargs='?',
         help="Name of the output file; defaults to input_file.py_divs.mat.")
 
+    m = parser.add_mutually_exclusive_group()
+    m.add_argument('--transduct', const='transduct',
+            action='store_const', dest='mode', default='transduct',
+            help="Operate transductively (project full Gram matrix; default).")
+    m.add_argument('--induct', const='induct',
+            action='store_const', dest='mode',
+            help="Operate transductively (only project training Gram matrix).")
+
     parser.add_argument('--n-proc', type=positive_int, default=None,
         help="Number of processes to use; default is as many as CPU cores.")
     parser.add_argument('--n-points', type=positive_int, default=None,
@@ -479,18 +511,41 @@ def main():
 
     # TODO: optionally cache divergences
 
-    preds, (sigma, C) = transduct(
-            train_bags, train_labels, test_bags,
-            div_func=args.div_func,
-            K=args.K,
-            tuning_folds=args.tuning_folds,
-            n_proc=args.n_proc,
-            C_vals=args.c_vals,
-            sigma_vals=args.sigma_vals, scale_sigma=args.scale_sigma,
-            weight_classes=args.weight_classes,
-            cache_size=args.cache_size,
-            tail=args.trim_tails,
-            return_config=True)
+    if args.mode == 'transduct':
+        preds, (sigma, C) = transduct(
+                train_bags, train_labels, test_bags,
+                div_func=args.div_func,
+                K=args.K,
+                tuning_folds=args.tuning_folds,
+                n_proc=args.n_proc,
+                C_vals=args.c_vals,
+                sigma_vals=args.sigma_vals, scale_sigma=args.scale_sigma,
+                weight_classes=args.weight_classes,
+                cache_size=args.cache_size,
+                tuning_cache_size=args.tuning_cache_size,
+                svm_tol=args.svm_tol,
+                tuning_svm_tol=args.tuning_svm_tol,
+                tail=args.trim_tails,
+                return_config=True)
+    elif args.mode == 'induct':
+        clf = SupportDistributionMachine(
+                div_func=args.div_func,
+                K=args.K,
+                tuning_folds=args.tuning_folds,
+                n_proc=args.n_proc,
+                C_vals=args.c_vals,
+                sigma_vals=args.sigma_vals, scale_sigma=args.scale_sigma,
+                weight_classes=args.weight_classes,
+                cache_size=args.cache_size,
+                tuning_cache_size=args.tuning_cache_size,
+                svm_tol=args.svm_tol,
+                tuning_svm_tol=args.tuning_svm_tol,
+                tail=args.trim_tails,
+                status_fn=True)
+        clf.fit(train_bags, train_labels)
+        sigma = clf.sigma_
+        C = clf.C_
+        preds = clf.predict(test_bags)
 
     out = {
         'div_func': args.div_func,
