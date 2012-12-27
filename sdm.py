@@ -29,8 +29,15 @@ from sklearn import cross_validation as cv
 from sklearn import svm
 
 from get_divs import ForkedData, get_divs, get_pool, progressbar_and_updater, \
-                     TAIL_DEFAULT, read_cell_array
+                     TAIL_DEFAULT, read_cell_array, \
+                     positive_int, positive_float, portion
 
+DEFAULT_SVM_CACHE = 1000
+DEFAULT_SVM_TOL = 1e-3
+DEFAULT_C_VALS = tuple(2.0 ** np.arange(-9, 19, 3))
+DEFAULT_SIGMA_VALS = tuple(2.0 ** np.arange(-4, 11, 2))
+DEFAULT_K = 3
+DEFAULT_TUNING_FOLDS = 3
 
 def get_status_fn(val):
     if val is True:
@@ -89,9 +96,6 @@ def split_km(km, train_idx, test_idx):
 ################################################################################
 ### parameter tuning
 
-_default_C_vals = tuple(2.0 ** np.arange(-9, 19, 3))
-_default_sigma_vals = tuple(2.0 ** np.arange(-4, 11, 2))
-
 
 def try_params(km, labels, train_idx, test_idx, C, params):
     train_km, test_km = split_km(km.value, train_idx, test_idx)
@@ -105,16 +109,17 @@ def try_params(km, labels, train_idx, test_idx, C, params):
 def _assign_score(scores, C_vals, sigma_vals, print_fn,
                  C_idx, sigma_idx, f_idx, val):
     scores[C_idx, sigma_idx, f_idx] = val
-    #print_fn('sigma {}, C {}, fold {}: acc {}'.format(
-    #    C_vals[C_idx], sigma_vals[sigma_idx], f_idx, val))
+    print_fn('C {}, sigma {}, fold {}: acc {}'.format(
+        C_vals[C_idx], sigma_vals[sigma_idx], f_idx, val))
 
 def tune_params(divs, labels,
-                num_folds=3,
+                num_folds=DEFAULT_TUNING_FOLDS,
                 n_proc=None,
-                C_vals=_default_C_vals,
-                sigma_vals=_default_sigma_vals, scale_sigma=True,
+                C_vals=DEFAULT_C_VALS,
+                sigma_vals=DEFAULT_SIGMA_VALS, scale_sigma=True,
                 weight_classes=False,
-                cache_size=1000,
+                cache_size=DEFAULT_SVM_CACHE,
+                svm_tol=DEFAULT_SVM_TOL,
                 status_fn=True,
                 progressbar=None):
 
@@ -139,7 +144,7 @@ def tune_params(divs, labels,
         cache_size=cache_size,
         class_weight='auto' if weight_classes else None,
         kernel='precomputed',
-        tol=.1, # XXX
+        tol=svm_tol,
     )
 
     # get kernel matrices for the sigma vals we're trying
@@ -192,13 +197,14 @@ def tune_params(divs, labels,
 
 def transduct(train_bags, train_labels, test_bags,
               div_func='renyi:.9',
-              K=3,
-              tuning_folds=3,
+              K=DEFAULT_K,
+              tuning_folds=DEFAULT_TUNING_FOLDS,
               n_proc=None,
-              C_vals=_default_C_vals,
-              sigma_vals=_default_sigma_vals, scale_sigma=True,
+              C_vals=DEFAULT_C_VALS,
+              sigma_vals=DEFAULT_SIGMA_VALS, scale_sigma=True,
               weight_classes=False,
-              cache_size=1000,
+              cache_size=DEFAULT_SVM_CACHE, tuning_cache_size=DEFAULT_SVM_CACHE,
+              svm_tol=DEFAULT_SVM_TOL, tuning_svm_tol=DEFAULT_SVM_TOL,
               status_fn=True,
               progressbar=None,
               tail=TAIL_DEFAULT,
@@ -238,7 +244,8 @@ def transduct(train_bags, train_labels, test_bags,
             C_vals=C_vals,
             sigma_vals=sigma_vals, scale_sigma=scale_sigma,
             weight_classes=weight_classes,
-            cache_size=cache_size,
+            cache_size=tuning_cache_size,
+            svm_tol=tuning_svm_tol,
             status_fn=status_fn,
             progressbar=progressbar)
     status_fn('Selected sigma {}, C {}'.format(sigma, C))
@@ -254,6 +261,7 @@ def transduct(train_bags, train_labels, test_bags,
             C=C,
             cache_size=cache_size,
             class_weight='auto' if weight_classes else None,
+            tol=svm_tol,
             kernel='precomputed',
     )
     clf.fit(train_km, train_labels)
@@ -269,6 +277,8 @@ def parse_args():
     parser = argparse.ArgumentParser(
             description='Performs support distribution machine classification.')
 
+    _def = "(default %(default)s)."
+
     parser.add_argument('input_file',
         help="The input HDF5 file (e.g. a .mat file with -v7.3).")
     parser.add_argument('train_bags_name',
@@ -280,39 +290,50 @@ def parse_args():
     parser.add_argument('output_file', nargs='?',
         help="Name of the output file; defaults to input_file.py_divs.mat.")
 
-    parser.add_argument('--n-proc', type=int, default=None,
+    parser.add_argument('--n-proc', type=positive_int, default=None,
         help="Number of processes to use; default is as many as CPU cores.")
-    parser.add_argument('--n-points', type=int, default=None,
+    parser.add_argument('--n-points', type=positive_int, default=None,
         help="The number of points to use per group; defaults to all.")
 
 
     parser.add_argument('--div-func', '-d', default='renyi:.9',
         help="The divergence function to use; default %(default)s.")
 
-    parser.add_argument('-K', type=int, default=3,
+    parser.add_argument('-K', type=positive_int, default=DEFAULT_K,
         help="How many nearest neighbors to use; default %(default)s.")
 
-    parser.add_argument('--tuning-folds', '-F', type=int, default=3)
-    parser.add_argument('--cache-size', type=int, default=1000,
-        help="Size of the SVM cache, in megabytes.")
+    parser.add_argument('--svm-tol', type=positive_float, default=DEFAULT_SVM_TOL,
+        help="SVM solution tolerance " + _def)
+    parser.add_argument('--cache-size', type=positive_float, default=DEFAULT_SVM_CACHE,
+        help="Size of the SVM cache, in megabytes " + _def)
+
+    parser.add_argument('--tuning-folds', '-F', type=positive_int,
+        default=DEFAULT_TUNING_FOLDS,
+        help="Number of CV folds to use in evaluating parameters " + _def)
+    parser.add_argument('--tuning-svm-tol',
+        type=positive_float, default=DEFAULT_SVM_TOL,
+        help="SVM solution tolerance in tuning " + _def)
+    parser.add_argument('--tuning-cache-size', type=positive_float,
+        default=DEFAULT_SVM_CACHE,
+        help="Size of tuning SVMs' cache, in megabytes " + _def)
 
     s = parser.add_mutually_exclusive_group()
     s.add_argument('--weight-classes', action='store_true', default=False)
     s.add_argument('--no-weight-classes', action='store_false',
         dest='weight_classes')
 
-    parser.add_argument('--c-vals', '-C', type=float, nargs='+',
-        default=_default_C_vals, metavar='C')
-    parser.add_argument('--sigma-vals', '-S', type=float, nargs='+',
-        default=_default_sigma_vals, metavar='SIGMA')
+    parser.add_argument('--c-vals', '-C', type=positive_float, nargs='+',
+        default=DEFAULT_C_VALS, metavar='C')
+    parser.add_argument('--sigma-vals', '-S', type=positive_float, nargs='+',
+        default=DEFAULT_SIGMA_VALS, metavar='SIGMA')
 
     s = parser.add_mutually_exclusive_group()
     s.add_argument('--scale-sigma', action='store_true', default=True)
     s.add_argument('--no-scale-sigma', action='store_false', dest='scale_sigma')
 
-    parser.add_argument('--trim-tails', type=float, default=TAIL_DEFAULT,
-        help="How much to trim off the ends of things we take the mean of; "
-             "default %(default)s.", metavar='PORTION')
+    parser.add_argument('--trim-tails', type=portion, metavar='PORTION',
+        default=TAIL_DEFAULT,
+        help="How much to trim off ends of things we take the mean of " + _def)
 
     args = parser.parse_args()
 

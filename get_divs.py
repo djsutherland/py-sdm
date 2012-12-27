@@ -34,7 +34,6 @@ import random
 import string
 import sys
 import warnings
-import weakref
 
 import h5py
 import numpy as np
@@ -88,6 +87,23 @@ def fix_terms(terms, tail=TAIL_DEFAULT):
 
     return terms[np.isfinite(terms)]
 
+def positive_int(val):
+    val = int(val)
+    if val <= 0:
+        raise TypeError("must be a positive integer")
+    return val
+
+def positive_float(val):
+    val = float(val)
+    if val <= 0:
+        raise TypeError("must be a positive number")
+    return val
+
+def portion(val):
+    val = float(val)
+    if not 0 <= val <= 1:
+        raise TypeError("must be a number between 0 and 1")
+    return val
 
 ################################################################################
 ### Nearest neighbor searches.
@@ -571,19 +587,19 @@ def parse_args():
     parser.add_argument('output_mat_file', nargs='?',
         help="Name of the output file; defaults to input_mat_file.py_divs.mat.")
 
-    parser.add_argument('--n-proc', type=int, default=None,
+    parser.add_argument('--n-proc', type=positive_int, default=None,
         help="Number of processes to use; default is as many as CPU cores.")
-    parser.add_argument('--n-points', type=int, default=None,
+    parser.add_argument('--n-points', type=positive_int, default=None,
         help="The number of points to use per group; defaults to all.")
 
     parser.add_argument('--div-funcs', nargs='*',
         default=['hellinger', 'l2', 'renyi:.5,.7,.9,1'], # XXX .99'],
         help="The divergences to estimate. Default: %(default)s.")
 
-    parser.add_argument('-K', nargs='*', type=int, default=[1,3,5,10],
+    parser.add_argument('-K', nargs='*', type=positive_int, default=[1,3,5,10],
         help="The numbers of nearest neighbors to calculate.")
 
-    parser.add_argument('--trim-tails', type=float, default=TAIL_DEFAULT,
+    parser.add_argument('--trim-tails', type=portion, default=TAIL_DEFAULT,
         help="How much to trim off the ends of things we take the mean of; "
              "default %(default)s.", metavar='PORTION')
 
