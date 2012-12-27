@@ -71,9 +71,11 @@ def col(a): return a.reshape((-1, 1))
 def row(a): return a.reshape((1, -1))
 def get_col(X, c): return X[:,c].ravel()
 
+def is_integer_type(x):
+    return issubclass(np.asanyarray(x).dtype.type, np.integer)
+
 def is_integer(x):
-    return np.isscalar(x) and \
-            issubclass(np.asanyarray(x).dtype.type, np.integer)
+    return np.isscalar(x) and is_integer_type(x)
 
 TAIL_DEFAULT = 0.01
 def fix_terms(terms, tail=TAIL_DEFAULT):

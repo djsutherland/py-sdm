@@ -25,12 +25,13 @@ import h5py
 import numpy as np
 import scipy.io
 import scipy.linalg
+import sklearn.base
 from sklearn import cross_validation as cv
 from sklearn import svm
 
 from get_divs import ForkedData, get_divs, get_pool, progressbar_and_updater, \
                      TAIL_DEFAULT, read_cell_array, \
-                     positive_int, positive_float, portion
+                     positive_int, positive_float, portion, is_integer_type
 
 DEFAULT_SVM_CACHE = 1000
 DEFAULT_SVM_TOL = 1e-3
@@ -195,6 +196,123 @@ def tune_params(divs, labels,
 
 # TODO: SDM class that does induction
 
+class SupportDistributionMachine(sklearn.base.BaseEstimator):
+    def __init__(self,
+                 div_func='renyi:.9',
+                 K=DEFAULT_K,
+                 tuning_folds=DEFAULT_TUNING_FOLDS,
+                 n_proc=None,
+                 C_vals=DEFAULT_C_VALS,
+                 sigma_vals=DEFAULT_SIGMA_VALS, scale_sigma=True,
+                 weight_classes=False,
+                 cache_size=DEFAULT_SVM_CACHE,
+                 tuning_cache_size=DEFAULT_SVM_CACHE,
+                 svm_tol=DEFAULT_SVM_TOL,
+                 tuning_svm_tol=DEFAULT_SVM_TOL,
+                 status_fn=False, progressbar=None,
+                 tail=TAIL_DEFAULT):
+        self.div_func = div_func
+        self.K = K
+        self.tuning_folds = tuning_folds
+        self.n_proc = n_proc
+        self.C_vals = C_vals
+        self.sigma_vals = sigma_vals
+        self.scale_sigma = scale_sigma
+        self.weight_classes = weight_classes
+        self.cache_size = cache_size
+        self.tuning_cache_size = tuning_cache_size
+        self.svm_tol = svm_tol
+        self.tuning_svm_tol = tuning_svm_tol
+        self._status_fn = status_fn
+        self._progressbar = progressbar
+        self.tail = tail
+
+    @property
+    def status_fn(self):
+        return get_status_fn(self._status_fn)
+
+    @property
+    def progressbar(self):
+        if self._progressbar is None:
+            return self._status_fn is True
+        else:
+            return self._progressbar
+
+    def fit(self, X, y, divs=None):
+        '''
+        X: a list of row-instance data matrices, with common dimensionality
+
+        y: a vector of nonnegative integer class labels.
+            -1 corresponds to data that should be used semi-supervised, ie
+            used in projecting the Gram matrix, but not in training the SVM.
+            To do transduction, call fit() with the test data labeled as -1
+            and then call predict() on the test data (or use transduct() below).
+
+        divs: precomputed divergences among the passed points
+        '''
+        n_bags = len(X)
+
+        y = np.squeeze(y)
+        assert is_integer_type(y)
+        assert y.shape == (n_bags,)
+        assert np.all(y >= -1)
+
+        train_idx = y != -1
+        train_y = y[train_idx]
+        assert train_y.size >= 2
+
+        # get divergences
+        if divs is None:
+            self.status_fn('Getting divergences...')
+            divs = np.squeeze(get_divs(
+                    X, specs=[self.div_func], Ks=[self.K],
+                    n_proc=self.n_proc, tail=self.tail,
+                    status_fn=self.status_fn, progressbar=self.progressbar))
+        else:
+            self.status_fn('Using passed-in divergences...')
+            assert divs.shape == (n_bags, n_bags)
+
+        # tune params
+        self.status_fn('Tuning SVM parameters...')
+        self.sigma_, self.C_ = tune_params(
+                divs=np.ascontiguousarray(divs[np.ix_(train_idx, train_idx)]),
+                labels=train_y,
+                num_folds=self.tuning_folds,
+                n_proc=self.n_proc,
+                C_vals=self.C_vals,
+                sigma_vals=self.sigma_vals, scale_sigma=self.scale_sigma,
+                weight_classes=self.weight_classes,
+                cache_size=self.tuning_cache_size,
+                svm_tol=self.tuning_svm_tol,
+                status_fn=self.status_fn,
+                progressbar=self.progressbar)
+        self.status_fn('Selected sigma {}, C {}'.format(self.sigma_, self.C_))
+
+        # project the final Gram matrix
+        self.status_fn('Doing final projection')
+        train_km = np.ascontiguousarray(
+                make_km(divs, self.sigma_)[np.ix_(train_idx, train_idx)])
+
+        # train the selected SVM
+        self.status_fn('Training final SVM')
+        clf = svm.SVC(
+                C=self.C_,
+                cache_size=self.cache_size,
+                class_weight='auto' if self.weight_classes else None,
+                tol=self.svm_tol,
+                kernel='precomputed',
+        )
+        clf.fit(train_km, train_y)
+        self.svm_ = clf
+
+
+    def predict(self, data):
+        # TODO: find the new divergences
+        raise NotImplementedError
+        test_km = None
+        return self.svm_.predict(test_km)
+
+
 def transduct(train_bags, train_labels, test_bags,
               div_func='renyi:.9',
               K=DEFAULT_K,
@@ -226,7 +344,7 @@ def transduct(train_bags, train_labels, test_bags,
         status_fn('Getting divergences...')
         divs = np.squeeze(get_divs(
                 train_bags + test_bags,
-                specs=[div_func], Ks=[K], 
+                specs=[div_func], Ks=[K],
                 n_proc=n_proc, tail=tail,
                 status_fn=status_fn, progressbar=progressbar))
     else:
