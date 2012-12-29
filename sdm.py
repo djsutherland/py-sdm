@@ -18,6 +18,8 @@ from __future__ import division, print_function
 
 from functools import partial
 import itertools
+from operator import itemgetter
+import os
 import sys
 import weakref
 
@@ -32,6 +34,15 @@ from sklearn import svm
 from get_divs import ForkedData, get_divs, get_pool, progressbar_and_updater, \
                      TAIL_DEFAULT, read_cell_array, \
                      positive_int, positive_float, portion, is_integer_type
+
+# TODO XXX FIXME: real options for SVM iteration limits
+# TODO: better logging
+# TODO: better divergence cache support
+
+# TODO: fix for real
+import warnings
+warnings.filterwarnings('ignore', module='sklearn.cross_validation',
+        message='The parameter k was renamed to n_folds')
 
 DEFAULT_SVM_CACHE = 1000
 DEFAULT_SVM_TOL = 1e-3
@@ -95,7 +106,40 @@ def split_km(km, train_idx, test_idx):
 
 
 ################################################################################
-### parameter tuning
+### Cached divs helper
+
+def get_divs_cache(bags, div_func, K, cache_filename=None,
+                   n_proc=None, tail=TAIL_DEFAULT,
+                   status_fn=True, progressbar=None):
+
+    status = get_status_fn(status_fn)
+
+    if cache_filename and os.path.exists(cache_filename):
+        path = '{}/{}'.format(div_func, K)
+        with h5py.File(cache_filename, 'r') as f:
+            if path in f:
+                divs = f[path]
+                assert divs.shape == (len(bags), len(bags))
+                status("Loading divs from cache '{}'".format(cache_filename))
+                return divs[...]
+
+    divs = np.squeeze(get_divs(
+            bags, specs=[div_func], Ks=[K],
+            n_proc=n_proc, tail=tail,
+            status_fn=status_fn, progressbar=progressbar))
+
+    if cache_filename:
+        status("Saving divs to cache '{}'".format(cache_filename))
+        with h5py.File(cache_filename) as f:
+            if div_func not in f:
+                f.create_group(div_func)
+            f[div_func].create_dataset(str(K), data=divs)
+
+    return divs
+
+
+################################################################################
+### Parameter tuning
 
 
 def try_params(km, labels, train_idx, test_idx, C, params):
@@ -146,13 +190,17 @@ def tune_params(divs, labels,
         class_weight='auto' if weight_classes else None,
         kernel='precomputed',
         tol=svm_tol,
+        #verbose=True,
+        shrinking=False,
+        max_iter=1000, # XXX requires dev version of scikit-learn
     )
 
     # get kernel matrices for the sigma vals we're trying
     # TODO: could be more careful about making copies here
     sigma_kms = {}
+    status_fn('Projecting...')
     for sigma in sigma_vals:
-        status_fn('Projecting: sigma = {}'.format(sigma))
+        #status_fn('Projecting: sigma = {}'.format(sigma))
         sigma_kms[sigma] = ForkedData(make_km(divs, sigma))
 
     labels_d = ForkedData(labels)
@@ -186,15 +234,13 @@ def tune_params(divs, labels,
     # figure out which ones were best
     # TODO: randomize when there are ties...
     cv_means = scores.mean(axis=-1)
-    best_sigma, best_C = np.unravel_index(cv_means.argmax(), cv_means.shape)
+    best_C, best_sigma = np.unravel_index(cv_means.argmax(), cv_means.shape)
 
     return sigma_vals[best_sigma], C_vals[best_C]
 
 
 ################################################################################
 ### Main dealio
-
-# TODO: SDM class that does induction
 
 class SupportDistributionMachine(sklearn.base.BaseEstimator):
     def __init__(self,
@@ -238,7 +284,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         else:
             return self._progressbar
 
-    def fit(self, X, y, divs=None):
+    def fit(self, X, y, divs=None, divs_cache=None):
         '''
         X: a list of row-instance data matrices, with common dimensionality
 
@@ -263,12 +309,12 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         # get divergences
         if divs is None:
             self.status_fn('Getting divergences...')
-            divs = np.squeeze(get_divs(
-                    X, specs=[self.div_func], Ks=[self.K],
+            divs = get_divs_cache(X, div_func=self.div_func, K=self.K,
+                    cache_filename=divs_cache,
                     n_proc=self.n_proc, tail=self.tail,
-                    status_fn=self.status_fn, progressbar=self.progressbar))
+                    status_fn=self.status_fn, progressbar=self.progressbar)
         else:
-            self.status_fn('Using passed-in divergences...')
+            #self.status_fn('Using passed-in divergences...')
             assert divs.shape == (n_bags, n_bags)
 
         # tune params
@@ -300,6 +346,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
                 class_weight='auto' if self.weight_classes else None,
                 tol=self.svm_tol,
                 kernel='precomputed',
+                max_iter=1000, # XXX
         )
         clf.fit(train_km, train_y)
         self.svm_ = clf
@@ -334,7 +381,9 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
 
         # TODO: smarter projection options for inductive use
 
-        return self.svm_.predict(divs)
+        preds = self.svm_.predict(divs)
+        assert np.all(preds == np.round(preds))
+        return preds.astype(int)
 
 
 def transduct(train_bags, train_labels, test_bags,
@@ -351,6 +400,7 @@ def transduct(train_bags, train_labels, test_bags,
               progressbar=None,
               tail=TAIL_DEFAULT,
               divs=None,
+              divs_cache=None,
               return_config=False):
     # TODO: support non-Gaussian kernels
     # TODO: support CVing between multiple div funcs, values of K
@@ -363,21 +413,24 @@ def transduct(train_bags, train_labels, test_bags,
     num_train = len(train_bags)
     train_labels = np.squeeze(train_labels)
     assert train_labels.shape == (num_train,)
+    assert is_integer_type(train_labels)
+
 
     if divs is None:
         status_fn('Getting divergences...')
-        divs = np.squeeze(get_divs(
+
+        divs = get_divs_cache(
                 train_bags + test_bags,
-                specs=[div_func], Ks=[K],
+                div_func=div_func, K=K,
+                cache_filename=divs_cache,
                 n_proc=n_proc, tail=tail,
-                status_fn=status_fn, progressbar=progressbar))
+                status_fn=status_fn, progressbar=progressbar)
     else:
-        status_fn('Using passed-in divergences...')
+        #status_fn('Using passed-in divergences...')
         n_bags = len(train_bags) + len(test_bags)
         assert divs.shape == (n_bags, n_bags)
 
     status_fn('Tuning parameters...')
-    # TODO: print partial results to somewhere else
     sigma, C = tune_params(
             divs=np.ascontiguousarray(divs[:num_train, :num_train]),
             labels=train_labels,
@@ -405,90 +458,251 @@ def transduct(train_bags, train_labels, test_bags,
             class_weight='auto' if weight_classes else None,
             tol=svm_tol,
             kernel='precomputed',
+            max_iter=1000000, # XXX
     )
     clf.fit(train_km, train_labels)
 
     preds = clf.predict(test_km)
+    assert np.all(preds == np.round(preds))
+    preds = preds.astype(int)
+
     return (preds, (sigma, C)) if return_config else preds
+
+
+################################################################################
+### Cross-validation helper
+
+def crossvalidate(bags, labels, num_folds=10,
+        div_func='renyi:.9',
+        K=DEFAULT_K,
+        tuning_folds=DEFAULT_TUNING_FOLDS,
+        project_all=True,
+        n_proc=None,
+        C_vals=DEFAULT_C_VALS,
+        sigma_vals=DEFAULT_SIGMA_VALS, scale_sigma=True,
+        weight_classes=False,
+        cache_size=DEFAULT_SVM_CACHE, tuning_cache_size=DEFAULT_SVM_CACHE,
+        svm_tol=DEFAULT_SVM_TOL, tuning_svm_tol=DEFAULT_SVM_TOL,
+        status_fn=True,
+        progressbar=None,
+        tail=TAIL_DEFAULT,
+        divs=None,
+        divs_cache=None):
+
+    args = locals()
+    opts = {v: args[v] for v in {'div_func', 'K', 'tuning_folds', 'n_proc',
+        'C_vals', 'sigma_vals', 'scale_sigma', 'weight_classes', 'cache_size',
+        'tuning_cache_size', 'svm_tol', 'tuning_svm_tol', 'status_fn',
+        'progressbar', 'tail'} }
+
+    status = get_status_fn(status_fn)
+
+    num_bags = len(bags)
+    dim = bags[0].shape[1]
+    assert all(bag.ndim == 2 and bag.shape[1] == dim and bag.shape[0] > 0
+               for bag in bags)
+
+    labels = np.squeeze(labels)
+    assert labels.shape == (num_bags,)
+    assert is_integer_type(labels)
+
+    if divs is None:
+        status('Getting divergences...')
+        divs = get_divs_cache(bags, div_func=div_func, K=K,
+                cache_filename=divs_cache,
+                status_fn=status_fn, progressbar=progressbar)
+    else:
+        #status_fn('Using passed-in divergences...')
+        assert divs.shape == (num_bags, num_bags)
+
+    preds = -np.ones(num_bags, dtype=int)
+
+    for i, (train, test) in \
+            enumerate(cv.KFold(n=num_bags, k=num_folds, shuffle=True), 1):
+        status('')
+        status('Starting fold {} / {}'.format(i, num_folds))
+        train_bags = itemgetter(*train)(bags)
+        train_labels = labels[train]
+        test_bags = itemgetter(*test)(bags)
+        both = np.hstack((train, test))
+        if project_all:
+            preds[test] = transduct(
+                    train_bags, train_labels, test_bags,
+                    divs=divs[np.ix_(both, both)],
+                    **opts)
+        else:
+            clf = SupportDistributionMachine(**opts)
+            clf.fit(train_bags, train_labels, divs=divs[np.ix_(train, train)])
+            preds[test] = clf.predict(test_bags)
+
+    # TODO: optionally return params for each fold, what the folds were, ...
+
+    return np.mean(preds == labels), preds
+
 
 ################################################################################
 ### Command-line interface
 
 def parse_args():
     import argparse
+
+    # helper for boolean flags
+    # based on http://stackoverflow.com/a/9236426/344821
+    class ActionNoYes(argparse.Action):
+        def __init__(self, opt_name, off_name=None, dest=None,
+                     default=True, required=False, help=None):
+
+            if off_name is None:
+                off_name = 'no-' + opt_name
+            self.off_name = '--' + off_name
+
+            if dest is None:
+                dest = opt_name.replace('-', '_')
+
+            super(ActionNoYes, self).__init__(
+                    ['--' + opt_name, '--' + off_name],
+                    dest, nargs=0, const=None,
+                    default=default, required=required, help=help)
+
+        def __call__(self, parser, namespace, values, option_string=None):
+            setattr(namespace, self.dest, option_string != self.off_name)
+
+    # component of a help string that adds the default value
+    _def = "(default %(default)r)."
+
+
+    # add common options to a parser
+    # would use parents=[...], except for http://bugs.python.org/issue16807
+    def add_opts(parser):
+        algo = parser.add_argument_group('algorithm options')
+
+        m = algo.add_mutually_exclusive_group()
+        m.set_defaults(mode='transduct')
+        m.add_argument('--transduct',
+            action='store_const', dest='mode', const='transduct',
+            help="Operate transductively (project full Gram matrix; default).")
+        m.add_argument('--induct',
+            action='store_const', dest='mode', const='induct',
+                help="Operate inductively (only project training Gram matrix).")
+
+
+        algo.add_argument('--div-func', '-d', default='renyi:.9',
+            help="The divergence function to use " + _def)
+
+        algo.add_argument('-K', type=positive_int, default=DEFAULT_K,
+            help="How many nearest neighbors to use " + _def)
+
+        algo.add_argument('--n-points', type=positive_int, default=None,
+            help="The number of points to use per group; defaults to all.")
+
+        algo.add_argument('--tuning-folds', '-F', type=positive_int,
+            default=DEFAULT_TUNING_FOLDS,
+            help="Number of CV folds to use in evaluating parameters " + _def)
+
+
+        comp = parser.add_argument_group('computation options')
+        comp.add_argument('--n-proc', type=positive_int, default=None,
+            help="Number of processes to use; default is as many as CPU cores.")
+
+
+        comp.add_argument('--svm-tol',
+            type=positive_float, default=DEFAULT_SVM_TOL,
+            help="SVM solution tolerance " + _def)
+        comp.add_argument('--cache-size',
+            type=positive_float, default=DEFAULT_SVM_CACHE,
+            help="Size of the SVM cache, in megabytes " + _def)
+
+        comp.add_argument('--tuning-svm-tol',
+            type=positive_float, default=DEFAULT_SVM_TOL,
+            help="SVM solution tolerance in tuning " + _def)
+        comp.add_argument('--tuning-cache-size', type=positive_float,
+            default=DEFAULT_SVM_CACHE,
+            help="Size of tuning SVMs' cache, in megabytes " + _def)
+
+        algo._add_action(ActionNoYes('weight-classes', default=False,
+            help="Reweight SVM loss to equalize classes (default: don't)."))
+
+        algo.add_argument('--c-vals', '-C', type=positive_float, nargs='+',
+            default=DEFAULT_C_VALS, metavar='C',
+            help="Values to try for tuning SVM regularization strength " + _def)
+        algo.add_argument('--sigma-vals', '-S', type=positive_float, nargs='+',
+            default=DEFAULT_SIGMA_VALS, metavar='SIGMA',
+            help="Values to try for tuning kernel bandwidth sigma " + _def)
+
+        algo._add_action(ActionNoYes('scale-sigma', default=True,
+            help="Scale --sigma-vals by the median nonzero divergence; "
+                 "does by default."))
+
+        algo.add_argument('--trim-tails', type=portion, metavar='PORTION',
+            default=TAIL_DEFAULT,
+            help="How much to trim when using a trimmed mean estimator " + _def)
+
+
+    ### the top-level parser
     parser = argparse.ArgumentParser(
             description='Performs support distribution machine classification.')
+    subparsers = parser.add_subparsers(dest='subcommand',
+            help="The kind of action to perform.")
 
-    _def = "(default %(default)s)."
 
-    parser.add_argument('input_file',
+    ### parser for the prediction task
+    parser_pred = subparsers.add_parser('predict',
+            help="Train on labeled training data, predict on test data.")
+    parser_pred.set_defaults(func=do_predict)
+
+    io = parser_pred.add_argument_group('input/output options')
+    io.add_argument('input_file',
         help="The input HDF5 file (e.g. a .mat file with -v7.3).")
-    parser.add_argument('train_bags_name',
-        help="The name of a cell array of row-instance data matrices.")
-    parser.add_argument('test_bags_name',
-        help="The name of a cell array of row-instance data matrices.")
-    parser.add_argument('train_labels_name',
-        help="The name of a vector of training labels (integers).")
-    parser.add_argument('output_file', nargs='?',
-        help="Name of the output file; defaults to input_file.py_divs.mat.")
 
-    m = parser.add_mutually_exclusive_group()
-    m.add_argument('--transduct', const='transduct',
-            action='store_const', dest='mode', default='transduct',
-            help="Operate transductively (project full Gram matrix; default).")
-    m.add_argument('--induct', const='induct',
-            action='store_const', dest='mode',
-            help="Operate transductively (only project training Gram matrix).")
+    io.add_argument('--train-bags-name', default='train_bags',
+        help="The name of a cell array of row-instance data matrices " + _def)
+    io.add_argument('--test-bags-name', default='test_bags',
+        help="The name of a cell array of row-instance data matrices " + _def)
+    io.add_argument('--train-labels-name', default='train_labels',
+        help="The name of a vector of integer training labels " + _def)
 
-    parser.add_argument('--n-proc', type=positive_int, default=None,
-        help="Number of processes to use; default is as many as CPU cores.")
-    parser.add_argument('--n-points', type=positive_int, default=None,
-        help="The number of points to use per group; defaults to all.")
+    io.add_argument('--output-file', required=False,
+        help="Name of the output file; defaults to input_file.sdm_preds.mat.")
+
+    io.add_argument('--div-cache-file',
+        help="An HDF5 file that serves as a cache of divergences.")
+
+    add_opts(parser_pred)
+
+    ### parser for the cross-validation task
+    parser_cv = subparsers.add_parser('cv',
+            help="Cross-validate predictions on fully labeled data.")
+    parser_cv.set_defaults(func=do_cv)
+
+    io = parser_cv.add_argument_group('input/output options')
+    io.add_argument('input_file',
+        help="The input HDF5 file (e.g. a .mat file with -v7.3).")
+
+    io.add_argument('--bags-name', default='bags',
+        help="The name of a cell array of row-instance data matrices " + _def)
+    io.add_argument('--labels-name', default='labels',
+        help="The name of a vector of training labels (integers) " + _def)
+    io.add_argument('--cv-folds', '-f', type=positive_int, default=10,
+        help="The number of cross-validation folds " + _def)
+
+    io.add_argument('--output-file', required=False,
+        help="Name of the output file; defaults to input_file.sdm_cv.mat.")
+
+    io.add_argument('--div-cache-file',
+        help="An HDF5 file that serves as a cache of divergences.")
+
+    add_opts(parser_cv)
 
 
-    parser.add_argument('--div-func', '-d', default='renyi:.9',
-        help="The divergence function to use; default %(default)s.")
-
-    parser.add_argument('-K', type=positive_int, default=DEFAULT_K,
-        help="How many nearest neighbors to use; default %(default)s.")
-
-    parser.add_argument('--svm-tol', type=positive_float, default=DEFAULT_SVM_TOL,
-        help="SVM solution tolerance " + _def)
-    parser.add_argument('--cache-size', type=positive_float, default=DEFAULT_SVM_CACHE,
-        help="Size of the SVM cache, in megabytes " + _def)
-
-    parser.add_argument('--tuning-folds', '-F', type=positive_int,
-        default=DEFAULT_TUNING_FOLDS,
-        help="Number of CV folds to use in evaluating parameters " + _def)
-    parser.add_argument('--tuning-svm-tol',
-        type=positive_float, default=DEFAULT_SVM_TOL,
-        help="SVM solution tolerance in tuning " + _def)
-    parser.add_argument('--tuning-cache-size', type=positive_float,
-        default=DEFAULT_SVM_CACHE,
-        help="Size of tuning SVMs' cache, in megabytes " + _def)
-
-    s = parser.add_mutually_exclusive_group()
-    s.add_argument('--weight-classes', action='store_true', default=False)
-    s.add_argument('--no-weight-classes', action='store_false',
-        dest='weight_classes')
-
-    parser.add_argument('--c-vals', '-C', type=positive_float, nargs='+',
-        default=DEFAULT_C_VALS, metavar='C')
-    parser.add_argument('--sigma-vals', '-S', type=positive_float, nargs='+',
-        default=DEFAULT_SIGMA_VALS, metavar='SIGMA')
-
-    s = parser.add_mutually_exclusive_group()
-    s.add_argument('--scale-sigma', action='store_true', default=True)
-    s.add_argument('--no-scale-sigma', action='store_false', dest='scale_sigma')
-
-    parser.add_argument('--trim-tails', type=portion, metavar='PORTION',
-        default=TAIL_DEFAULT,
-        help="How much to trim off ends of things we take the mean of " + _def)
-
+    ### parse the arguments and do some post-processing
     args = parser.parse_args()
 
     if args.output_file is None:
-        args.output_file = args.input_file + '.sdm_results.mat'
+        suffixes = {
+            'predict': '.sdm_preds.mat',
+            'cv': '.sdm_cv.mat',
+        }
+        args.output_file = args.input_file + suffixes[args.subcommand]
 
     args.c_vals = np.sort(args.c_vals)
     args.sigma_vals = np.sort(args.sigma_vals)
@@ -496,53 +710,48 @@ def parse_args():
     return args
 
 
+def opts_dict(args):
+    return dict(
+        div_func=args.div_func,
+        K=args.K,
+        tuning_folds=args.tuning_folds,
+        n_proc=args.n_proc,
+        C_vals=args.c_vals,
+        sigma_vals=args.sigma_vals, scale_sigma=args.scale_sigma,
+        weight_classes=args.weight_classes,
+        cache_size=args.cache_size,
+        tuning_cache_size=args.tuning_cache_size,
+        svm_tol=args.svm_tol,
+        tuning_svm_tol=args.tuning_svm_tol,
+        tail=args.trim_tails,
+    )
+
 def main():
     args = parse_args()
+    args.func(args)
 
+
+
+def do_predict(args):
     status_fn = get_status_fn(True)
-
-    # TODO: use logging module to save partial results
 
     status_fn('Reading inputs...')
     with h5py.File(args.input_file, 'r') as f:
         train_bags = read_cell_array(f, f[args.train_bags_name], args.n_points)
-        train_labels = f[args.train_labels_name].value
+        train_labels = f[args.train_labels_name][...]
         test_bags = read_cell_array(f, f[args.test_bags_name], args.n_points)
 
-    # TODO: optionally cache divergences
+    assert np.all(train_labels == np.round(train_labels))
+    train_labels = train_labels.astype(int)
 
     if args.mode == 'transduct':
         preds, (sigma, C) = transduct(
                 train_bags, train_labels, test_bags,
-                div_func=args.div_func,
-                K=args.K,
-                tuning_folds=args.tuning_folds,
-                n_proc=args.n_proc,
-                C_vals=args.c_vals,
-                sigma_vals=args.sigma_vals, scale_sigma=args.scale_sigma,
-                weight_classes=args.weight_classes,
-                cache_size=args.cache_size,
-                tuning_cache_size=args.tuning_cache_size,
-                svm_tol=args.svm_tol,
-                tuning_svm_tol=args.tuning_svm_tol,
-                tail=args.trim_tails,
-                return_config=True)
+                divs_cache=args.div_cache_file,
+                return_config=True, **opts_dict(args))
     elif args.mode == 'induct':
-        clf = SupportDistributionMachine(
-                div_func=args.div_func,
-                K=args.K,
-                tuning_folds=args.tuning_folds,
-                n_proc=args.n_proc,
-                C_vals=args.c_vals,
-                sigma_vals=args.sigma_vals, scale_sigma=args.scale_sigma,
-                weight_classes=args.weight_classes,
-                cache_size=args.cache_size,
-                tuning_cache_size=args.tuning_cache_size,
-                svm_tol=args.svm_tol,
-                tuning_svm_tol=args.tuning_svm_tol,
-                tail=args.trim_tails,
-                status_fn=True)
-        clf.fit(train_bags, train_labels)
+        clf = SupportDistributionMachine(status_fn=True, **opts_dict(args))
+        clf.fit(train_bags, train_labels, divs_cache=args.div_cache_file)
         sigma = clf.sigma_
         C = clf.C_
         preds = clf.predict(test_bags)
@@ -556,6 +765,36 @@ def main():
         'C': C,
         'sigma': sigma,
         'preds': preds,
+    }
+    status_fn('Saving output to {}'.format(args.output_file))
+    scipy.io.savemat(args.output_file, out, oned_as='column')
+
+def do_cv(args):
+    status_fn = get_status_fn(True)
+
+    status_fn('Reading inputs...')
+    with h5py.File(args.input_file, 'r') as f:
+        bags = read_cell_array(f, f[args.bags_name], args.n_points)
+        labels = f[args.labels_name][...]
+
+    assert np.all(labels == np.round(labels))
+    labels = labels.astype(int)
+
+    opts = opts_dict(args)
+    acc, preds = crossvalidate(bags, labels, num_folds=args.cv_folds,
+                               divs_cache=args.div_cache_file, **opts)
+
+    status_fn('')
+    status_fn('Accuracy: {:.2}'.format(acc))
+
+    out = {
+        'div_func': args.div_func,
+        'K': args.K,
+        'C_vals': args.c_vals,
+        'sigma_vals': args.sigma_vals,
+        'scale_sigma': args.scale_sigma,
+        'preds': preds,
+        'acc': acc,
     }
     status_fn('Saving output to {}'.format(args.output_file))
     scipy.io.savemat(args.output_file, out, oned_as='column')
