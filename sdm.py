@@ -29,15 +29,15 @@ import scipy.io
 import scipy.linalg
 import sklearn.base
 from sklearn import cross_validation as cv
-from sklearn import svm
+from sklearn import svm # NOTE: needs dev version (0.13) for svm iter limits
 
 from get_divs import ForkedData, get_divs, get_pool, progressbar_and_updater, \
                      TAIL_DEFAULT, read_cell_array, \
                      positive_int, positive_float, portion, is_integer_type
 
-# TODO XXX FIXME: real options for SVM iteration limits
 # TODO: better logging
 # TODO: better divergence cache support
+# TODO: support getting decision values / probabilities
 
 # TODO: fix for real
 import warnings
@@ -46,6 +46,10 @@ warnings.filterwarnings('ignore', module='sklearn.cross_validation',
 
 DEFAULT_SVM_CACHE = 1000
 DEFAULT_SVM_TOL = 1e-3
+DEFAULT_SVM_ITER = 10 ** 6
+DEFAULT_SVM_ITER_TUNING = 1000
+DEFAULT_SVM_SHRINKING = True
+
 DEFAULT_C_VALS = tuple(2.0 ** np.arange(-9, 19, 3))
 DEFAULT_SIGMA_VALS = tuple(2.0 ** np.arange(-4, 11, 2))
 DEFAULT_K = 3
@@ -165,6 +169,8 @@ def tune_params(divs, labels,
                 weight_classes=False,
                 cache_size=DEFAULT_SVM_CACHE,
                 svm_tol=DEFAULT_SVM_TOL,
+                svm_max_iter=DEFAULT_SVM_ITER_TUNING,
+                svm_shrinking=DEFAULT_SVM_SHRINKING,
                 status_fn=True,
                 progressbar=None):
 
@@ -190,9 +196,9 @@ def tune_params(divs, labels,
         class_weight='auto' if weight_classes else None,
         kernel='precomputed',
         tol=svm_tol,
+        max_iter=svm_max_iter,
+        shrinking=svm_shrinking,
         #verbose=True,
-        shrinking=False,
-        max_iter=1000, # XXX requires dev version of scikit-learn
     )
 
     # get kernel matrices for the sigma vals we're trying
@@ -255,6 +261,9 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
                  tuning_cache_size=DEFAULT_SVM_CACHE,
                  svm_tol=DEFAULT_SVM_TOL,
                  tuning_svm_tol=DEFAULT_SVM_TOL,
+                 svm_max_iter=DEFAULT_SVM_ITER,
+                 tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
+                 svm_shrinking=DEFAULT_SVM_SHRINKING,
                  status_fn=None, progressbar=None,
                  tail=TAIL_DEFAULT):
         self.div_func = div_func
@@ -269,6 +278,9 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         self.tuning_cache_size = tuning_cache_size
         self.svm_tol = svm_tol
         self.tuning_svm_tol = tuning_svm_tol
+        self.svm_max_iter = svm_max_iter
+        self.tuning_svm_max_iter = tuning_svm_max_iter
+        self.svm_shrinking = svm_shrinking
         self._status_fn = status_fn
         self._progressbar = progressbar
         self.tail = tail
@@ -329,6 +341,8 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
                 weight_classes=self.weight_classes,
                 cache_size=self.tuning_cache_size,
                 svm_tol=self.tuning_svm_tol,
+                svm_max_iter=self.tuning_svm_max_iter,
+                svm_shrinking=self.svm_shrinking,
                 status_fn=self.status_fn,
                 progressbar=self.progressbar)
         self.status_fn('Selected sigma {}, C {}'.format(self.sigma_, self.C_))
@@ -346,7 +360,8 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
                 class_weight='auto' if self.weight_classes else None,
                 tol=self.svm_tol,
                 kernel='precomputed',
-                max_iter=1000, # XXX
+                max_iter=self.svm_max_iter,
+                shrinking=self.svm_shrinking,
         )
         clf.fit(train_km, train_y)
         self.svm_ = clf
@@ -396,6 +411,9 @@ def transduct(train_bags, train_labels, test_bags,
               weight_classes=False,
               cache_size=DEFAULT_SVM_CACHE, tuning_cache_size=DEFAULT_SVM_CACHE,
               svm_tol=DEFAULT_SVM_TOL, tuning_svm_tol=DEFAULT_SVM_TOL,
+              svm_max_iter=DEFAULT_SVM_ITER,
+              tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
+              svm_shrinking=DEFAULT_SVM_SHRINKING,
               status_fn=True,
               progressbar=None,
               tail=TAIL_DEFAULT,
@@ -441,6 +459,8 @@ def transduct(train_bags, train_labels, test_bags,
             weight_classes=weight_classes,
             cache_size=tuning_cache_size,
             svm_tol=tuning_svm_tol,
+            svm_max_iter=tuning_svm_max_iter,
+            svm_shrinking=svm_shrinking,
             status_fn=status_fn,
             progressbar=progressbar)
     status_fn('Selected sigma {}, C {}'.format(sigma, C))
@@ -458,7 +478,8 @@ def transduct(train_bags, train_labels, test_bags,
             class_weight='auto' if weight_classes else None,
             tol=svm_tol,
             kernel='precomputed',
-            max_iter=1000000, # XXX
+            max_iter=svm_max_iter,
+            shrinking=svm_shrinking,
     )
     clf.fit(train_km, train_labels)
 
@@ -608,13 +629,27 @@ def parse_args():
         comp.add_argument('--svm-tol',
             type=positive_float, default=DEFAULT_SVM_TOL,
             help="SVM solution tolerance " + _def)
+        comp.add_argument('--svm-max-iter',
+            type=positive_int, default=DEFAULT_SVM_ITER,
+            help="Limit on the number of SVM iterations " + _def)
+        comp.add_argument('--svm-unlimited-iter',
+            action='store_const', const=-1, dest='svm_max_iter',
+            help="Let the SVM try to iterate until full convergence.")
         comp.add_argument('--cache-size',
             type=positive_float, default=DEFAULT_SVM_CACHE,
             help="Size of the SVM cache, in megabytes " + _def)
+        comp._add_action(ActionNoYes('svm-shrinking', default=True,
+            help="Use the shrinking heuristics in the SVM (default: do)."))
 
         comp.add_argument('--tuning-svm-tol',
             type=positive_float, default=DEFAULT_SVM_TOL,
             help="SVM solution tolerance in tuning " + _def)
+        comp.add_argument('--tuning-svm-max-iter',
+            type=positive_int, default=DEFAULT_SVM_ITER_TUNING,
+            help="Limit on the number of SVM iterations in tuning " + _def)
+        comp.add_argument('--tuning-svm-unlimited-iter',
+            action='store_const', const=-1, dest='tuning_svm_max_iter',
+            help="Let the SVM try to iterate until full convergence in tuning.")
         comp.add_argument('--tuning-cache-size', type=positive_float,
             default=DEFAULT_SVM_CACHE,
             help="Size of tuning SVMs' cache, in megabytes " + _def)
@@ -723,14 +758,11 @@ def opts_dict(args):
         tuning_cache_size=args.tuning_cache_size,
         svm_tol=args.svm_tol,
         tuning_svm_tol=args.tuning_svm_tol,
+        svm_max_iter=args.svm_max_iter,
+        tuning_svm_max_iter=args.tuning_svm_max_iter,
+        svm_shrinking=args.svm_shrinking,
         tail=args.trim_tails,
     )
-
-def main():
-    args = parse_args()
-    args.func(args)
-
-
 
 def do_predict(args):
     status_fn = get_status_fn(True)
@@ -798,6 +830,10 @@ def do_cv(args):
     }
     status_fn('Saving output to {}'.format(args.output_file))
     scipy.io.savemat(args.output_file, out, oned_as='column')
+
+def main():
+    args = parse_args()
+    args.func(args)
 
 if __name__ == '__main__':
     main()
