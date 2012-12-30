@@ -85,7 +85,8 @@ def fix_terms(terms, tail=TAIL_DEFAULT):
 
     if n >= 3:
         terms = np.sort(terms)
-        terms = terms[max(1, round(n*tail)) : min(n-1, round(n*(1-tail)))]
+        ends = int(round(n * tail))
+        terms = terms[ends : n - ends]
 
     return terms[np.isfinite(terms)]
 

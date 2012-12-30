@@ -504,6 +504,9 @@ def crossvalidate(bags, labels, num_folds=10,
         weight_classes=False,
         cache_size=DEFAULT_SVM_CACHE, tuning_cache_size=DEFAULT_SVM_CACHE,
         svm_tol=DEFAULT_SVM_TOL, tuning_svm_tol=DEFAULT_SVM_TOL,
+        svm_max_iter=DEFAULT_SVM_ITER,
+        tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
+        svm_shrinking=DEFAULT_SVM_SHRINKING,
         status_fn=True,
         progressbar=None,
         tail=TAIL_DEFAULT,
@@ -513,8 +516,9 @@ def crossvalidate(bags, labels, num_folds=10,
     args = locals()
     opts = {v: args[v] for v in {'div_func', 'K', 'tuning_folds', 'n_proc',
         'C_vals', 'sigma_vals', 'scale_sigma', 'weight_classes', 'cache_size',
-        'tuning_cache_size', 'svm_tol', 'tuning_svm_tol', 'status_fn',
-        'progressbar', 'tail'} }
+        'tuning_cache_size', 'svm_tol', 'tuning_svm_tol', 'svm_max_iter',
+        'tuning_svm_max_iter', 'svm_shrinking', 'status_fn', 'progressbar',
+        'tail'} }
 
     status = get_status_fn(status_fn)
 
@@ -817,7 +821,7 @@ def do_cv(args):
                                divs_cache=args.div_cache_file, **opts)
 
     status_fn('')
-    status_fn('Accuracy: {:.2}'.format(acc))
+    status_fn('Accuracy: {:.1%}'.format(acc))
 
     out = {
         'div_func': args.div_func,
