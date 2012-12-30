@@ -35,6 +35,7 @@ import string
 import sys
 import warnings
 
+import bottleneck as bn
 import h5py
 import numpy as np
 import scipy.io
@@ -77,19 +78,6 @@ def is_integer_type(x):
 def is_integer(x):
     return np.isscalar(x) and is_integer_type(x)
 
-TAIL_DEFAULT = 0.01
-def fix_terms(terms, tail=TAIL_DEFAULT):
-    '''Removes the tails from terms, for a more robust estimate of the mean.'''
-    terms = terms[np.logical_not(np.isnan(terms))]
-    n = terms.size
-
-    if n >= 3:
-        terms = np.sort(terms)
-        ends = int(round(n * tail))
-        terms = terms[ends : n - ends]
-
-    return terms[np.isfinite(terms)]
-
 def positive_int(val):
     val = int(val)
     if val <= 0:
@@ -107,6 +95,102 @@ def portion(val):
     if not 0 <= val <= 1:
         raise TypeError("must be a number between 0 and 1")
     return val
+
+################################################################################
+### Helpers for robust mean estimation
+# XXX: old code used _clip, but _trim seems better
+
+TAIL_DEFAULT = 0.01
+
+def fix_terms_trim(terms, tail=TAIL_DEFAULT):
+    '''
+    Trims the elements of an array, to use in a more robust mean estimate, by:
+        - removing any nan elements
+        - removing elements below the tail-th and above the (1-tail)th quantiles
+        - removing any remaining inf elements
+    '''
+    terms = terms[np.logical_not(np.isnan(terms))]
+    n = terms.size
+
+    if n >= 3:
+        terms = np.sort(terms) # TODO: could do this with partial sorting
+        ends = int(round(n * tail))
+        terms = terms[ends : n - ends]
+
+    return terms[np.isfinite(terms)]
+
+def quantile(a, prob):
+    '''
+    Estimates the prob'th quantile of the values in a data array.
+
+    Uses the algorithm of matlab's quantile(), namely:
+        - Remove any nan values
+        - Take the sorted data as the (.5/n), (1.5/n), ..., (1-.5/n) quantiles.
+        - Use linear interpolation for values between (.5/n) and (1 - .5/n).
+        - Use the minimum or maximum for quantiles outside that range.
+
+    See also: scipy.stats.mstats.mquantiles
+    '''
+    a = np.asanyarray(a)
+    a = a[np.logical_not(np.isnan(a))].ravel()
+    n = a.size
+
+    if prob >= 1 - .5/n:
+        return a.max()
+    elif prob <= .5 / n:
+        return a.min()
+
+    # find the two bounds we're interpreting between:
+    # that is, find i such that (i+.5) / n <= prob <= (i+1.5)/n
+    t = n * prob - .5
+    i = int(np.floor(t))
+
+    # partial sort so that the ith element is at position i, with bigger ones
+    # to the right and smaller to the left
+    a = bn.partsort(a, i)
+
+    if i == t: # did we luck out and get an integer index?
+        return a[i]
+    else:
+        # we'll linearly interpolate between this and the next index
+        smaller = a[i]
+        larger = a[i+1:].min()
+        if np.isinf(smaller):
+            return smaller # avoid inf - inf
+        else:
+            return smaller + (larger - smaller) * (t - i)
+
+
+def fix_terms_clip(terms, tail=TAIL_DEFAULT):
+    '''
+    Takes a vector of elements and replaces any infinite or very-large elements
+    with the value of the highest non-very-large element, as well as throwing
+    away any nan values, possibly changing the order.
+
+    Used for estimating the mean of positive quantities.
+
+    "Very-large" is defined as the (1-tail)th quantile if tail > 0, otherwise
+    the largest non-inf element. Note that values of -inf are not altered.
+
+    Uses the matlab-style quantile() function, above, because that's what the
+    code this is trying to replicate did.
+    '''
+    terms = terms[np.logical_not(np.isnan(terms))]
+
+    find_noninf_max = True
+    if tail > 0:
+        cutoff = quantile(terms, 1 - tail)
+        find_noninf_max = not np.isfinite(cutoff)
+
+    if find_noninf_max:
+        cutoff = np.max(terms[np.isfinite(terms)])
+
+    terms[terms > cutoff] = cutoff
+    return terms
+
+fix_terms = fix_terms_trim
+
+
 
 ################################################################################
 ### Nearest neighbor searches.
