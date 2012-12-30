@@ -113,7 +113,7 @@ def split_km(km, train_idx, test_idx):
 ### Cached divs helper
 
 def get_divs_cache(bags, div_func, K, cache_filename=None,
-                   n_proc=None, tail=TAIL_DEFAULT,
+                   n_proc=None, tail=TAIL_DEFAULT, min_dist=None,
                    status_fn=True, progressbar=None):
 
     status = get_status_fn(status_fn)
@@ -129,7 +129,7 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
 
     divs = np.squeeze(get_divs(
             bags, specs=[div_func], Ks=[K],
-            n_proc=n_proc, tail=tail,
+            n_proc=n_proc, tail=tail, min_dist=min_dist,
             status_fn=status_fn, progressbar=progressbar))
 
     if cache_filename:
@@ -265,7 +265,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
                  tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
                  svm_shrinking=DEFAULT_SVM_SHRINKING,
                  status_fn=None, progressbar=None,
-                 tail=TAIL_DEFAULT):
+                 tail=TAIL_DEFAULT, min_dist=None):
         self.div_func = div_func
         self.K = K
         self.tuning_folds = tuning_folds
@@ -284,6 +284,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         self._status_fn = status_fn
         self._progressbar = progressbar
         self.tail = tail
+        self.min_dist = min_dist
 
     @property
     def status_fn(self):
@@ -323,7 +324,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
             self.status_fn('Getting divergences...')
             divs = get_divs_cache(X, div_func=self.div_func, K=self.K,
                     cache_filename=divs_cache,
-                    n_proc=self.n_proc, tail=self.tail,
+                    n_proc=self.n_proc, tail=self.tail, min_dist=self.min_dist,
                     status_fn=self.status_fn, progressbar=self.progressbar)
         else:
             #self.status_fn('Using passed-in divergences...')
@@ -381,7 +382,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
             divs = np.squeeze(get_divs(
                     self.train_bags_ + data, mask=mask,
                     specs=[self.div_func], Ks=[self.K],
-                    n_proc=self.n_proc, tail=self.tail,
+                    n_proc=self.n_proc, tail=self.tail, min_dist=self.min_dist,
                     status_fn=self.status_fn, progressbar=self.progressbar))
             divs = (divs[-n_test:,:n_train] + divs[:n_train,-n_test].T) / 2
         else:
@@ -416,7 +417,7 @@ def transduct(train_bags, train_labels, test_bags,
               svm_shrinking=DEFAULT_SVM_SHRINKING,
               status_fn=True,
               progressbar=None,
-              tail=TAIL_DEFAULT,
+              tail=TAIL_DEFAULT, min_dist=None,
               divs=None,
               divs_cache=None,
               return_config=False):
@@ -441,7 +442,7 @@ def transduct(train_bags, train_labels, test_bags,
                 train_bags + test_bags,
                 div_func=div_func, K=K,
                 cache_filename=divs_cache,
-                n_proc=n_proc, tail=tail,
+                n_proc=n_proc, tail=tail, min_dist=min_dist,
                 status_fn=status_fn, progressbar=progressbar)
     else:
         #status_fn('Using passed-in divergences...')
@@ -510,6 +511,7 @@ def crossvalidate(bags, labels, num_folds=10,
         status_fn=True,
         progressbar=None,
         tail=TAIL_DEFAULT,
+        min_dist=None,
         divs=None,
         divs_cache=None):
 
@@ -534,7 +536,7 @@ def crossvalidate(bags, labels, num_folds=10,
     if divs is None:
         status('Getting divergences...')
         divs = get_divs_cache(bags, div_func=div_func, K=K,
-                cache_filename=divs_cache,
+                cache_filename=divs_cache, tail=tail, min_dist=min_dist,
                 status_fn=status_fn, progressbar=progressbar)
     else:
         #status_fn('Using passed-in divergences...')
@@ -675,6 +677,10 @@ def parse_args():
         algo.add_argument('--trim-tails', type=portion, metavar='PORTION',
             default=TAIL_DEFAULT,
             help="How much to trim when using a trimmed mean estimator " + _def)
+        algo.add_argument('--min-dist', type=float, default=None,
+            help="Protect against identical points by making sure kNN "
+                 "distances are always at least this big. Default: the smaller "
+                 "of .01 and 10 ^ (100 / dim).")
 
 
     ### the top-level parser
@@ -766,6 +772,7 @@ def opts_dict(args):
         tuning_svm_max_iter=args.tuning_svm_max_iter,
         svm_shrinking=args.svm_shrinking,
         tail=args.trim_tails,
+        min_dist=args.min_dist,
     )
 
 def do_predict(args):

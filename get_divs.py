@@ -288,7 +288,7 @@ def handle_divs(funcs, opts, xx, xy, yy, yx, rt=None):
     # NOTE: if we add div funcs that need the index, pass those.
 
 
-def process_pair(funcs, opts, bags, xxs, row, col, symm=True):
+def process_pair(funcs, opts, bags, xxs, row, col, symm=True, min_dist=None):
     '''
     Does nearest-neighbor searches and computes the divergences between
     the row-th and col-th bags. xxs is a list of nearest-neighbor searches
@@ -505,6 +505,7 @@ def get_divs(bags,
              Ks=[3],
              n_proc=None,
              tail=TAIL_DEFAULT,
+             min_dist=None,
              status_fn=True, progressbar=None,
              return_opts=False):
     '''
@@ -515,6 +516,7 @@ def get_divs(bags,
         Ks: a K values
         n_proc: number of processes to use; None for # of cores
         tail: an argument for fix_terms (above)
+        min_dist: a minimum distance to use in kNN searches
         status_fn: a function to print out status messages
             None means don't print any; True prints to stderr
         progressbar: show a progress bar on stderr. default: (status_fn is True)
@@ -530,6 +532,7 @@ def get_divs(bags,
     opts = {}
     opts['Ks'] = np.sort(np.ravel(Ks))
     opts['tail'] = tail
+    opts['min_dist'] = min_dist
     funcs, opts['div_names'], opts['alphas'] = \
             process_func_specs(specs, opts['Ks'])
 
@@ -558,17 +561,17 @@ def get_divs(bags,
 
     # do kNN searches within each bag
     # need to throw away the closest neighbor, which will always be self
+    knn_searcher = functools.partial(knn_search_forked,
+            bag_data, K=max_K+1, min_dist=min_dist)
+    bag_is = lazy_range(num_bags)
     with get_pool(n_proc) as pool:
         xxs = [(xx[:,1:], xxi[:,1:]) for xx, xxi
-           in pool.starmap(knn_search_forked,
-               itertools.repeat(bag_data),
-               lazy_range(num_bags),
-               lazy_range(num_bags),
-               itertools.repeat(max_K+1))]
+                in pool.starmap(knn_searcher, bag_is, bag_is)]
 
     xxs_data = ForkedData(xxs)
 
-    processor = functools.partial(process_pair, funcs, opts, bag_data, xxs_data)
+    processor = functools.partial(process_pair,
+            funcs, opts, bag_data, xxs_data, min_dist=min_dist)
     all_pairs = itertools.combinations_with_replacement(range(num_bags), 2)
     if mask is None:
         jobs = list(all_pairs)
@@ -626,6 +629,11 @@ def parse_args():
         help="How much to trim off the ends of things we take the mean of; "
              "default %(default)s.", metavar='PORTION')
 
+    parser.add_argument('--min-dist', type=float, default=None,
+        help="Protect against identical points by making sure kNN distances "
+             "are always at least this big. Default: the smaller of .01 and "
+             "10 ^ (100 / dim).")
+
     # TODO: FLANN nearest-neighbor algorithm selection
 
     args = parser.parse_args()
@@ -643,9 +651,10 @@ def main():
     status_fn('Reading data...')
     bags = read_data(args.input_mat_file, args.var_name, args.n_points)
 
-    R, opts = get_divs(bags, specs=args.div_funcs, Ks=args.K,
-                 n_proc=args.n_proc, tail=args.trim_tails,
-                 return_opts=True)
+    R, opts = get_divs(
+            bags, specs=args.div_funcs, Ks=args.K,
+            n_proc=args.n_proc, tail=args.trim_tails, min_dist=args.min_dist,
+            return_opts=True)
 
     status_fn("Outputting results to", args.output_mat_file)
     opts['Ds'] = R
