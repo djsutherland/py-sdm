@@ -1,6 +1,50 @@
-import numpy as np
+from functools import partial
+import os
+import sys
 
-from get_divs import fix_terms_clip
+if sys.version_info.major == 2:
+    from StringIO import StringIO
+else:
+    from io import StringIO
+
+import numpy as np
+import h5py
+
+from get_divs import fix_terms_clip, get_divs
+
+################################################################################
+
+
+class capture_output(object):
+    def __init__(self, do_stdout=True, do_stderr=True, merge=False):
+        self.do_stdout = do_stdout
+        self.do_stderr = do_stderr
+        self.merge = merge
+
+        if do_stdout and do_stderr and merge:
+            self.stdout = self.stderr = StringIO()
+        else:
+            if do_stdout:
+                self.stdout = StringIO()
+            if do_stderr:
+                self.stderr = StringIO()
+
+    def __enter__(self):
+        if self.do_stdout:
+            self.old_stdout = sys.stdout
+            sys.stdout = self.stdout
+        if self.do_stderr:
+            self.old_stderr = sys.stderr
+            sys.stderr = self.stderr
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.do_stdout:
+            sys.stdout = self.old_stdout
+        if self.do_stderr:
+            sys.stderr = self.old_stderr
+
+
+################################################################################
 
 def test_fix_terms_simple100():
     terms = np.array([
@@ -26,7 +70,8 @@ def test_fix_terms_simple100():
     fixed = fix_terms_clip(terms, tail=0.01)
     fixed.sort()
 
-    assert np.allclose(fixed, expected, atol=1e-4)
+    assert np.allclose(fixed, expected, atol=1e-3)
+
 
 def test_fix_terms_other100():
     terms = np.array([
@@ -36,9 +81,9 @@ def test_fix_terms_other100():
         -0.4736,  0.1797,  0.6522,  6.2691,  8.1633,  1.1778, -0.9921, -0.7535,
          1.4361,  0.3297, -0.5314,  1.7876,  0.0150, -0.7715, -0.8813,  1.1515,
          0.6752,  0.3413, -1.1232,  0.6571,  3.2662,  0.2452, -0.1967, -0.0537,
-         1.2281, -0.1495, -0.8551,  0.2521,  0.9336,  2.1212,  0.6745,  0.1170, 
+         1.2281, -0.1495, -0.8551,  0.2521,  0.9336,  2.1212,  0.6745,  0.1170,
          0.8917, -0.0123, -2.1032, -2.1327,  1.4584,  0.8522, -0.8366,  0.9018,
-         1.3986,  0.3386, -0.2276, -0.7302, -0.9163,  0.0853,  1.2486,  0.0560, 
+         1.3986,  0.3386, -0.2276, -0.7302, -0.9163,  0.0853,  1.2486,  0.0560,
          0.9663,  0.9855,  1.0368,  0.0317,  0.9394, -1.7035, -0.3171, -2.2082,
          0.0728,  1.2559, -0.0835,  0.3500, -0.0683, -0.6434,  0.9107, -0.8301,
          0.4882, -0.4319, -0.5635, -1.0781,  0.5531,  0.7233,  1.2353,  0.1558,
@@ -46,7 +91,7 @@ def test_fix_terms_other100():
     ])
 
     expected = terms.copy()
-    expected[[27,28,44]] = 2.1212
+    expected[[27, 28, 44]] = 2.1212
     expected.sort()
 
     fixed = fix_terms_clip(terms, tail=0.035)
@@ -71,7 +116,7 @@ def test_fix_terms_with_inf_above():
     ])
 
     expected = terms.copy()
-    expected[[7,10,11,25,28,45,47,71]] = 8.0163
+    expected[[7, 10, 11, 25, 28, 45, 47, 71]] = 8.0163
     expected.sort()
 
     fixed = fix_terms_clip(terms, tail=0.1)
@@ -96,7 +141,7 @@ def test_fix_terms_with_inf_below():
     ])
 
     expected = terms.copy()
-    expected[[25,45,47,71]] = 19.6827
+    expected[[25, 45, 47, 71]] = 19.6827
     expected.sort()
 
     fixed = fix_terms_clip(terms, tail=0.02)
@@ -120,7 +165,7 @@ def test_fix_terms_with_inf_and_nan():
 
     expected = terms.copy()
     expected = expected[np.logical_not(np.isnan(expected))]
-    expected[[46,68]] = 9.8975
+    expected[[46, 68]] = 9.8975
     expected.sort()
 
     fixed = fix_terms_clip(terms, tail=0.02)
@@ -128,10 +173,76 @@ def test_fix_terms_with_inf_and_nan():
 
     assert np.allclose(fixed, expected, atol=1e-4)
 
+################################################################################
+
+K = 3
+div_funcs = ['bc', 'hellinger', 'l2', 'renyi:.999']
+div_names = ['Bhattacharyya coefficient', 'Hellinger distance', 'L2 divergence',
+             'Renyi-0.999 divergence']
+
+
+def load_bags(filename, groupname):
+    bags = []
+    labels = []
+    with h5py.File(filename, 'r') as f:
+        for label, group in f[groupname].iteritems():
+            if label == 'divs':
+                continue
+            for bag in group.itervalues():
+                bags.append(bag[...])
+                labels.append(label)
+    return bags, labels
+
+
+def load_divs(filename, groupname):
+    divs = []
+    with h5py.File(filename, 'r') as f:
+        g = f[groupname]['divs']
+        for name in div_names:
+            divs.append(g[name][...])
+    return divs
+
+
+def assert_close(got, expected, msg, atol=1e-4):
+    assert np.allclose(got, expected, atol=atol), msg
+
+
+def check_div(bags, expected, name, **args):
+    capturer = capture_output(True, True, merge=False)
+    with capturer:
+        divs = get_divs(bags, specs=div_funcs, Ks=[K],
+                        tail=.01, min_dist=0, fix_mode='clip', **args)
+
+    argstr = ', '.join('{}={}'.format(k, v) for k, v in args.iteritems())
+
+    divs = divs.transpose((2, 0, 1))
+    for df, calc, exp in zip(div_funcs, divs, expected):
+        f = partial(assert_close, calc, exp,
+                    "bad results for {}:{}".format(name, df))
+        f.description = "divs: {} - {} - {}".format(name, df, argstr)
+        yield f,
+
+
+def test_divs():
+    filename = os.path.join(os.path.dirname(__file__), 'test_dists.hdf5')
+    args = [{'n_proc': n_proc, 'status_fn': status_fn}
+            for n_proc in [1, None]
+            for status_fn in [None, True]]
+    # TODO: test a custom status_fn also
+
+    for groupname in ['gaussian', 'gaussian-50']:
+        bags, labels = load_bags(filename, groupname)
+        expected = load_divs(filename, groupname)
+        name = "test_dists.{}".format(groupname)
+        for extra in args:
+            for test in check_div(bags, expected, name, **extra):
+                yield test
+
+################################################################################
 
 if __name__ == '__main__':
-    import nose
-
     import warnings
     warnings.filterwarnings('error', module='get_divs')
+
+    import nose
     nose.main()

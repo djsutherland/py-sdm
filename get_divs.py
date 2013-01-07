@@ -3,7 +3,8 @@
 Script to run nonparametric divergence estimation via k-nearest-neighbor
 distances. Based on the method of
     Barnabas Poczos, Liang Xiong, Jeff Schneider (2011).
-    Nonparametric divergence estimation with applications to machine learning on distributions.
+    Nonparametric divergence estimation with applications to machine learning
+    on distributions.
     Uncertainty in Artificial Intelligence.
     http://autonlab.org/autonweb/20287.html
 
@@ -101,6 +102,7 @@ def portion(val):
 # XXX: old code used _clip, but _trim seems better
 
 TAIL_DEFAULT = 0.01
+FIX_MODE_DEFAULT = 'trim'
 
 def fix_terms_trim(terms, tail=TAIL_DEFAULT):
     '''
@@ -188,8 +190,9 @@ def fix_terms_clip(terms, tail=TAIL_DEFAULT):
     terms[terms > cutoff] = cutoff
     return terms
 
-fix_terms = fix_terms_trim
-
+_fix_term_modes = {'trim': fix_terms_trim, 'clip': fix_terms_clip}
+def fix_terms(terms, tail=TAIL_DEFAULT, mode=FIX_MODE_DEFAULT):
+    return _fix_term_modes[mode](terms, tail=tail)
 
 
 ################################################################################
@@ -236,31 +239,34 @@ def knn_search(x, y, K, min_dist=None):
 
     # protect against identical points
     if min_dist is None:
-        min_dist = min(1e-2, 1e-100**(1.0/dim))
+        min_dist = min(1e-2, 1e-100 ** (1.0 / dim))
     elif min_dist <= 0:
         return dist, idx
     return np.maximum(min_dist, dist), idx
+
 
 def knn_search_forked(bags, i, j, K, min_dist=None):
     bags = bags.value
     return knn_search(bags[i], bags[j], K, min_dist=min_dist)
 
+
 ################################################################################
 ### Estimators of various divergences based on nearest-neighbor distances.
 
-def l2(xx, xy, yy, yx, Ks, dim, tail=TAIL_DEFAULT, **opts):
+def l2(xx, xy, yy, yx, Ks, dim, tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT,
+       **opts):
     '''
     Estimate the L2 distance between two divergences, based on kNN distances.
     Returns a vector: one element for each K in opt['Ks'].
     '''
-    fix = functools.partial(fix_terms, tail=tail)
+    fix = functools.partial(fix_terms, tail=tail, mode=fix_mode)
 
-    if xy is None: # identical bags
+    if xy is None:  # identical bags
         return np.zeros(len(Ks))
 
     N = xx.shape[0]
     M = yy.shape[0]
-    c = np.pi**(dim*0.5) / gamma(dim*0.5 + 1)
+    c = np.pi ** (dim * 0.5) / gamma(dim * 0.5 + 1)
 
     rs = []
     for K in Ks:
@@ -278,14 +284,19 @@ def l2(xx, xy, yy, yx, Ks, dim, tail=TAIL_DEFAULT, **opts):
 l2.is_symmetric = True
 l2.name = 'NP-L2'
 
-def alpha_div(xx, xy, yy, yx, alphas, Ks, dim, tail=TAIL_DEFAULT, **opts):
+
+def alpha_div(xx, xy, yy, yx, alphas, Ks, dim,
+              tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT, **opts):
     '''
     Estimate the alpha divergence between distributions, based on kNN distances.
     Used in Renyi and Hellinger divergence estimation.
     Returns a matrix: each row corresponds to an alpha, each column to a K.
     '''
+    if xy is None:  # identical bags
+        return np.ones((len(alphas), len(Ks)))
+
     alphas = np.asarray(alphas)
-    fix = functools.partial(fix_terms, tail=tail)
+    fix = functools.partial(fix_terms, tail=tail, mode=fix_mode)
 
     N = xx.shape[0]
     M = yy.shape[0]
@@ -294,7 +305,7 @@ def alpha_div(xx, xy, yy, yx, alphas, Ks, dim, tail=TAIL_DEFAULT, **opts):
     for knd, K in enumerate(Ks):
         K = Ks[knd]
 
-        rho, nu = get_col(xx, K-1), get_col(xy, K-1)
+        rho, nu = get_col(xx, K - 1), get_col(xy, K - 1)
         ratios = fix(rho / nu)
 
         for ind, alpha in enumerate(alphas):
@@ -307,6 +318,14 @@ def alpha_div(xx, xy, yy, yx, alphas, Ks, dim, tail=TAIL_DEFAULT, **opts):
 alpha_div.is_symmetric = False
 alpha_div.name = 'NP-A'
 
+
+def bhattacharyya(xx, xy, yy, yx, Ks, **opts):
+    del opts['alphas']
+    return alpha_div(xx, xy, yy, yx, alphas=[.5], Ks=Ks, **opts)
+bhattacharyya.is_symmetric = False
+bhattacharyya.name = 'NP-BC'
+
+
 def renyi(xx, xy, yy, yx, alphas, Ks, **opts):
     '''
     Estimate the Renyi-alpha divergence between distributions, based on kNN
@@ -316,33 +335,30 @@ def renyi(xx, xy, yy, yx, alphas, Ks, **opts):
     alphas = np.asarray(alphas)
     Ks = np.asarray(Ks)
 
-    if xy is None: # identical bags
-        return np.zeros((len(alphas), len(Ks)))
-
-    alphas[alphas == 1] = 0.99 # approximate KL
+    alphas[alphas == 1] = 0.99  # approximate KL
     est = alpha_div(xx, xy, yy, yx, alphas=alphas, Ks=Ks, **opts)
     return np.maximum(0, np.log(np.maximum(est, eps)) / (col(alphas) - 1))
 renyi.is_symmetric = False
 renyi.name = 'NP-R'
 
 
-def hellinger(xx, xy, yy, yx, Ks, dim, tail=TAIL_DEFAULT, **opts):
+def hellinger(xx, xy, yy, yx, Ks, dim,
+              tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT, **opts):
     '''
     Estimate the Hellinger distance between distributions, based on kNN
     distances.
     Returns a vector: one element for each K.
     '''
-    if xy is None: # identical bags
-        return np.zeros(len(Ks))
-
-    est = alpha_div(xx, xy, yy, yx, alphas=[0.5], Ks=Ks, dim=dim, tail=tail)
+    est = np.squeeze(alpha_div(xx, xy, yy, yx, alphas=[0.5], Ks=Ks, dim=dim,
+                               tail=tail, fix_mode=fix_mode))
     return np.sqrt(np.maximum(0, 1 - est))
-hellinger.is_symmetric = False # the metric is symmetric, but estimator is not
+hellinger.is_symmetric = False  # the metric is symmetric, but estimator is not
 hellinger.name = 'NP-H'
 
 func_mapping = {
     'l2': l2,
     'alpha': alpha_div,
+    'bc': bhattacharyya,
     'renyi': renyi,
     'hellinger': hellinger,
 }
@@ -372,7 +388,7 @@ def handle_divs(funcs, opts, xx, xy, yy, yx, rt=None):
     # NOTE: if we add div funcs that need the index, pass those.
 
 
-def process_pair(funcs, opts, bags, xxs, row, col, symm=True, min_dist=None):
+def process_pair(funcs, opts, bags, xxs, row, col, symm=True):
     '''
     Does nearest-neighbor searches and computes the divergences between
     the row-th and col-th bags. xxs is a list of nearest-neighbor searches
@@ -385,7 +401,7 @@ def process_pair(funcs, opts, bags, xxs, row, col, symm=True, min_dist=None):
 
     if row == col:
         xx = xxs[row]
-        r = handle(xx, (None,None), (None,None), (None,None))
+        r = handle(xx, (None, None), (None, None), (None, None))
         if symm:
             rt = r
     else:
@@ -453,9 +469,11 @@ def read_data(input_file, input_var, n_points=None):
 ################################################################################
 ### Convenience stuff related to multiprocessing.Pool
 
+
 def _apply(func_args):
     func, args = func_args
     return func(*args)
+
 
 def patch_starmap(pool):
     '''
@@ -465,9 +483,10 @@ def patch_starmap(pool):
     if hasattr(pool, 'starmap'):
         return
 
-    def starmap(func, *iterables):
-        return pool.map(_apply, izip(itertools.repeat(func), izip(*iterables)))
+    def starmap(func, iterables):
+        return pool.map(_apply, izip(itertools.repeat(func), iterables))
     pool.starmap = starmap
+
 
 def make_pool(n_proc):
     if n_proc != 1:
@@ -589,6 +608,7 @@ def get_divs(bags,
              Ks=[3],
              n_proc=None,
              tail=TAIL_DEFAULT,
+             fix_mode=FIX_MODE_DEFAULT,
              min_dist=None,
              status_fn=True, progressbar=None,
              return_opts=False):
@@ -600,6 +620,7 @@ def get_divs(bags,
         Ks: a K values
         n_proc: number of processes to use; None for # of cores
         tail: an argument for fix_terms (above)
+        fix_mode: mode arg for fix_terms, above
         min_dist: a minimum distance to use in kNN searches
         status_fn: a function to print out status messages
             None means don't print any; True prints to stderr
@@ -616,6 +637,7 @@ def get_divs(bags,
     opts = {}
     opts['Ks'] = np.sort(np.ravel(Ks))
     opts['tail'] = tail
+    opts['fix_mode'] = fix_mode
     opts['min_dist'] = min_dist
     funcs, opts['div_names'], opts['alphas'] = \
             process_func_specs(specs, opts['Ks'])
@@ -646,21 +668,20 @@ def get_divs(bags,
     # do kNN searches within each bag
     # need to throw away the closest neighbor, which will always be self
     knn_searcher = functools.partial(knn_search_forked,
-            bag_data, K=max_K+1, min_dist=min_dist)
+            bag_data, K=max_K + 1, min_dist=min_dist)
     bag_is = lazy_range(num_bags)
     with get_pool(n_proc) as pool:
-        xxs = [(xx[:,1:], xxi[:,1:]) for xx, xxi
-                in pool.starmap(knn_searcher, bag_is, bag_is)]
+        xxs = [(xx[:, 1:], xxi[:, 1:]) for xx, xxi
+                in pool.starmap(knn_searcher, izip(bag_is, bag_is))]
 
     xxs_data = ForkedData(xxs)
 
-    processor = functools.partial(process_pair,
-            funcs, opts, bag_data, xxs_data, min_dist=min_dist)
+    processor = functools.partial(process_pair, funcs, opts, bag_data, xxs_data)
     all_pairs = itertools.combinations_with_replacement(range(num_bags), 2)
     if mask is None:
         jobs = list(all_pairs)
     else:
-        jobs = [] # probably a nicer way to do this...
+        jobs = []  # probably a nicer way to do this...
         for i, j in all_pairs:
             if mask[i, j]:
                 jobs.append((i, j, mask[j, i]))
@@ -672,7 +693,7 @@ def get_divs(bags,
         if progressbar:
             rs = map_unordered_with_progressbar(pool, processor, jobs)
         else:
-            rs = pool.map(processor, jobs)
+            rs = pool.starmap(processor, jobs)
 
     R = np.empty((num_bags, num_bags, rs[0][2].size), dtype=np.float32)
     R.fill(np.nan)
@@ -712,6 +733,9 @@ def parse_args():
     parser.add_argument('--trim-tails', type=portion, default=TAIL_DEFAULT,
         help="How much to trim off the ends of things we take the mean of; "
              "default %(default)s.", metavar='PORTION')
+    parser.add_argument('--trim-mode', choices={'clip','trim'},
+        default=FIX_MODE_DEFAULT,
+        help="Whether to trim or clip ends; default %(default)s.")
 
     parser.add_argument('--min-dist', type=float, default=None,
         help="Protect against identical points by making sure kNN distances "
@@ -737,7 +761,9 @@ def main():
 
     R, opts = get_divs(
             bags, specs=args.div_funcs, Ks=args.K,
-            n_proc=args.n_proc, tail=args.trim_tails, min_dist=args.min_dist,
+            n_proc=args.n_proc,
+            tail=args.trim_tails, fix_mode=args.trim_mode,
+            min_dist=args.min_dist,
             return_opts=True)
 
     status_fn("Outputting results to", args.output_mat_file)

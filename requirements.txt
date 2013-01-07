@@ -3,3 +3,5 @@ scipy
 h5py
 progressbar
 scikit-learn
+bottleneck
+nose
