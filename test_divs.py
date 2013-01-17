@@ -218,7 +218,8 @@ def check_div(bags, expected, name, **args):
     divs = divs.transpose((2, 0, 1))
     for df, calc, exp in zip(div_funcs, divs, expected):
         f = partial(assert_close, calc, exp,
-                    "bad results for {}:{}".format(name, df))
+                    "bad results for {}:{}".format(name, df),
+                    atol=1e-3)
         f.description = "divs: {} - {} - {}".format(name, df, argstr)
         yield f,
 
