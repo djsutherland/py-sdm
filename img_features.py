@@ -48,13 +48,13 @@ def main():
 
     else:
         print("Trying webcam...")
-        cam = cv2.VideoCapture(0)
+        cam = cv2.VideoCapture(-1)
 
         # repeat loop at about ~10ms; exit on <Esc>
         while cv2.waitKey(10) != 27:
             # read image from webcam
             ret, img = cam.read()
-            assert ret == 0
+            assert ret
 
             # detect keypoints from grayscale image
             keypoints = detector.detect(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
