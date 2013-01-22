@@ -1,5 +1,7 @@
 from ctypes import (cdll, sizeof,
-    c_float, c_double, c_int, c_int32, c_int64, c_uint, c_uint32, c_uint64)
+    c_float, c_double,
+    c_int, c_int8, c_int32, c_int64,
+    c_uint, c_uint8, c_uint32, c_uint64)
 from ctypes.util import find_library
 
 import numpy as np
@@ -15,8 +17,8 @@ vl_index = c_int64
 np_to_c_types = {}
 c_to_np_types = {}
 _dtypes = {
-    'i': (c_int, c_int32, c_int64),
-    'u': (c_uint, c_uint32, c_uint64),
+    'i': (c_int, c_int8, c_int32, c_int64),
+    'u': (c_uint, c_uint8, c_uint32, c_uint64),
     'f': (c_float, c_double),
 }
 for t, c_types in _dtypes.iteritems():
