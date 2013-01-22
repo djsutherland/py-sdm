@@ -25,7 +25,7 @@ def vl_phow(image, sizes=DEFAULT_SIZES, fast=True, step=2, color='gray',
         channels = 1
         if image.ndim == 3 and image.shape[2] > 1:
             r, g, b = np.rollaxis(image, axis=-1)
-            image = 0.2989 * r + 0.5870 * g + 0.1140 * b
+            image = 0.2989 * r + 0.5870 * g + 0.1140 * b  # matlab's formula
             image = image.reshape(image.shape + (1,))
     else:
         channels = 3
