@@ -1,8 +1,9 @@
+from __future__ import division
 import numpy as np
 
-from vl_imsmooth import vl_imsmooth
-from vl_dsift import vl_dsift
-from .utils import as_float_image, rgb2hsv
+from .imsmooth import vl_imsmooth
+from .dsift import vl_dsift
+from .utils import as_float_image, rgb2hsv, rgb2gray
 
 COLOR_CHOICES = ['gray', 'rgb', 'hsv', 'opponent']
 DEFAULT_SIZES = (4, 6, 8, 10)
@@ -16,6 +17,15 @@ def vl_phow(image, sizes=DEFAULT_SIZES, fast=True, step=2, color='gray',
         raise ValueError("unknown color {!r}; expected one of {}".format(
             color, ', '.join(repr(x) for x in COLOR_CHOICES)))
 
+    dsift_opts = {
+        'norm': True,
+        'window_size': window_size,
+        'fast': fast,
+        'float_descriptors': float_descriptors,
+        'step': step,
+        'matlab_style': True,
+    }
+
     # standardize the image
     if not 2 <= image.ndim <= 3:
         raise TypeError("image should be 2d or 3d")
@@ -24,9 +34,7 @@ def vl_phow(image, sizes=DEFAULT_SIZES, fast=True, step=2, color='gray',
     if color == 'gray':
         channels = 1
         if image.ndim == 3 and image.shape[2] > 1:
-            r, g, b = np.rollaxis(image, axis=-1)
-            image = 0.2989 * r + 0.5870 * g + 0.1140 * b  # matlab's formula
-            image = image.reshape(image.shape + (1,))
+            image = rgb2gray(image).reshape(image.shape[:2] + (1,))
     else:
         channels = 3
         if image.ndim == 2 or image.shape[2] == 1:
@@ -34,6 +42,8 @@ def vl_phow(image, sizes=DEFAULT_SIZES, fast=True, step=2, color='gray',
 
         if color == 'hsv':
             image = rgb2hsv(image)
+        elif color == 'rgb':
+            pass
         else:
             # Note that the mean differs from the standard def. of opponent
             # space and is the regular intesity (for compatibility with
@@ -50,14 +60,7 @@ def vl_phow(image, sizes=DEFAULT_SIZES, fast=True, step=2, color='gray',
                 (r - g) / np.sqrt(2) + alpha * mu,
                 (r + g - 2 * b) / np.sqrt(2) + alpha * mu,
             ])
-
-    dsift_opts = {
-        'norm': True,
-        'window_size': window_size,
-        'fast': fast,
-        'float_descriptors': float_descriptors,
-        'step': step
-    }
+            del r, g, b, mu, alpha
 
     frames = []
     descrs = []
@@ -71,7 +74,7 @@ def vl_phow(image, sizes=DEFAULT_SIZES, fast=True, step=2, color='gray',
         # xc = 1 + 3/2 max(sizes). For any other scale we pick xmin so
         # that xmin + 3/2 size = 1 + 3/2 max(sizes).
         #
-        # In pracrice, the offset must be integer ('bounds'), so the
+        # In practice, the offset must be integer ('bounds'), so the
         # alignment works properly only if all sizes are even or odd.
 
         offset = int(np.floor(1 + 1.5 * (max_size - size)))
@@ -88,22 +91,22 @@ def vl_phow(image, sizes=DEFAULT_SIZES, fast=True, step=2, color='gray',
             for k in range(channels)
         ])
 
-        # remove low-contrast descriptors
+        # zero out low-contrast descriptors
         # note that for HSV descriptors, the V component is thresholded
         if color in ('gray', 'opponent'):
-            contrast = f[0][2, :]
+            contrast = f[0][:, 2]
         elif color == 'hsv':
-            contrast = f[2][2, :]
+            contrast = f[2][:, 2]
         else:  # rgb
-            contrast = np.mean([f_chan[2, :] for f_chan in f], axis=0)
+            contrast = np.mean([f_chan[:, 2] for f_chan in f], axis=0)
 
         # d = [d_chan[:, contrast < contrast_thresh] for d_chan in d]
         # f = [f_chan[:, contrast < contrast_thresh] for f_chan in f]
         for k in range(channels):
-            d[k][:, contrast < contrast_thresh] = 0
+            d[k][contrast < contrast_thresh, :] = 0
 
         # save frames' positions, norms, and scale
-        frames.append(np.vstack([f[0], size * np.ones((1, f[0].shape[1]))]))
-        descrs.append(np.vstack(d))
+        frames.append(np.hstack([f[0], size * np.ones((f[0].shape[0], 1))]))
+        descrs.append(np.hstack(d))
 
-    return np.hstack(frames), np.hstack(descrs)
+    return np.vstack(frames), np.vstack(descrs)

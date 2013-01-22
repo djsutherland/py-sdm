@@ -4,7 +4,7 @@ import numpy as np
 from numpy.ctypeslib import ndpointer
 
 from ctypes import c_double, c_float, c_int, c_uint
-from vl_ctypes import (LIB, c_to_np_types, np_to_c_types, vl_size, vl_index,
+from .vl_ctypes import (LIB, c_to_np_types, np_to_c_types, vl_size, vl_index,
                        vl_epsilon_f)
 from .utils import as_float_image
 
