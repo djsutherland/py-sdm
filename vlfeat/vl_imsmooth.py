@@ -6,6 +6,7 @@ from numpy.ctypeslib import ndpointer
 from ctypes import c_double, c_float, c_int, c_uint
 from vl_ctypes import (LIB, c_to_np_types, np_to_c_types, vl_size, vl_index,
                        vl_epsilon_f)
+from .utils import as_float_image
 
 _imconvcol = {}
 for name, datatype in [('d', c_double), ('f', c_float)]:
@@ -46,14 +47,8 @@ def vl_imsmooth(image, sigma, step=1, padding='continuity'):
 
     # make sure image is col-major, to be exactly the same as the mex function
     # TODO: don't bother with transposing...?
-    image = np.asfortranarray(image)
+    image = as_float_image(image, order='F')
     ndim = image.ndim
-
-    # is the image a uint?
-    if issubclass(image.dtype.type, np.unsignedinteger):
-        bytes = image.dtype.itemsize
-        image = image.astype(np.float32 if bytes <= 2 else np.float64)
-        image /= 2 ** (8 * bytes) - 1
 
     dtype = image.dtype
     c_type = np_to_c_types[dtype]
