@@ -78,7 +78,7 @@ def vl_phow(image, sizes=DEFAULT_SIZES, fast=True, step=2, color='gray',
         # alignment works properly only if all sizes are even or odd.
 
         offset = int(np.floor(1 + 1.5 * (max_size - size)))
-        bounds = [offset, offset, np.inf, np.inf]
+        bounds = [offset - 1, offset - 1, np.inf, np.inf]
 
         # smooth the image to the appropriate scale based on the size of the
         # SIFT bins
