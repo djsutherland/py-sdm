@@ -33,7 +33,7 @@ def rgb2hsv(arr):
     arr = np.asanyarray(arr)
     if arr.ndim != 3 or arr.shape[2] != 3:
         raise ValueError("the input array must have a shape == (.,.,3)")
-    arr = np.as_float_image(arr)
+    arr = as_float_image(arr)
 
     out = np.empty_like(arr)
 
