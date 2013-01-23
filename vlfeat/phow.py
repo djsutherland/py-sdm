@@ -35,10 +35,13 @@ def vl_phow(image, sizes=DEFAULT_SIZES, fast=True, step=2, color='gray',
     if color == 'gray':
         channels = 1
         if image.ndim == 3 and image.shape[2] > 1:
-            image = rgb2gray(image).reshape(image.shape[:2] + (1,))
+            image = rgb2gray(image)
+        image = image.reshape(image.shape[:2] + (1,))
     else:
         channels = 3
         if image.ndim == 2 or image.shape[2] == 1:
+            import warnings
+            warnings.warn("asked for color features from a grayscale image")
             image = np.dstack([image] * 3)
 
         if color == 'hsv':
@@ -47,7 +50,7 @@ def vl_phow(image, sizes=DEFAULT_SIZES, fast=True, step=2, color='gray',
             pass
         else:
             # Note that the mean differs from the standard def. of opponent
-            # space and is the regular intesity (for compatibility with
+            # space and is the regular intensity (for compatibility with
             # the contrast thresholding).
             #
             # Note also that the mean is added pack to the other two
