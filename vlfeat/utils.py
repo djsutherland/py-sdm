@@ -10,8 +10,16 @@ def as_float_image(image, dtype=None, order=None):
         max = 2 ** (8 * (bytes - (1 if image.dtype.kind == 'i' else 0))) - 1
         return np.asarray(image, dtype=dtype, order=order) / max
     else:
-        assert np.max(image) <= 1
-        assert np.max(image) >= 0
+        big = np.max(image)
+        if big > 1:
+            if big > 1 + 1e-5:
+                raise ValueError("float image has max value {}".format(big))
+            image = np.minimum(np.asarray(image, dtype=dtype, order=order), 1)
+        sml = np.min(image)
+        if sml < 0:
+            if sml < -1e-5:
+                raise ValueError("float image has min value {}".format(sml))
+            image = np.maximum(np.asarray(image, dtype=dtype, order=order), 0)
         return np.asarray(image, dtype=dtype, order=order)
 
 
