@@ -49,16 +49,21 @@ except ImportError:
     warnings.warn('Cannot find FLANN. KNN searches will be much slower.')
     searcher = None
 
-
+# TODO: break out utilities, etc into their own file
 if sys.version_info.major == 2:
     izip = itertools.izip
     imap = itertools.imap
     strict_map = map
     lazy_range = xrange
+    str_types = (basestring, str, unicode)
+    raw_input = raw_input
 else:
     izip = zip
     imap = map
     lazy_range = range
+    str_types = (str,)
+    raw_input = input
+
     @functools.wraps(map)
     def strict_map(*args, **kwargs):
         return list(map(*args, **kwargs))
@@ -85,10 +90,22 @@ def positive_int(val):
         raise TypeError("must be a positive integer")
     return val
 
+def nonnegative_float(val):
+    val = int(val)
+    if val < 0:
+        raise TypeError("must be a nonnegative integer")
+    return val
+
 def positive_float(val):
     val = float(val)
     if val <= 0:
         raise TypeError("must be a positive number")
+    return val
+
+def nonnegative_float(val):
+    val = float(val)
+    if val < 0:
+        raise TypeError("must be a nonnegative number")
     return val
 
 def portion(val):

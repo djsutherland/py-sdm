@@ -3,8 +3,7 @@ from __future__ import division, print_function
 import numpy as np
 import numpy.ctypeslib as npc
 
-from ctypes import cast, POINTER, Structure, c_int, c_float, c_double, \
-                   addressof, sizeof
+from ctypes import cast, POINTER, Structure, c_int, c_float, c_double
 c_float_p = POINTER(c_float)
 c_double_p = POINTER(c_double)
 

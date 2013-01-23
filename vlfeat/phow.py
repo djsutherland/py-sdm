@@ -6,13 +6,18 @@ from .dsift import vl_dsift
 from .utils import as_float_image, rgb2hsv, rgb2gray
 
 COLOR_CHOICES = ['gray', 'rgb', 'hsv', 'opponent']
+DEFAULT_COLOR = 'gray'
 DEFAULT_SIZES = (4, 6, 8, 10)
+DEFAULT_STEP = 2
+DEFAULT_MAGNIF = 6
+DEFAULT_WINDOW_SIZE = 1.5
+DEFAULT_CONTRAST_THRESH = 0.005
 
 
-def vl_phow(image, sizes=DEFAULT_SIZES, fast=True, step=2, color='gray',
-            contrast_thresh=0.005, window_size=1.5, magnif=6,
+def vl_phow(image, fast=True, sizes=DEFAULT_SIZES, step=DEFAULT_STEP,
+            color=DEFAULT_COLOR, contrast_thresh=DEFAULT_CONTRAST_THRESH,
+            window_size=DEFAULT_WINDOW_SIZE, magnif=DEFAULT_MAGNIF,
             float_descriptors=False, verbose=False):
-
     if color not in COLOR_CHOICES:
         raise ValueError("unknown color {!r}; expected one of {}".format(
             color, ', '.join(repr(x) for x in COLOR_CHOICES)))
