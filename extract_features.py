@@ -291,6 +291,36 @@ def parse_args():
     del args.save_file
     return args, save_file
 
+
+def save_features(filename, ls, ns, fs, ds):
+    '''
+    Saves the results of extract_features() into an HDF5 file.
+    Each bag is saved as "features" and "frames" in /label/filename.
+    '''
+    with h5py.File(save_file) as f:
+        for label, name, frames, descrs in izip(ls, ns, fs, ds):
+            g = f.require_group(label).create_group(name)
+            g['frames'] = frames
+            g['features'] = descrs
+
+
+def read_features(filename):
+    '''Reads the file format saved by save_features().'''
+    import h5py
+    labels = []
+    names = []
+    frames = []
+    descrs = []
+    with h5py.File(filename, 'r') as f:
+        for label, label_g in f.items():
+            for fname, g in label_g.items():
+                labels.append(label)
+                names.append(fname)
+                frames.append(g["frames"][...])
+                descrs.append(g["features"][...])
+    return labels, names, frames, descrs
+
+
 def main():
     import h5py
     import sys
@@ -313,11 +343,7 @@ def main():
     # TODO: progressbar
 
     print("Saving results to '{}'".format(save_file))
-    with h5py.File(save_file) as f:
-        for label, name, frames, descrs in izip(*results):
-            g = f.require_group(label).create_group(name)
-            g['frames'] = frames
-            g['features'] = descrs
+    save_features(save_file, *results)
 
 
 if __name__ == '__main__':
