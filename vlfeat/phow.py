@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import division, print_function
 import numpy as np
 
 from .imsmooth import vl_imsmooth
@@ -11,7 +11,7 @@ DEFAULT_SIZES = (4, 6, 8, 10)
 
 def vl_phow(image, sizes=DEFAULT_SIZES, fast=True, step=2, color='gray',
             contrast_thresh=0.005, window_size=1.5, magnif=6,
-            float_descriptors=False):
+            float_descriptors=False, verbose=False):
 
     if color not in COLOR_CHOICES:
         raise ValueError("unknown color {!r}; expected one of {}".format(
@@ -23,6 +23,7 @@ def vl_phow(image, sizes=DEFAULT_SIZES, fast=True, step=2, color='gray',
         'fast': fast,
         'float_descriptors': float_descriptors,
         'step': step,
+        'verbose': verbose,
         'matlab_style': True,
     }
 
@@ -61,6 +62,12 @@ def vl_phow(image, sizes=DEFAULT_SIZES, fast=True, step=2, color='gray',
                 (r + g - 2 * b) / np.sqrt(2) + alpha * mu,
             ])
             del r, g, b, mu, alpha
+
+    if verbose:
+        pr = lambda *a, **k: print('vl_phow:', *a, **k)
+        pr('color space: {}'.format(color))
+        pr('image size: {} x {}'.format(*image.shape[:2]))
+        pr('sizes: [{}]'.format(', '.join(map(str, sizes))))
 
     frames = []
     descrs = []

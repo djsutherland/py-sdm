@@ -104,7 +104,8 @@ def vl_dsift_transpose_descriptor(dest, src, num_bin_t, num_bin_x, num_bin_y):
 
 
 def vl_dsift(data, fast=False, norm=False, bounds=None, size=3, step=1,
-              window_size=None, float_descriptors=False, matlab_style=True):
+              window_size=None, float_descriptors=False,
+              verbose=False, matlab_style=True):
     '''
     Dense sift descriptors from an image.
 
@@ -152,6 +153,28 @@ def vl_dsift(data, fast=False, norm=False, bounds=None, size=3, step=1,
         # get calculated parameters
         descr_size = dsift.descrSize
         num_frames = dsift.numFrames
+        geom = dsift.geom
+
+        if verbose:
+            pr = lambda *a, **k: print('vl_dsift:', *a, **k)
+            pr("image size         [W, H] = [{}, {}]".format(N, M))
+            x0 = dsift.boundMinX + 1
+            y0 = dsift.boundMinY + 1
+            x1 = dsift.boundMaxX + 1
+            y1 = dsift.boundMaxY + 1
+            bound_args = [y0, x0, y1, x1] if matlab_style else [x0, y0, x1, y1]
+            pr("bounds:            [minX,minY,maxX,maxY] = [{}, {}, {}, {}]"
+                .format(*bound_args))
+            pr("subsampling steps: stepX={}, stepY={}".format(
+                    dsift.stepX, dsift.stepY))
+            pr("num bins:          [numBinT, numBinX, numBinY] = [{}, {}, {}]"
+                .format(geom.numBinT, geom.numBinX, geom.numBinY))
+            pr("descriptor size:   {}".format(descr_size))
+            pr("bin sizes:         [binSizeX, binSizeY] = [{}, {}]".format(
+                    geom.binSizeX, geom.binSizeY))
+            pr("flat window:       {}".format(bool(fast)))
+            pr("window size:       {}".format(dsift.windowSize))
+            pr("num of features:   {}".format(num_frames))
 
         # do the actual processing
         vl_dsift_process(dsift_p, data)
@@ -177,7 +200,6 @@ def vl_dsift(data, fast=False, norm=False, bounds=None, size=3, step=1,
             descrs = descrs.astype(np.uint8)  # TODO: smarter about copying?
         if matlab_style:
             new_order = np.empty(descr_size, dtype=int)
-            geom = dsift.geom
             vl_dsift_transpose_descriptor(new_order, np.arange(descr_size),
                 geom.numBinT, geom.numBinX, geom.numBinY)
             descrs = descrs[:, new_order]

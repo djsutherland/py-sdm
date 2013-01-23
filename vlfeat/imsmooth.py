@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import division, print_function
 
 import numpy as np
 from numpy.ctypeslib import ndpointer
@@ -27,7 +27,7 @@ PADDINGS = {'continuity': 1, 'zero': 0}
 TRANSPOSE = 4
 
 
-def vl_imsmooth(image, sigma, step=1, padding='continuity'):
+def vl_imsmooth(image, sigma, step=1, padding='continuity', verbose=False):
     # unlike matlab interface, only does gaussian kernel
 
     if not np.isscalar(sigma):
@@ -69,6 +69,16 @@ def vl_imsmooth(image, sigma, step=1, padding='continuity'):
     out_rows, out_cols = (np.asarray(image.shape[:2]) - 1) // step + 1
 
     output = np.zeros((out_rows, out_cols, channels), dtype=dtype, order='F')
+
+    if verbose:
+        pr = lambda *a, **k: print('vl_imsmooth:', *a, **k)
+        pr('[{}x{}x{}] -> [{}x{}x{}] ({}, subsampling step {})'.format(
+            in_rows, in_cols, channels, out_rows, out_cols, channels,
+            dtype, step))
+        pr('padding: {}'.format(padding))
+        pr('kernel: gaussian')
+        pr('sigma: {}'.format(sigma))
+        # TODO: SIMD enabled?
 
     # obtained from the input image by convolving and downsampling along the
     # height, saving the result transposed
