@@ -5,12 +5,11 @@ from collections import defaultdict, namedtuple
 from functools import partial
 import os
 import random
-import sys
 
 import numpy as np
 
 from utils import (positive_int, positive_float, nonnegative_float,
-                   strict_map, str_types, izip, raw_input)
+                   strict_map, str_types, izip, confirm_outfile)
 from vlfeat.phow import (vl_phow, DEFAULT_MAGNIF, DEFAULT_CONTRAST_THRESH,
                          DEFAULT_WINDOW_SIZE, DEFAULT_COLOR, COLOR_CHOICES)
 
@@ -73,8 +72,7 @@ def _find_working_imread(modes=IMREAD_MODES):
         except ImportError:
             pass
     else:
-        raise ImportError("couldn't import any of {}".format(
-            ', '.join(imread_mode)))
+        raise ImportError("couldn't import any of {}".format(', '.join(modes)))
 
 
 def _load_features(filename, imread_mode=IMREAD_MODES, size=None, **kwargs):
@@ -133,7 +131,7 @@ def extract_features(dirs, img_per_cla=None, sampler='first',
     Returns tuples of labels, image names, descriptor locations, descriptors.
     '''
     if not hasattr(dirs, 'items'):
-        dirs = {dirname: dirname for dirname in dirs}
+        dirs = dict((dirname, dirname) for dirname in dirs)
 
     # make a dict of label => list of (dirname, fname) pairs
     ims_by_label = defaultdict(list)
@@ -219,15 +217,15 @@ def parse_args():
     class AddDirs(argparse.Action):
         def __call__(self, parser, namespace, values, option_string=None):
             join = partial(os.path.join, values)
-            spec = {join(d): d for d in os.listdir(values)
-                    if os.path.isdir(join(d))}
+            spec = dict((join(d), d) for d in os.listdir(values)
+                        if os.path.isdir(join(d)))
             getattr(namespace, self.dest).update(spec)
     files.add_argument('--root-dir', action=AddDirs, dest='dirs', metavar='DIR',
         help="Adds all the directories under this path as class-level dirs.")
 
     class AddDir(argparse.Action):
         def __call__(self, parser, namespace, values, option_string=None):
-            getattr(namespace, self.dest).update({d: d for d in values})
+            getattr(namespace, self.dest).update(dict((d, d) for d in values))
     files.add_argument('--dirs', nargs='+', action=AddDir, dest='dirs',
         metavar='DIR', help="Adds the path as a directory.")
 
@@ -336,20 +334,6 @@ def read_features(filename, load_attrs=False, features_dtype=None):
                 ret.features.append(feats)
 
         return (ret, dict(**f.attrs)) if load_attrs else ret
-
-
-def confirm_outfile(filename):
-    if os.path.exists(filename):
-        resp = raw_input("Output file '{}' already exists; will be deleted. "
-                         "Continue? [yN] ".format(filename))
-        if not resp.lower().startswith('y'):
-            sys.exit("Aborting.")
-    try:
-        with open(filename, 'w'):
-            pass
-        os.remove(filename)
-    except Exception as e:
-        sys.exit("{}: can't write to '{}'".format(e, filename))
 
 
 def main():

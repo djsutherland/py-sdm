@@ -2,6 +2,7 @@ from __future__ import division, print_function
 
 import functools
 import itertools
+import os
 import sys
 
 import numpy as np
@@ -72,3 +73,21 @@ def portion(val):
     if not 0 <= val <= 1:
         raise TypeError("must be a number between 0 and 1")
     return val
+
+
+def confirm_outfile(filename):
+    '''
+    Check that a file doesn't exist, prompt if it does, and check it's writable.
+    Calls sys.exit() if not.
+    '''
+    if os.path.exists(filename):
+        resp = raw_input("Output file '{}' already exists; will be deleted. "
+                         "Continue? [yN] ".format(filename))
+        if not resp.lower().startswith('y'):
+            sys.exit("Aborting.")
+    try:
+        with open(filename, 'w'):
+            pass
+        os.remove(filename)
+    except Exception as e:
+        sys.exit("{}: can't write to '{}'".format(e, filename))

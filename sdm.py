@@ -23,10 +23,11 @@ import sklearn.base
 from sklearn.cross_validation import KFold
 from sklearn import svm  # NOTE: needs version 0.13+ for svm iter limits
 
-from get_divs import get_divs, TAIL_DEFAULT, read_cell_array
+from get_divs import get_divs, TAIL_DEFAULT, read_cell_array, subset_data
 from utils import positive_int, positive_float, portion, is_integer_type
 from mp_utils import ForkedData, get_pool, progressbar_and_updater
 
+# TODO: handle input files from {extract,proc}_features
 # TODO: better logging
 # TODO: better divergence cache support
 # TODO: support getting decision values / probabilities
@@ -759,9 +760,12 @@ def do_predict(args):
 
     status_fn('Reading inputs...')
     with h5py.File(args.input_file, 'r') as f:
-        train_bags = read_cell_array(f, f[args.train_bags_name], args.n_points)
+        train_bags = read_cell_array(f, f[args.train_bags_name])
         train_labels = f[args.train_labels_name][...]
-        test_bags = read_cell_array(f, f[args.test_bags_name], args.n_points)
+        test_bags = read_cell_array(f, f[args.test_bags_name])
+        if args.n_points:
+            train_bags = subset_data(train_bags, args.n_points)
+            test_bags = subset_data(test_bags, args.n_points)
 
     assert np.all(train_labels == np.round(train_labels))
     train_labels = train_labels.astype(int)
@@ -797,7 +801,9 @@ def do_cv(args):
 
     status_fn('Reading inputs...')
     with h5py.File(args.input_file, 'r') as f:
-        bags = read_cell_array(f, f[args.bags_name], args.n_points)
+        bags = read_cell_array(f, f[args.bags_name])
+        if args.n_points:
+            bags = subset_data(bags, args.n_points)
         labels = f[args.labels_name][...]
 
     assert np.all(labels == np.round(labels))
