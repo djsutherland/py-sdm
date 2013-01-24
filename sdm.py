@@ -28,8 +28,8 @@ import numpy as np
 import scipy.io
 import scipy.linalg
 import sklearn.base
-from sklearn import cross_validation as cv
-from sklearn import svm # NOTE: needs dev version (0.13) for svm iter limits
+from sklearn.cross_validation import KFold
+from sklearn import svm  # NOTE: needs version 0.13+ for svm iter limits
 
 from get_divs import ForkedData, get_divs, get_pool, progressbar_and_updater, \
                      TAIL_DEFAULT, read_cell_array, \
@@ -38,11 +38,6 @@ from get_divs import ForkedData, get_divs, get_pool, progressbar_and_updater, \
 # TODO: better logging
 # TODO: better divergence cache support
 # TODO: support getting decision values / probabilities
-
-# TODO: fix for real
-import warnings
-warnings.filterwarnings('ignore', module='sklearn.cross_validation',
-        message='The parameter k was renamed to n_folds')
 
 DEFAULT_SVM_CACHE = 1000
 DEFAULT_SVM_TOL = 1e-3
@@ -225,7 +220,7 @@ def tune_params(divs, labels,
 
     status_fn('Cross-validating parameter sets...')
     jobs = itertools.product(enumerate(C_vals), enumerate(sigma_vals))
-    folds = list(enumerate(cv.KFold(n=num_bags, k=num_folds, shuffle=True)))
+    folds = list(enumerate(KFold(n=num_bags, n_folds=num_folds, shuffle=True)))
     with get_pool(n_proc) as pool:
         for (C_idx, C), (sigma_idx, sigma) in jobs:
             for f_idx, (train, test) in folds:
@@ -545,7 +540,7 @@ def crossvalidate(bags, labels, num_folds=10,
     preds = -np.ones(num_bags, dtype=int)
 
     for i, (train, test) in \
-            enumerate(cv.KFold(n=num_bags, k=num_folds, shuffle=True), 1):
+            enumerate(KFold(n=num_bags, k=num_folds, shuffle=True), 1):
         status('')
         status('Starting fold {} / {}'.format(i, num_folds))
         train_bags = itemgetter(*train)(bags)

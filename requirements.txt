@@ -2,6 +2,6 @@ numpy
 scipy
 h5py
 progressbar
-scikit-learn
+scikit-learn>=0.13
 bottleneck
 nose
