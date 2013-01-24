@@ -4,14 +4,6 @@ Code to do classification with support vector machines, as in
     Dougal J. Sutherland, Liang Xiong, Barnabas Poczos, Jeff Schneider.
     Kernels on Sample Sets via Nonparametric Divergence Estimates.
     http://arxiv.org/abs/1202.0302
-
-Code by Dougal J. Sutherland - dsutherl@cs.cmu.edu
-
-Written for Python 2.7 but with Python 3.2+ compatability in mind; currently
-untested on 3.x because I only have 3.3 installed, and h5py is still broken
-there. Uses some functionality not included in 2.6, but replacing the
-itertools.combinations_with_replacement() and installing the argparse package
-should probably be enough to get that to work if you need it to.
 '''
 
 from __future__ import division, print_function

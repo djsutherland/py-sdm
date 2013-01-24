@@ -7,18 +7,6 @@ distances. Based on the method of
     on distributions.
     Uncertainty in Artificial Intelligence.
     http://autonlab.org/autonweb/20287.html
-
-Code by Liang Xiong and Dougal J. Sutherland - {lxiong,dsutherl}@cs.cmu.edu
-
-Code does not run on Windows, because it does mildly disgusting things with
-global variables to be able to pass data to fork()ed processes without having
-to pickle/unpickle/copy it.
-
-Written for Python 2.7 but with Python 3.2+ compatability in mind; currently
-untested on 3.x because I only have 3.3 installed, and h5py is still broken
-there. Uses some functionality not included in 2.6, but replacing the
-itertools.combinations_with_replacement() and installing the argparse package
-should probably be enough to get that to work if you need it to.
 '''
 
 from __future__ import division, print_function
