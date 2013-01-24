@@ -1,10 +1,13 @@
 #!/usr/bin/env python
 from __future__ import division, print_function
 
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 from functools import partial
 import os
 import random
+import sys
+
+import numpy as np
 
 from get_divs import (positive_int, positive_float, nonnegative_float,
                       strict_map, str_types, izip, raw_input)
@@ -13,6 +16,10 @@ from vlfeat.phow import (vl_phow, DEFAULT_MAGNIF, DEFAULT_CONTRAST_THRESH,
 
 # NOTE: depends on skimage for resizing, and either opencv, matplotlib with PIL,
 # or skimage with one of the plugins below for reading images
+
+
+Features = namedtuple('Features', ['labels', 'names', 'frames', 'features'])
+
 
 DEFAULT_STEP = 20
 DEFAULT_SIZES = (6, 9, 12)
@@ -100,7 +107,7 @@ SAMPLERS = {
     'uniform': _sample_uniform,
 }
 
-DEFAULT_EXTENSIONS = {'jpg', 'png', 'bmp'}
+DEFAULT_EXTENSIONS = frozenset(['jpg', 'png', 'bmp'])
 def extract_features(dirs, img_per_cla=None, sampler='first',
                      extensions=DEFAULT_EXTENSIONS,
                      imread_mode=IMREAD_MODES,
@@ -165,7 +172,7 @@ def extract_features(dirs, img_per_cla=None, sampler='first',
     # do the actual extraction
     load_features = partial(_load_features, imread_mode=imread_mode, **kwargs)
     frames, descrs = zip(*do_map(load_features, paths))
-    return labels, image_names, frames, descrs
+    return Features(labels, image_names, frames, descrs)
 
 
 def parse_args():
@@ -291,61 +298,68 @@ def parse_args():
     return args, save_file
 
 
-def save_features(filename, ls, ns, fs, ds, args=None):
+def save_features(filename, features, **attrs):
     '''
-    Saves the results of extract_features() into an HDF5 file.
+    Saves a Features namedtuple into an HDF5 file.
+    Also sets any keyword args as root attributes.
     Each bag is saved as "features" and "frames" in /label/filename.
     '''
     import h5py
     with h5py.File(filename) as f:
-        for label, name, frames, descrs in izip(ls, ns, fs, ds):
+        for label, name, frames, descrs in izip(*features):
             g = f.require_group(label).create_group(name)
             g['frames'] = frames
             g['features'] = descrs
 
-        if args is not None:
-            f.attrib['args'] = repr(args)
+        for k, v in attrs.items():
+            f.attrs[k] = v
 
 
-def read_features(filename):
-    '''Reads the file format saved by save_features().'''
+def read_features(filename, load_attrs=False, features_dtype=None):
+    '''
+    Reads a Features namedtuple from save_features().
+    If load_attrs, also returns a dictionary of the root attributes.
+    '''
     import h5py
-    labels = []
-    names = []
-    frames = []
-    descrs = []
+    ret = Features([], [], [], [])
+
     with h5py.File(filename, 'r') as f:
         for label, label_g in f.items():
             for fname, g in label_g.items():
-                labels.append(label)
-                names.append(fname)
-                frames.append(g["frames"][...])
-                descrs.append(g["features"][...])
-    return labels, names, frames, descrs
+                ret.labels.append(label)
+                ret.names.append(fname)
+                ret.frames.append(g["frames"][...])
+                if features_dtype is not None:
+                    feats = np.asarray(g['features'], dtype=features_dtype)
+                else:
+                    feats = g['features'][...]
+                ret.features.append(feats)
+
+        return (ret, dict(**f.attrs)) if load_attrs else ret
 
 
-def main():
-    import sys
-
-    args, save_file = parse_args()
-
-    if os.path.exists(save_file):
+def confirm_outfile(filename):
+    if os.path.exists(filename):
         resp = raw_input("Output file '{}' already exists; will be deleted. "
-                         "Continue? [yN] ".format(save_file))
+                         "Continue? [yN] ".format(filename))
         if not resp.lower().startswith('y'):
             sys.exit("Aborting.")
     try:
-        with open(save_file, 'w'):
+        with open(filename, 'w'):
             pass
-        os.remove(save_file)
+        os.remove(filename)
     except Exception as e:
-        sys.exit("{}: can't write to '{}'".format(e, save_file))
+        sys.exit("{}: can't write to '{}'".format(e, filename))
 
-    results = extract_features(**vars(args))
-    # TODO: progressbar
+
+def main():
+    args, save_file = parse_args()
+    confirm_outfile(save_file)
+
+    features = extract_features(**vars(args))  # TODO: progressbar
 
     print("Saving results to '{}'".format(save_file))
-    save_features(save_file, *results, args=vars(args))
+    save_features(save_file, features, args=repr(vars(args)))
 
 
 if __name__ == '__main__':
