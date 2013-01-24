@@ -27,12 +27,8 @@ import os
 assert os.name == 'posix', 'the os should support fork()'
 
 import argparse
-from contextlib import contextmanager
 import functools
 import itertools
-import multiprocessing as mp
-import random
-import string
 import sys
 import warnings
 
@@ -49,70 +45,9 @@ except ImportError:
     warnings.warn('Cannot find FLANN. KNN searches will be much slower.')
     searcher = None
 
-# TODO: break out utilities, etc into their own file
-if sys.version_info.major == 2:
-    izip = itertools.izip
-    imap = itertools.imap
-    strict_map = map
-    lazy_range = xrange
-    str_types = (basestring, str, unicode)
-    raw_input = raw_input
-else:
-    izip = zip
-    imap = map
-    lazy_range = range
-    str_types = (str,)
-    raw_input = input
-
-    @functools.wraps(map)
-    def strict_map(*args, **kwargs):
-        return list(map(*args, **kwargs))
-
-
-################################################################################
-### Various small utilities.
-
-eps = np.spacing(1)
-
-def col(a): return a.reshape((-1, 1))
-def row(a): return a.reshape((1, -1))
-def get_col(X, c): return X[:,c].ravel()
-
-def is_integer_type(x):
-    return issubclass(np.asanyarray(x).dtype.type, np.integer)
-
-def is_integer(x):
-    return np.isscalar(x) and is_integer_type(x)
-
-def positive_int(val):
-    val = int(val)
-    if val <= 0:
-        raise TypeError("must be a positive integer")
-    return val
-
-def nonnegative_float(val):
-    val = int(val)
-    if val < 0:
-        raise TypeError("must be a nonnegative integer")
-    return val
-
-def positive_float(val):
-    val = float(val)
-    if val <= 0:
-        raise TypeError("must be a positive number")
-    return val
-
-def nonnegative_float(val):
-    val = float(val)
-    if val < 0:
-        raise TypeError("must be a nonnegative number")
-    return val
-
-def portion(val):
-    val = float(val)
-    if not 0 <= val <= 1:
-        raise TypeError("must be a number between 0 and 1")
-    return val
+from utils import (eps, col, get_col, izip, lazy_range,
+                   is_integer, portion, positive_int)
+from mp_utils import ForkedData, map_unordered_with_progressbar, get_pool
 
 ################################################################################
 ### Helpers for robust mean estimation
@@ -132,9 +67,9 @@ def fix_terms_trim(terms, tail=TAIL_DEFAULT):
     n = terms.size
 
     if n >= 3:
-        terms = np.sort(terms) # TODO: could do this with partial sorting
+        terms = np.sort(terms)  # TODO: could do this with partial sorting
         ends = int(round(n * tail))
-        terms = terms[ends : n - ends]
+        terms = terms[ends:n-ends]
 
     return terms[np.isfinite(terms)]
 
@@ -168,14 +103,14 @@ def quantile(a, prob):
     # to the right and smaller to the left
     a = bn.partsort(a, i)
 
-    if i == t: # did we luck out and get an integer index?
+    if i == t:  # did we luck out and get an integer index?
         return a[i]
     else:
         # we'll linearly interpolate between this and the next index
         smaller = a[i]
         larger = a[i+1:].min()
         if np.isinf(smaller):
-            return smaller # avoid inf - inf
+            return smaller  # avoid inf - inf
         else:
             return smaller + (larger - smaller) * (t - i)
 
@@ -292,8 +227,8 @@ def l2(xx, xy, yy, yx, Ks, dim, tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT,
 
         total = (fix((K-1) / ((N-1)*c) / (rho_x ** dim)).mean()
                + fix((K-1) / ((M-1)*c) / (rho_y ** dim)).mean()
-               - fix((K-1) / (  M  *c) / ( nu_x ** dim)).mean()
-               - fix((K-1) / (  N  *c) / ( nu_y ** dim)).mean())
+               - fix((K-1) / (  M * c) / ( nu_x ** dim)).mean()
+               - fix((K-1) / (  N * c) / ( nu_y ** dim)).mean())
 
         rs.append(np.sqrt(max(0, total)))
 
@@ -443,7 +378,6 @@ def process_pair(funcs, opts, bags, xxs, row, col, symm=True):
 ################################################################################
 ### Argument handling.
 
-
 def process_func_specs(div_specs, Ks):
     alphas = []
     funcs = []
@@ -483,138 +417,6 @@ def read_data(input_file, input_var, n_points=None):
     with h5py.File(input_file, 'r') as f:
         return read_cell_array(f, f[input_var], n_points)
 
-################################################################################
-### Convenience stuff related to multiprocessing.Pool
-
-
-def _apply(func_args):
-    func, args = func_args
-    return func(*args)
-
-
-def patch_starmap(pool):
-    '''
-    A function that adds the equivalent of multiprocessing.Pool.starmap
-    to a given pool if it doesn't have the function.
-    '''
-    if hasattr(pool, 'starmap'):
-        return
-
-    def starmap(func, iterables):
-        return pool.map(_apply, izip(itertools.repeat(func), iterables))
-    pool.starmap = starmap
-
-
-def make_pool(n_proc):
-    if n_proc != 1:
-        pool = mp.Pool(n_proc)
-    else:
-        class ImmediateResult(object):
-            "Duck-type like multiprocessing.pool.MapResult."
-            def __init__(self, value): self.value = value
-            def get(self, timeout=None): return self.value
-            def wait(self, timeout=None): pass
-            def ready(self): return True
-            def successful(self): return True
-
-        class DummyPool(object):
-            def close(self): pass
-            def join(self): pass
-
-            def apply_async(self, func, args, kwds=None, callback=None):
-                val = func(*args, **(kwds or {}))
-                callback(val)
-                return ImmediateResult(val)
-
-            def map(self, func, args, chunksize=None):
-                return strict_map(func, args)
-            def imap(self, func, args, chunksize=None):
-                return imap(func, args)
-            def imap_unordered(self, func, args, chunksize=None):
-                return imap(func, args)
-
-        pool = DummyPool()
-
-    patch_starmap(pool)
-    return pool
-
-@contextmanager
-def get_pool(n_proc):
-    pool = make_pool(n_proc)
-    yield pool
-    pool.close()
-    pool.join()
-
-_data_name_cands = (
-    '_data_' + ''.join(random.sample(string.ascii_lowercase, 10))
-    for _ in itertools.count())
-
-class ForkedData(object):
-    '''
-    Class used to pass data to child processes in multiprocessing without
-    really pickling/unpickling it. Only works on POSIX.
-
-    Intended use:
-        - The master process makes the data somehow, and does e.g.
-            data = ForkedData(the_value)
-        - The master makes sure to keep a reference to the ForkedData object
-          until the children are all done with it, since the global reference
-          is deleted to avoid memory leaks when the ForkedData object dies.
-        - Master process constructs a multiprocessing.Pool *after*
-          the ForkedData construction, so that the forked processes
-          inherit the new global.
-        - Master calls e.g. pool.map with data as an argument.
-        - Child gets the real value through data.value, and uses it read-only.
-    '''
-    # TODO: does data really need to be used read-only? don't think so...
-    # TODO: more flexible garbage collection options
-    def __init__(self, val):
-        g = globals()
-        self.name = next(n for n in _data_name_cands if n not in g)
-        g[self.name] = val
-        self.master_pid = os.getpid()
-
-    @property
-    def value(self):
-        return globals()[self.name]
-
-    def __del__(self):
-        if os.getpid() == self.master_pid:
-            del globals()[self.name]
-
-################################################################################
-### Progress-bar handling with multiprocessing pools
-
-def progress(counter=True, **kwargs):
-    import progressbar as pb
-    try:
-        widgets = kwargs.pop('widgets')
-    except KeyError:
-        if counter:
-            widgets = [pb.SimpleProgress(), ' (', pb.Percentage(), ') ']
-        else:
-            widgets = [pb.Percentage(), ' ']
-        widgets.extend((pb.Bar(), ' ', pb.ETA()))
-    return pb.ProgressBar(widgets=widgets, **kwargs)
-
-def progressbar_and_updater(*args, **kwargs):
-    pbar = progress(*args, **kwargs).start()
-    counter = itertools.count(1)
-    def update_pbar():
-        pbar.update(next(counter))
-        # race conditions mean the pbar might be updated backwards on
-        # occasion, but the highest count ever seen will be right.
-    return pbar, update_pbar
-
-def map_unordered_with_progressbar(pool, func, jobs):
-    pbar, tick_pbar = progressbar_and_updater(maxval=len(jobs))
-    def callback(result):
-        tick_pbar()
-
-    results = [pool.apply_async(func, job, callback=callback) for job in jobs]
-    values = [r.get() for r in results]
-    pbar.finish()
-    return values
 
 ################################################################################
 ### The main dealio
@@ -725,8 +527,9 @@ def get_divs(bags,
 ### Command line interface
 
 def parse_args():
-    parser = argparse.ArgumentParser(description=
-            "Compute divergences and set kernels based on KNN statistics.")
+    parser = argparse.ArgumentParser(
+        description="Compute divergences and set kernels based on "
+                    "KNN statistics.")
 
     parser.add_argument('input_mat_file',
         help="The input file, an HDF5 file (e.g. .mat with -v7.3).")
@@ -744,13 +547,14 @@ def parse_args():
         default=['hellinger', 'l2', 'renyi:.5,.7,.9,.99'],
         help="The divergences to estimate. Default: %(default)s.")
 
-    parser.add_argument('-K', nargs='*', type=positive_int, default=[1,3,5,10],
+    parser.add_argument('-K', nargs='*', type=positive_int,
+        default=[1, 3, 5, 10],
         help="The numbers of nearest neighbors to calculate.")
 
     parser.add_argument('--trim-tails', type=portion, default=TAIL_DEFAULT,
         help="How much to trim off the ends of things we take the mean of; "
              "default %(default)s.", metavar='PORTION')
-    parser.add_argument('--trim-mode', choices={'clip','trim'},
+    parser.add_argument('--trim-mode', choices=['clip', 'trim'],
         default=FIX_MODE_DEFAULT,
         help="Whether to trim or clip ends; default %(default)s.")
 

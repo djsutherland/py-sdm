@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-from get_divs import izip, positive_int, portion, nonnegative_float, strict_map
+from utils import izip, positive_int, portion, nonnegative_float, strict_map
 from extract_features import (Features, read_features, save_features,
                               confirm_outfile)
 

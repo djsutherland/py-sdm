@@ -31,9 +31,9 @@ import sklearn.base
 from sklearn.cross_validation import KFold
 from sklearn import svm  # NOTE: needs version 0.13+ for svm iter limits
 
-from get_divs import ForkedData, get_divs, get_pool, progressbar_and_updater, \
-                     TAIL_DEFAULT, read_cell_array, \
-                     positive_int, positive_float, portion, is_integer_type
+from get_divs import get_divs, TAIL_DEFAULT, read_cell_array
+from utils import positive_int, positive_float, portion, is_integer_type
+from mp_utils import ForkedData, get_pool, progressbar_and_updater
 
 # TODO: better logging
 # TODO: better divergence cache support
@@ -90,10 +90,10 @@ def project_psd(mat, min_eig=0, destroy=False):
 
 def make_km(divs, sigma):
     # pass through a Gaussian
-    km = divs / sigma # makes a copy
+    km = divs / sigma  # makes a copy
     km **= 2
     km /= -2
-    np.exp(km, km) # inplace
+    np.exp(km, km)  # inplace
 
     # PSD projection
     return project_psd(weakref.proxy(km), destroy=True)
@@ -362,7 +362,6 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         clf.fit(train_km, train_y)
         self.svm_ = clf
 
-
     def predict(self, data, divs=None):
         n_train = len(self.train_bags_)
         n_test = len(data)
@@ -371,15 +370,15 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
             self.status_fn('Getting test bag divergences...')
 
             mask = np.zeros((n_train + n_test, n_train + n_test), dtype=bool)
-            mask[:n_train,-n_test:] = True
-            mask[-n_test:,:n_train] = True
+            mask[:n_train, -n_test:] = True
+            mask[-n_test:, :n_train] = True
 
             divs = np.squeeze(get_divs(
                     self.train_bags_ + data, mask=mask,
                     specs=[self.div_func], Ks=[self.K],
                     n_proc=self.n_proc, tail=self.tail, min_dist=self.min_dist,
                     status_fn=self.status_fn, progressbar=self.progressbar))
-            divs = (divs[-n_test:,:n_train] + divs[:n_train,-n_test].T) / 2
+            divs = (divs[-n_test:, :n_train] + divs[:n_train, -n_test].T) / 2
         else:
             assert divs.shape == (n_test, n_train)
             divs = divs.copy()
@@ -428,7 +427,6 @@ def transduct(train_bags, train_labels, test_bags,
     train_labels = np.squeeze(train_labels)
     assert train_labels.shape == (num_train,)
     assert is_integer_type(train_labels)
-
 
     if divs is None:
         status_fn('Getting divergences...')
@@ -511,11 +509,11 @@ def crossvalidate(bags, labels, num_folds=10,
         divs_cache=None):
 
     args = locals()
-    opts = {v: args[v] for v in {'div_func', 'K', 'tuning_folds', 'n_proc',
-        'C_vals', 'sigma_vals', 'scale_sigma', 'weight_classes', 'cache_size',
-        'tuning_cache_size', 'svm_tol', 'tuning_svm_tol', 'svm_max_iter',
-        'tuning_svm_max_iter', 'svm_shrinking', 'status_fn', 'progressbar',
-        'tail'} }
+    opts = dict((v, args[v]) for v in
+        ['div_func', 'K', 'tuning_folds', 'n_proc', 'C_vals', 'sigma_vals',
+         'scale_sigma', 'weight_classes', 'cache_size', 'tuning_cache_size',
+         'svm_tol', 'tuning_svm_tol', 'svm_max_iter', 'tuning_svm_max_iter',
+         'svm_shrinking', 'status_fn', 'progressbar', 'tail'])
 
     status = get_status_fn(status_fn)
 
@@ -540,7 +538,7 @@ def crossvalidate(bags, labels, num_folds=10,
     preds = -np.ones(num_bags, dtype=int)
 
     for i, (train, test) in \
-            enumerate(KFold(n=num_bags, k=num_folds, shuffle=True), 1):
+            enumerate(KFold(n=num_bags, n_folds=num_folds, shuffle=True), 1):
         status('')
         status('Starting fold {} / {}'.format(i, num_folds))
         train_bags = itemgetter(*train)(bags)
@@ -592,7 +590,6 @@ def parse_args():
     # component of a help string that adds the default value
     _def = "(default %(default)r)."
 
-
     # add common options to a parser
     # would use parents=[...], except for http://bugs.python.org/issue16807
     def add_opts(parser):
@@ -607,7 +604,6 @@ def parse_args():
             action='store_const', dest='mode', const='induct',
                 help="Operate inductively (only project training Gram matrix).")
 
-
         algo.add_argument('--div-func', '-d', default='renyi:.9',
             help="The divergence function to use " + _def)
 
@@ -621,11 +617,9 @@ def parse_args():
             default=DEFAULT_TUNING_FOLDS,
             help="Number of CV folds to use in evaluating parameters " + _def)
 
-
         comp = parser.add_argument_group('computation options')
         comp.add_argument('--n-proc', type=positive_int, default=None,
             help="Number of processes to use; default is as many as CPU cores.")
-
 
         comp.add_argument('--svm-tol',
             type=positive_float, default=DEFAULT_SVM_TOL,
@@ -677,13 +671,11 @@ def parse_args():
                  "distances are always at least this big. Default: the smaller "
                  "of .01 and 10 ^ (100 / dim).")
 
-
     ### the top-level parser
     parser = argparse.ArgumentParser(
             description='Performs support distribution machine classification.')
     subparsers = parser.add_subparsers(dest='subcommand',
             help="The kind of action to perform.")
-
 
     ### parser for the prediction task
     parser_pred = subparsers.add_parser('predict',
@@ -733,7 +725,6 @@ def parse_args():
 
     add_opts(parser_cv)
 
-
     ### parse the arguments and do some post-processing
     args = parser.parse_args()
 
@@ -769,6 +760,7 @@ def opts_dict(args):
         tail=args.trim_tails,
         min_dist=args.min_dist,
     )
+
 
 def do_predict(args):
     status_fn = get_status_fn(True)
@@ -807,6 +799,7 @@ def do_predict(args):
     status_fn('Saving output to {}'.format(args.output_file))
     scipy.io.savemat(args.output_file, out, oned_as='column')
 
+
 def do_cv(args):
     status_fn = get_status_fn(True)
 
@@ -837,9 +830,11 @@ def do_cv(args):
     status_fn('Saving output to {}'.format(args.output_file))
     scipy.io.savemat(args.output_file, out, oned_as='column')
 
+
 def main():
     args = parse_args()
     args.func(args)
+
 
 if __name__ == '__main__':
     main()

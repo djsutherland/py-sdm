@@ -9,8 +9,8 @@ import sys
 
 import numpy as np
 
-from get_divs import (positive_int, positive_float, nonnegative_float,
-                      strict_map, str_types, izip, raw_input)
+from utils import (positive_int, positive_float, nonnegative_float,
+                   strict_map, str_types, izip, raw_input)
 from vlfeat.phow import (vl_phow, DEFAULT_MAGNIF, DEFAULT_CONTRAST_THRESH,
                          DEFAULT_WINDOW_SIZE, DEFAULT_COLOR, COLOR_CHOICES)
 
