@@ -3,7 +3,6 @@ from __future__ import division, print_function
 
 from collections import defaultdict
 from functools import partial
-from operator import methodcaller
 import os
 import random
 
@@ -292,16 +291,20 @@ def parse_args():
     return args, save_file
 
 
-def save_features(filename, ls, ns, fs, ds):
+def save_features(filename, ls, ns, fs, ds, args=None):
     '''
     Saves the results of extract_features() into an HDF5 file.
     Each bag is saved as "features" and "frames" in /label/filename.
     '''
-    with h5py.File(save_file) as f:
+    import h5py
+    with h5py.File(filename) as f:
         for label, name, frames, descrs in izip(ls, ns, fs, ds):
             g = f.require_group(label).create_group(name)
             g['frames'] = frames
             g['features'] = descrs
+
+        if args is not None:
+            f.attrib['args'] = repr(args)
 
 
 def read_features(filename):
@@ -322,7 +325,6 @@ def read_features(filename):
 
 
 def main():
-    import h5py
     import sys
 
     args, save_file = parse_args()
@@ -333,7 +335,7 @@ def main():
         if not resp.lower().startswith('y'):
             sys.exit("Aborting.")
     try:
-        with open(save_file, 'w') as f:
+        with open(save_file, 'w'):
             pass
         os.remove(save_file)
     except Exception as e:
@@ -343,7 +345,7 @@ def main():
     # TODO: progressbar
 
     print("Saving results to '{}'".format(save_file))
-    save_features(save_file, *results)
+    save_features(save_file, *results, args=vars(args))
 
 
 if __name__ == '__main__':
