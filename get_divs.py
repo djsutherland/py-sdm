@@ -131,9 +131,9 @@ def fix_terms_clip(terms, tail=TAIL_DEFAULT):
     terms[terms > cutoff] = cutoff
     return terms
 
-_fix_term_modes = {'trim': fix_terms_trim, 'clip': fix_terms_clip}
+FIX_TERM_MODES = {'trim': fix_terms_trim, 'clip': fix_terms_clip}
 def fix_terms(terms, tail=TAIL_DEFAULT, mode=FIX_MODE_DEFAULT):
-    return _fix_term_modes[mode](terms, tail=tail)
+    return FIX_TERM_MODES[mode](terms, tail=tail)
 
 
 ################################################################################
@@ -554,8 +554,8 @@ def parse_args():
     parser.add_argument('--trim-tails', type=portion, default=TAIL_DEFAULT,
         help="How much to trim off the ends of things we take the mean of; "
              "default %(default)s.", metavar='PORTION')
-    parser.add_argument('--trim-mode', choices=['clip', 'trim'],
-        default=FIX_MODE_DEFAULT,
+    parser.add_argument('--trim-mode',
+        choices=FIX_TERM_MODES, default=FIX_MODE_DEFAULT,
         help="Whether to trim or clip ends; default %(default)s.")
 
     parser.add_argument('--min-dist', type=float, default=None,

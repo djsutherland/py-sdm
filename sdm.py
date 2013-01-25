@@ -23,7 +23,8 @@ import sklearn.base
 from sklearn.cross_validation import KFold
 from sklearn import svm  # NOTE: needs version 0.13+ for svm iter limits
 
-from get_divs import get_divs, TAIL_DEFAULT, read_cell_array, subset_data
+from get_divs import (get_divs, FIX_MODE_DEFAULT, FIX_TERM_MODES, TAIL_DEFAULT,
+                      read_cell_array, subset_data)
 from utils import positive_int, positive_float, portion, is_integer_type
 from mp_utils import ForkedData, get_pool, progressbar_and_updater
 
@@ -101,8 +102,8 @@ def split_km(km, train_idx, test_idx):
 ### Cached divs helper
 
 def get_divs_cache(bags, div_func, K, cache_filename=None,
-                   n_proc=None, tail=TAIL_DEFAULT, min_dist=None,
-                   status_fn=True, progressbar=None):
+                   n_proc=None, fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT,
+                   min_dist=None, status_fn=True, progressbar=None):
 
     status = get_status_fn(status_fn)
 
@@ -117,7 +118,7 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
 
     divs = np.squeeze(get_divs(
             bags, specs=[div_func], Ks=[K],
-            n_proc=n_proc, tail=tail, min_dist=min_dist,
+            n_proc=n_proc, fix_mode=fix_mode, tail=tail, min_dist=min_dist,
             status_fn=status_fn, progressbar=progressbar))
 
     if cache_filename:
@@ -253,7 +254,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
                  tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
                  svm_shrinking=DEFAULT_SVM_SHRINKING,
                  status_fn=None, progressbar=None,
-                 tail=TAIL_DEFAULT, min_dist=None):
+                 fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None):
         self.div_func = div_func
         self.K = K
         self.tuning_folds = tuning_folds
@@ -271,6 +272,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         self.svm_shrinking = svm_shrinking
         self._status_fn = status_fn
         self._progressbar = progressbar
+        self.fix_mode = FIX_MODE_DEFAULT
         self.tail = tail
         self.min_dist = min_dist
 
@@ -312,7 +314,8 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
             self.status_fn('Getting divergences...')
             divs = get_divs_cache(X, div_func=self.div_func, K=self.K,
                     cache_filename=divs_cache,
-                    n_proc=self.n_proc, tail=self.tail, min_dist=self.min_dist,
+                    n_proc=self.n_proc, min_dist=self.min_dist,
+                    fix_mode=self.fix_mode, tail=self.tail,
                     status_fn=self.status_fn, progressbar=self.progressbar)
         else:
             #self.status_fn('Using passed-in divergences...')
@@ -369,7 +372,8 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
             divs = np.squeeze(get_divs(
                     self.train_bags_ + data, mask=mask,
                     specs=[self.div_func], Ks=[self.K],
-                    n_proc=self.n_proc, tail=self.tail, min_dist=self.min_dist,
+                    n_proc=self.n_proc, min_dist=self.min_dist,
+                    fix_mode=self.fix_mode, tail=self.tail,
                     status_fn=self.status_fn, progressbar=self.progressbar))
             divs = (divs[-n_test:, :n_train] + divs[:n_train, -n_test].T) / 2
         else:
@@ -404,7 +408,7 @@ def transduct(train_bags, train_labels, test_bags,
               svm_shrinking=DEFAULT_SVM_SHRINKING,
               status_fn=True,
               progressbar=None,
-              tail=TAIL_DEFAULT, min_dist=None,
+              fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
               divs=None,
               divs_cache=None,
               return_config=False):
@@ -428,7 +432,7 @@ def transduct(train_bags, train_labels, test_bags,
                 train_bags + test_bags,
                 div_func=div_func, K=K,
                 cache_filename=divs_cache,
-                n_proc=n_proc, tail=tail, min_dist=min_dist,
+                n_proc=n_proc, fix_mode=fix_mode, tail=tail, min_dist=min_dist,
                 status_fn=status_fn, progressbar=progressbar)
     else:
         #status_fn('Using passed-in divergences...')
@@ -496,8 +500,7 @@ def crossvalidate(bags, labels, num_folds=10,
         svm_shrinking=DEFAULT_SVM_SHRINKING,
         status_fn=True,
         progressbar=None,
-        tail=TAIL_DEFAULT,
-        min_dist=None,
+        fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
         divs=None,
         divs_cache=None):
 
@@ -506,7 +509,7 @@ def crossvalidate(bags, labels, num_folds=10,
         ['div_func', 'K', 'tuning_folds', 'n_proc', 'C_vals', 'sigma_vals',
          'scale_sigma', 'weight_classes', 'cache_size', 'tuning_cache_size',
          'svm_tol', 'tuning_svm_tol', 'svm_max_iter', 'tuning_svm_max_iter',
-         'svm_shrinking', 'status_fn', 'progressbar', 'tail'])
+         'svm_shrinking', 'status_fn', 'progressbar', 'fix_mode', 'tail'])
 
     status = get_status_fn(status_fn)
 
@@ -522,7 +525,8 @@ def crossvalidate(bags, labels, num_folds=10,
     if divs is None:
         status('Getting divergences...')
         divs = get_divs_cache(bags, div_func=div_func, K=K,
-                cache_filename=divs_cache, tail=tail, min_dist=min_dist,
+                cache_filename=divs_cache,
+                fix_mode=fix_mode, tail=tail, min_dist=min_dist,
                 status_fn=status_fn, progressbar=progressbar)
     else:
         #status_fn('Using passed-in divergences...')
@@ -659,6 +663,9 @@ def parse_args():
         algo.add_argument('--trim-tails', type=portion, metavar='PORTION',
             default=TAIL_DEFAULT,
             help="How much to trim when using a trimmed mean estimator " + _def)
+        parser.add_argument('--trim-mode',
+            choices=FIX_TERM_MODES, default=FIX_MODE_DEFAULT,
+            help="Whether to trim or clip ends; default %(default)s.")
         algo.add_argument('--min-dist', type=float, default=None,
             help="Protect against identical points by making sure kNN "
                  "distances are always at least this big. Default: the smaller "
@@ -751,6 +758,7 @@ def opts_dict(args):
         tuning_svm_max_iter=args.tuning_svm_max_iter,
         svm_shrinking=args.svm_shrinking,
         tail=args.trim_tails,
+        fix_mode=args.trim_mode,
         min_dist=args.min_dist,
     )
 
