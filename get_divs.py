@@ -22,7 +22,6 @@ import sys
 import warnings
 
 import bottleneck as bn
-import h5py
 import numpy as np
 import scipy.io
 from scipy.special import gamma, gammaln
@@ -35,7 +34,8 @@ except ImportError:
     searcher = None
 
 from utils import (eps, col, get_col, izip, lazy_range, is_integer, raw_input,
-                   str_types, portion, positive_int, confirm_outfile)
+                   str_types, portion, positive_int, confirm_outfile,
+                   iteritems)
 from mp_utils import ForkedData, map_unordered_with_progressbar, get_pool
 
 ################################################################################
@@ -401,6 +401,7 @@ def read_cell_array(f, data):
     ]
 
 def read_data(input_file, input_var, n_points=None):
+    import h5py
     with h5py.File(input_file, 'r') as f:
         return read_cell_array(f, f[input_var], n_points)
 
@@ -628,32 +629,53 @@ def main():
     assert not np.any(np.isinf(R)), 'inf found in the result'
 
 
-def check_h5_file_agreement(filename, bags, data, args):
+def check_h5_settings(f, n, dim, fix_mode, tail, min_dist=None,
+                      names=None, labels=None):
+    assert all(divs.shape == (n, n)
+               for div_group in f.values()
+               for divs in div_group.values())
+
+    if not f.attrs.keys():
+        return
+
+    assert np.all(f.attrs['dim'] == dim)
+    assert np.all(f.attrs['fix_mode'] == fix_mode)
+    assert np.all(f.attrs['tail'][...] == tail)
+    assert np.all(f.attrs['min_dist'][...] ==
+        default_min_dist(dim) if min_dist is None else min_dist)
+
+    if 'names' in f.attrs:
+        assert len(f.attrs['names']) == n
+        if names is not None:
+            assert np.all(f.attrs['names'] == names)
+    if 'labels' in f.attrs:
+        assert len(f.attrs['labels']) == n
+        if labels is not None:
+            assert np.all(f.attrs['labels'] == labels)
+
+
+def check_h5_file_agreement(filename, bags, data, args, interactive=True):
+    import h5py
     with h5py.File(filename) as f:
         # output file already exists; make sure args agree
         if not f.attrs.keys() and not f.keys():
             return
-        assert np.all(f.attrs['fix_mode'] == args.trim_mode)
-        assert np.all(f.attrs['tail'][...] == args.trim_tails)
-        assert np.all(f.attrs['min_dist'][...] == args.min_dist)
-        if 'names' in f.attrs and data is not None:
-            assert np.all(f.attrs['names'] == data.names)
-        if 'labels' in f.attrs and data is not None:
-            assert np.all(f.attrs['labels'] == data.labels)
 
-        n = len(bags)
-        assert all(divs.shape == (n, n)
-                   for div_group in f.values()
-                   for divs in div_group.values())
+        k = {} if data is None else {'labels': data.labels, 'names': data.names}
+        check_h5_settings(f, n=len(bags), dim=bags.shape[0],
+            fix_mode=args.trim_mode, tail=args.trim_tails,
+            min_dist=args.min_dist, **k)
 
         # any overlap with stuff we've already calculated?
         div_funcs = []
         for div_func in args.div_funcs:
-            div_funcs.extend(normalize_div_name(div_func))
+            div_funcs.extend(normalize_div_name_list(div_func))
         overlap = [(div_func, k)
                    for div_func in div_funcs if div_func in f
                    for k in args.K if str(k) in f[div_func]]
         if overlap:
+            if not interactive:
+                raise ValueError("hdf5 conflict: {}".format(overlap))
             msg = '\n'.join(
                 ["WARNING: the following divs will be overwritten:"] +
                 ['\t{}, k = {}'.format(df, k) for df, k in overlap] +
@@ -675,7 +697,7 @@ def add_to_h5_file(filename, opts):
             else:
                 g[k] = divs
 
-        for k, v in opts.items():
+        for k, v in iteritems(opts):
             if k in ('Ds', 'Ks', 'alphas', 'div_names'):
                 continue
             if isinstance(v, list) and isinstance(v[0], str_types):
@@ -683,7 +705,7 @@ def add_to_h5_file(filename, opts):
             f.attrs[k] = v
 
 
-_rev_name_map = dict((f.name, k) for k, f in func_mapping.items())
+_rev_name_map = dict((f.name, k) for k, f in iteritems(func_mapping))
 _name_fmt = re.compile(r'''
     ([^\[]+)          # div func name, eg NP-H
     \[
@@ -702,12 +724,16 @@ def reverse_div_name(name):
     s = '{}:{}'.format(div_name, alpha) if alpha else div_name
     return s, k
 
-def normalize_div_name(name):
+def normalize_div_name_list(name):
     if ':' in name:
         main, alpha = name.split(':')
         return ['{}:{}'.format(main, float(al))
                 for al in alpha.split(',')]
     return [name]
+
+def normalize_div_name(name):
+    n, = normalize_div_name_list(name)  # has to be just one
+    return n
 
 if __name__ == '__main__':
     main()

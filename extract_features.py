@@ -9,7 +9,8 @@ import random
 import numpy as np
 
 from utils import (positive_int, positive_float, nonnegative_float,
-                   strict_map, str_types, izip, confirm_outfile)
+                   strict_map, str_types, izip, confirm_outfile,
+                   iteritems)
 from vlfeat.phow import (vl_phow, DEFAULT_MAGNIF, DEFAULT_CONTRAST_THRESH,
                          DEFAULT_WINDOW_SIZE, DEFAULT_COLOR, COLOR_CHOICES)
 
@@ -136,7 +137,7 @@ def extract_features(dirs, img_per_cla=None, sampler='first',
     # make a dict of label => list of (dirname, fname) pairs
     ims_by_label = defaultdict(list)
     seen_names = defaultdict(set)
-    for dirname, label in dirs.iteritems():
+    for dirname, label in iteritems(dirs):
         for fname in os.listdir(dirname):
             if fname.rsplit('.', 1)[1].lower() in extensions:
                 if fname in seen_names[label]:
@@ -149,7 +150,7 @@ def extract_features(dirs, img_per_cla=None, sampler='first',
     sample = (lambda x, n: x) if img_per_cla is None else SAMPLERS[sampler]
     labels, image_names, paths = zip(*[
         (label, fname, os.path.join(dirname, fname))
-        for label, images in ims_by_label.items()
+        for label, images in iteritems(ims_by_label)
         for dirname, fname in sample(sorted(images), img_per_cla)
     ])
 
@@ -309,7 +310,7 @@ def save_features(filename, features, **attrs):
             g['frames'] = frames
             g['features'] = descrs
 
-        for k, v in attrs.items():
+        for k, v in iteritems(attrs):
             f.attrs[k] = v
 
 
@@ -322,8 +323,8 @@ def read_features(filename, load_attrs=False, features_dtype=None):
     ret = Features([], [], [], [])
 
     with h5py.File(filename, 'r') as f:
-        for label, label_g in f.items():
-            for fname, g in label_g.items():
+        for label, label_g in iteritems(f):
+            for fname, g in iteritems(label_g):
                 ret.labels.append(label)
                 ret.names.append(fname)
                 ret.frames.append(g["frames"][...])

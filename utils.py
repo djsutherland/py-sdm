@@ -2,6 +2,7 @@ from __future__ import division, print_function
 
 import functools
 import itertools
+from operator import methodcaller
 import os
 import sys
 
@@ -16,12 +17,18 @@ if sys.version_info.major == 2:
     lazy_range = xrange
     str_types = (basestring, str, unicode)
     raw_input = raw_input
+    iterkeys = methodcaller('iterkeys')
+    itervalues = methodcaller('itervalues')
+    iteritems = methodcaller('iteritems')
 else:
     izip = zip
     imap = map
     lazy_range = range
     str_types = (str,)
     raw_input = input
+    iterkeys = methodcaller('keys')
+    itervalues = methodcaller('values')
+    iteritems = methodcaller('items')
 
     @functools.wraps(map)
     def strict_map(*args, **kwargs):
