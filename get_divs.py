@@ -17,6 +17,7 @@ assert os.name == 'posix', 'the os should support fork()'
 import argparse
 import functools
 import itertools
+import re
 import sys
 import warnings
 
@@ -33,8 +34,8 @@ except ImportError:
     warnings.warn('Cannot find FLANN. KNN searches will be much slower.')
     searcher = None
 
-from utils import (eps, col, get_col, izip, lazy_range,
-                   is_integer, portion, positive_int, confirm_outfile)
+from utils import (eps, col, get_col, izip, lazy_range, is_integer, raw_input,
+                   str_types, portion, positive_int, confirm_outfile)
 from mp_utils import ForkedData, map_unordered_with_progressbar, get_pool
 
 ################################################################################
@@ -534,8 +535,8 @@ def parse_args():
     parser.add_argument('output_file', nargs='?',
         help="Name of the output file; default input_file.py_divs.(mat|h5).")
     parser.add_argument('--output-format',
-        choices=['hdf5', 'mat'], default='mat',
-        help="Output file format; default .mat.")
+        choices=['hdf5', 'mat'], default='hdf5',
+        help="Output file format; default %(default)s.")
 
     parser.add_argument('--n-proc', type=positive_int, default=None,
         help="Number of processes to use; default is as many as CPU cores.")
@@ -574,16 +575,29 @@ def parse_args():
 
 def main():
     args = parse_args()
-
     status_fn = functools.partial(print, file=sys.stderr)
-    confirm_outfile(args.output_file)
 
     status_fn('Reading data...')
     if args.input_format == 'matlab':
+        data = None
         bags = read_data(args.input_file, args.input_var_name)
     else:
         from extract_features import read_features
-        bags = read_features(args.input_file).features
+        data = read_features(args.input_file)
+        bags = data.features
+
+    dim = bags[0].shape[1]
+    if args.min_dist is None:
+        args.min_dist = default_min_dist(dim)
+
+    if args.output_format == 'mat':
+        confirm_outfile(args.output_file)
+    else:
+        if not os.path.exists(args.output_file):
+            confirm_outfile(args.output_file)
+        else:
+            check_h5_file_agreement(args.output_file, bags, data, args)
+            status_fn("Output file already exists, but agrees with args.")
 
     if args.n_points:
         bags = subset_data(bags, args.n_points)
@@ -596,21 +610,104 @@ def main():
             return_opts=True)
 
     status_fn("Outputting results to", args.output_file)
-    opts['Ds'] = R
 
+    opts['Ds'] = R
     if opts['min_dist'] is None:
         opts['min_dist'] = default_min_dist(opts['dim'])
+
+    if data is not None:
+        opts['labels'] = data.labels
+        opts['names'] = data.names
 
     if args.output_format == 'mat':
         scipy.io.savemat(args.output_file, opts, oned_as='column')
     else:
-        import h5py
-        with h5py.File(args.output_file) as f:
-            for k, v in opts.items():
-                f[k] = v
+        add_to_h5_file(args.output_file, opts)
 
     assert not np.any(np.isnan(R)), 'nan found in the result'
     assert not np.any(np.isinf(R)), 'inf found in the result'
+
+
+def check_h5_file_agreement(filename, bags, data, args):
+    with h5py.File(filename) as f:
+        # output file already exists; make sure args agree
+        if not f.attrs.keys() and not f.keys():
+            return
+        assert np.all(f.attrs['fix_mode'] == args.trim_mode)
+        assert np.all(f.attrs['tail'][...] == args.trim_tails)
+        assert np.all(f.attrs['min_dist'][...] == args.min_dist)
+        if 'names' in f.attrs and data is not None:
+            assert np.all(f.attrs['names'] == data.names)
+        if 'labels' in f.attrs and data is not None:
+            assert np.all(f.attrs['labels'] == data.labels)
+
+        n = len(bags)
+        assert all(divs.shape == (n, n)
+                   for div_group in f.values()
+                   for divs in div_group.values())
+
+        # any overlap with stuff we've already calculated?
+        div_funcs = []
+        for div_func in args.div_funcs:
+            div_funcs.extend(normalize_div_name(div_func))
+        overlap = [(div_func, k)
+                   for div_func in div_funcs if div_func in f
+                   for k in args.K if str(k) in f[div_func]]
+        if overlap:
+            msg = '\n'.join(
+                ["WARNING: the following divs will be overwritten:"] +
+                ['\t{}, k = {}'.format(df, k) for df, k in overlap] +
+                ['Proceed? [yN] '])
+            resp = raw_input(msg)
+            if not resp.startswith('y'):
+                sys.exit("Aborting.")
+
+
+def add_to_h5_file(filename, opts):
+    import h5py
+    with h5py.File(filename) as f:
+        for div_name, divs in izip(opts['div_names'],
+                                   np.rollaxis(opts['Ds'], axis=-1)):
+            name, k = reverse_div_name(div_name)
+            g = f.require_group(name)
+            if k in g:
+                g[k][...] = divs
+            else:
+                g[k] = divs
+
+        for k, v in opts.items():
+            if k in ('Ds', 'Ks', 'alphas', 'div_names'):
+                continue
+            if isinstance(v, list) and isinstance(v[0], str_types):
+                v = np.asarray(v, dtype=h5py.special_dtype(vlen=str))
+            f.attrs[k] = v
+
+
+_rev_name_map = dict((f.name, k) for k, f in func_mapping.items())
+_name_fmt = re.compile(r'''
+    ([^\[]+)          # div func name, eg NP-H
+    \[
+    (?:a=([.\d]+),)?  # optional alpha specification
+    K=(\d+)           # K spec
+    \]
+''', re.VERBOSE)
+def reverse_div_name(name):
+    '''
+    Parse names like NP-H[K=1] or NP-R[a=0.9,K=5]
+    into something like ('hellinger', 1) or ('renyi:.9', 5).
+    '''
+    # TODO: make the reversal unnecessary...sigh
+    div_name, alpha, k = _name_fmt.match(name).groups()
+    div_name = _rev_name_map[div_name]
+    s = '{}:{}'.format(div_name, alpha) if alpha else div_name
+    return s, k
+
+def normalize_div_name(name):
+    if ':' in name:
+        main, alpha = name.split(':')
+        return ['{}:{}'.format(main, float(al))
+                for al in alpha.split(',')]
+    return [name]
 
 if __name__ == '__main__':
     main()
