@@ -21,10 +21,14 @@ import scipy.io
 import scipy.linalg
 import sklearn.base
 from sklearn.cross_validation import KFold
+from sklearn.preprocessing import LabelEncoder
 from sklearn import svm  # NOTE: needs version 0.13+ for svm iter limits
 
-from get_divs import get_divs, TAIL_DEFAULT, read_cell_array, subset_data
-from utils import positive_int, positive_float, portion, is_integer_type
+from get_divs import (get_divs, FIX_MODE_DEFAULT, FIX_TERM_MODES, TAIL_DEFAULT,
+                      read_cell_array, subset_data, check_h5_settings,
+                      normalize_div_name)
+from utils import (positive_int, positive_float, portion, is_integer_type,
+                   itervalues, iteritems)
 from mp_utils import ForkedData, get_pool, progressbar_and_updater
 
 # TODO: handle input files from {extract,proc}_features
@@ -101,38 +105,37 @@ def split_km(km, train_idx, test_idx):
 ### Cached divs helper
 
 def get_divs_cache(bags, div_func, K, cache_filename=None,
-                   n_proc=None, tail=TAIL_DEFAULT, min_dist=None,
-                   status_fn=True, progressbar=None):
+                   n_proc=None, fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT,
+                   min_dist=None, status_fn=True, progressbar=None):
 
     status = get_status_fn(status_fn)
 
     if cache_filename and os.path.exists(cache_filename):
         path = '{}/{}'.format(div_func, K)
         with h5py.File(cache_filename, 'r') as f:
+            check_h5_settings(f, n=len(bags), dim=bags[0].shape[1],
+                fix_mode=fix_mode, tail=tail, min_dist=min_dist)
             if path in f:
                 divs = f[path]
-                assert divs.shape == (len(bags), len(bags))
+                # assert divs.shape == (len(bags), len(bags)) # in check
                 status("Loading divs from cache '{}'".format(cache_filename))
                 return divs[...]
 
     divs = np.squeeze(get_divs(
             bags, specs=[div_func], Ks=[K],
-            n_proc=n_proc, tail=tail, min_dist=min_dist,
+            n_proc=n_proc, fix_mode=fix_mode, tail=tail, min_dist=min_dist,
             status_fn=status_fn, progressbar=progressbar))
 
     if cache_filename:
         status("Saving divs to cache '{}'".format(cache_filename))
         with h5py.File(cache_filename) as f:
-            if div_func not in f:
-                f.create_group(div_func)
-            f[div_func].create_dataset(str(K), data=divs)
+            f.require_group(div_func).create_dataset(str(K), data=divs)
 
     return divs
 
 
 ################################################################################
 ### Parameter tuning
-
 
 def try_params(km, labels, train_idx, test_idx, C, params):
     train_km, test_km = split_km(km.value, train_idx, test_idx)
@@ -161,7 +164,6 @@ def tune_params(divs, labels,
                 svm_shrinking=DEFAULT_SVM_SHRINKING,
                 status_fn=True,
                 progressbar=None):
-
     if progressbar is None:
         progressbar = status_fn is True
     status_fn = get_status_fn(status_fn)
@@ -253,7 +255,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
                  tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
                  svm_shrinking=DEFAULT_SVM_SHRINKING,
                  status_fn=None, progressbar=None,
-                 tail=TAIL_DEFAULT, min_dist=None):
+                 fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None):
         self.div_func = div_func
         self.K = K
         self.tuning_folds = tuning_folds
@@ -271,6 +273,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         self.svm_shrinking = svm_shrinking
         self._status_fn = status_fn
         self._progressbar = progressbar
+        self.fix_mode = FIX_MODE_DEFAULT
         self.tail = tail
         self.min_dist = min_dist
 
@@ -312,7 +315,8 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
             self.status_fn('Getting divergences...')
             divs = get_divs_cache(X, div_func=self.div_func, K=self.K,
                     cache_filename=divs_cache,
-                    n_proc=self.n_proc, tail=self.tail, min_dist=self.min_dist,
+                    n_proc=self.n_proc, min_dist=self.min_dist,
+                    fix_mode=self.fix_mode, tail=self.tail,
                     status_fn=self.status_fn, progressbar=self.progressbar)
         else:
             #self.status_fn('Using passed-in divergences...')
@@ -369,7 +373,8 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
             divs = np.squeeze(get_divs(
                     self.train_bags_ + data, mask=mask,
                     specs=[self.div_func], Ks=[self.K],
-                    n_proc=self.n_proc, tail=self.tail, min_dist=self.min_dist,
+                    n_proc=self.n_proc, min_dist=self.min_dist,
+                    fix_mode=self.fix_mode, tail=self.tail,
                     status_fn=self.status_fn, progressbar=self.progressbar))
             divs = (divs[-n_test:, :n_train] + divs[:n_train, -n_test].T) / 2
         else:
@@ -404,7 +409,7 @@ def transduct(train_bags, train_labels, test_bags,
               svm_shrinking=DEFAULT_SVM_SHRINKING,
               status_fn=True,
               progressbar=None,
-              tail=TAIL_DEFAULT, min_dist=None,
+              fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
               divs=None,
               divs_cache=None,
               return_config=False):
@@ -428,7 +433,7 @@ def transduct(train_bags, train_labels, test_bags,
                 train_bags + test_bags,
                 div_func=div_func, K=K,
                 cache_filename=divs_cache,
-                n_proc=n_proc, tail=tail, min_dist=min_dist,
+                n_proc=n_proc, fix_mode=fix_mode, tail=tail, min_dist=min_dist,
                 status_fn=status_fn, progressbar=progressbar)
     else:
         #status_fn('Using passed-in divergences...')
@@ -496,8 +501,7 @@ def crossvalidate(bags, labels, num_folds=10,
         svm_shrinking=DEFAULT_SVM_SHRINKING,
         status_fn=True,
         progressbar=None,
-        tail=TAIL_DEFAULT,
-        min_dist=None,
+        fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
         divs=None,
         divs_cache=None):
 
@@ -506,7 +510,7 @@ def crossvalidate(bags, labels, num_folds=10,
         ['div_func', 'K', 'tuning_folds', 'n_proc', 'C_vals', 'sigma_vals',
          'scale_sigma', 'weight_classes', 'cache_size', 'tuning_cache_size',
          'svm_tol', 'tuning_svm_tol', 'svm_max_iter', 'tuning_svm_max_iter',
-         'svm_shrinking', 'status_fn', 'progressbar', 'tail'])
+         'svm_shrinking', 'status_fn', 'progressbar', 'fix_mode', 'tail'])
 
     status = get_status_fn(status_fn)
 
@@ -522,7 +526,8 @@ def crossvalidate(bags, labels, num_folds=10,
     if divs is None:
         status('Getting divergences...')
         divs = get_divs_cache(bags, div_func=div_func, K=K,
-                cache_filename=divs_cache, tail=tail, min_dist=min_dist,
+                cache_filename=divs_cache,
+                fix_mode=fix_mode, tail=tail, min_dist=min_dist,
                 status_fn=status_fn, progressbar=progressbar)
     else:
         #status_fn('Using passed-in divergences...')
@@ -598,6 +603,7 @@ def parse_args():
                 help="Operate inductively (only project training Gram matrix).")
 
         algo.add_argument('--div-func', '-d', default='renyi:.9',
+            type=normalize_div_name,
             help="The divergence function to use " + _def)
 
         algo.add_argument('-K', type=positive_int, default=DEFAULT_K,
@@ -659,6 +665,9 @@ def parse_args():
         algo.add_argument('--trim-tails', type=portion, metavar='PORTION',
             default=TAIL_DEFAULT,
             help="How much to trim when using a trimmed mean estimator " + _def)
+        parser.add_argument('--trim-mode',
+            choices=FIX_TERM_MODES, default=FIX_MODE_DEFAULT,
+            help="Whether to trim or clip ends; default %(default)s.")
         algo.add_argument('--min-dist', type=float, default=None,
             help="Protect against identical points by making sure kNN "
                  "distances are always at least this big. Default: the smaller "
@@ -702,11 +711,18 @@ def parse_args():
     io = parser_cv.add_argument_group('input/output options')
     io.add_argument('input_file',
         help="The input HDF5 file (e.g. a .mat file with -v7.3).")
+    io.add_argument('--input-format',
+        choices=['matlab', 'python'], default='python',
+        help="Whether the features file was generated by the matlab code or "
+             "the python code; default python.")
 
     io.add_argument('--bags-name', default='bags',
-        help="The name of a cell array of row-instance data matrices " + _def)
+        help="The name of a cell array of row-instance data matrices " + _def
+             + " Only used for matlab format.")
     io.add_argument('--labels-name', default='labels',
-        help="The name of a vector of training labels (integers) " + _def)
+        help="The name of a vector of training labels (integers) " + _def
+             + " Only used for matlab format.")
+
     io.add_argument('--cv-folds', '-f', type=positive_int, default=10,
         help="The number of cross-validation folds " + _def)
 
@@ -751,6 +767,7 @@ def opts_dict(args):
         tuning_svm_max_iter=args.tuning_svm_max_iter,
         svm_shrinking=args.svm_shrinking,
         tail=args.trim_tails,
+        fix_mode=args.trim_mode,
         min_dist=args.min_dist,
     )
 
@@ -801,10 +818,20 @@ def do_cv(args):
 
     status_fn('Reading inputs...')
     with h5py.File(args.input_file, 'r') as f:
-        bags = read_cell_array(f, f[args.bags_name])
+        if args.input_format == 'matlab':
+            bags = read_cell_array(f, f[args.bags_name])
+            labels = f[args.labels_name][...]
+        else:
+            label_encoder = LabelEncoder()
+            bags = []
+            label_strs = []
+            for label, label_g in iteritems(f):
+                for g in itervalues(label_g):
+                    bags.append(g['features'][...])
+                    label_strs.append(label)
+            labels = label_encoder.fit_transform(label_strs)
         if args.n_points:
             bags = subset_data(bags, args.n_points)
-        labels = f[args.labels_name][...]
 
     assert np.all(labels == np.round(labels))
     labels = labels.astype(int)

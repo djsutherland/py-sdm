@@ -21,7 +21,7 @@ _dtypes = {
     'u': (c_uint, c_uint8, c_uint32, c_uint64),
     'f': (c_float, c_double),
 }
-for t, c_types in _dtypes.iteritems():
+for t, c_types in _dtypes.items():
     for c_type in c_types:
         dtype = np.dtype('<{}{}'.format(t, sizeof(c_type)))
         np_to_c_types[dtype] = c_type

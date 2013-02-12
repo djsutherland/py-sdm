@@ -11,6 +11,7 @@ import numpy as np
 import h5py
 
 from get_divs import fix_terms_clip, get_divs
+from utils import iteritems
 
 ################################################################################
 
@@ -185,7 +186,7 @@ def load_bags(filename, groupname):
     bags = []
     labels = []
     with h5py.File(filename, 'r') as f:
-        for label, group in f[groupname].iteritems():
+        for label, group in iteritems(f[groupname]):
             if label == 'divs':
                 continue
             for bag in group.itervalues():
@@ -213,7 +214,7 @@ def check_div(bags, expected, name, **args):
         divs = get_divs(bags, specs=div_funcs, Ks=[K],
                         tail=.01, min_dist=0, fix_mode='clip', **args)
 
-    argstr = ', '.join('{}={}'.format(k, v) for k, v in args.iteritems())
+    argstr = ', '.join('{}={}'.format(k, v) for k, v in iteritems(args))
 
     divs = divs.transpose((2, 0, 1))
     for df, calc, exp in zip(div_funcs, divs, expected):
