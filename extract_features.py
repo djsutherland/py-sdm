@@ -1,10 +1,14 @@
 #!/usr/bin/env python
 from __future__ import division, print_function
 
+from bisect import bisect
 from collections import defaultdict, namedtuple
+import csv
 from functools import partial
+from itertools import islice, takewhile
 import os
 import random
+import warnings
 
 import numpy as np
 
@@ -17,8 +21,8 @@ from vlfeat.phow import (vl_phow, DEFAULT_MAGNIF, DEFAULT_CONTRAST_THRESH,
 # NOTE: depends on skimage for resizing, and either opencv, matplotlib with PIL,
 # or skimage with one of the plugins below for reading images
 
-
-Features = namedtuple('Features', ['labels', 'names', 'frames', 'features'])
+features_attrs = ['labels', 'names', 'frames', 'features', 'extras']
+Features = namedtuple('Features', features_attrs)
 
 
 DEFAULT_STEP = 20
@@ -93,6 +97,48 @@ def _load_features(filename, imread_mode=IMREAD_MODES, size=None, **kwargs):
     return get_features(img, **kwargs)
 
 
+def _load_extras(paths):
+    dirnames = set(os.path.dirname(path) for path in paths)
+
+    lists = {}
+    csv_contents = defaultdict(dict)
+    for dirname in dirnames:
+        lists[dirname] = ls = sorted(os.listdir(dirname))
+        for csv_filename in (f for f in ls if f.endswith('.csv')):
+            name = csv_filename[:-len('.csv')]
+            vals = {}
+            with open(os.path.join(dirname, csv_filename)) as f:
+                for line in csv.reader(f):
+                    try:
+                        fname, val = line
+                        vals[fname] = float(val)
+                    except ValueError:
+                        warnings.warn('Bad line in {} (length {})'.format(
+                            os.path.join(dirname, csv_filename), len(line)))
+                        break
+                else:
+                    csv_contents[dirname][name] = vals
+
+    extras = []
+    for path in paths:
+        dirname, basename = os.path.split(path)
+        files_in_dir = lists[dirname]
+        pos = bisect(files_in_dir, basename)
+        extension_files = takewhile(lambda x: x.startswith(basename),
+                                    islice(files_in_dir, pos, None))
+        extra = {}
+        for fname in extension_files:
+            extra_name = fname[len(basename):]
+            if extra_name[0] in '._-':
+                extra_name = extra_name[1:]
+            extra[extra_name] = np.loadtxt(os.path.join(dirname, fname))
+        for extra_name, vals in iteritems(csv_contents[dirname]):
+            if basename in vals:
+                extra[extra_name] = vals[basename]
+        extras.append(extra)
+    return extras
+
+
 def _sample_uniform(lst, n):
     if len(lst) <= n:
         return lst
@@ -110,6 +156,7 @@ DEFAULT_EXTENSIONS = frozenset(['jpg', 'png', 'bmp'])
 def extract_features(dirs, img_per_cla=None, sampler='first',
                      extensions=DEFAULT_EXTENSIONS,
                      imread_mode=IMREAD_MODES,
+                     pick_up_csv=True,
                      parallel=False, **kwargs):
     '''
     Extracts features from images in a list of data directories.
@@ -153,6 +200,7 @@ def extract_features(dirs, img_per_cla=None, sampler='first',
         for label, images in iteritems(ims_by_label)
         for dirname, fname in sample(sorted(images), img_per_cla)
     ])
+    extras = _load_extras(paths)
 
     # sort out parallelism options
     pool = None
@@ -171,7 +219,7 @@ def extract_features(dirs, img_per_cla=None, sampler='first',
     # do the actual extraction
     load_features = partial(_load_features, imread_mode=imread_mode, **kwargs)
     frames, descrs = zip(*do_map(load_features, paths))
-    return Features(labels, image_names, frames, descrs)
+    return Features(labels, image_names, frames, descrs, extras)
 
 
 def parse_args():
@@ -305,10 +353,13 @@ def save_features(filename, features, **attrs):
     '''
     import h5py
     with h5py.File(filename) as f:
-        for label, name, frames, descrs in izip(*features):
+        for label, name, frames, descrs, extra in izip(*features):
             g = f.require_group(label).create_group(name)
             g['frames'] = frames
             g['features'] = descrs
+            if extra:
+                for k, v in iteritems(extra):
+                    g[k] = v
 
         for k, v in iteritems(attrs):
             f.attrs[k] = v
@@ -320,19 +371,26 @@ def read_features(filename, load_attrs=False, features_dtype=None):
     If load_attrs, also returns a dictionary of the root attributes.
     '''
     import h5py
-    ret = Features([], [], [], [])
+    ret = Features([], [], [], [], [])
 
     with h5py.File(filename, 'r') as f:
         for label, label_g in iteritems(f):
             for fname, g in iteritems(label_g):
                 ret.labels.append(label)
                 ret.names.append(fname)
-                ret.frames.append(g["frames"][...])
-                if features_dtype is not None:
-                    feats = np.asarray(g['features'], dtype=features_dtype)
-                else:
-                    feats = g['features'][...]
+                extra = {}
+                for k, v in iteritems(g):
+                    if k == 'frames':
+                        ret.frames.append(v[()])
+                    elif k == 'features':
+                        if features_dtype is not None:
+                            feats = np.asarray(v, dtype=features_dtype)
+                        else:
+                            feats = v[()]
+                    else:
+                        extra[k] = v[()]
                 ret.features.append(feats)
+                ret.extras.append(extra)
 
         return (ret, dict(**f.attrs)) if load_attrs else ret
 

@@ -7,8 +7,8 @@ import sys
 import numpy as np
 
 from utils import izip, positive_int, portion, nonnegative_float, strict_map
-from extract_features import (Features, read_features, save_features,
-                              confirm_outfile)
+from extract_features import (Features, features_attrs,
+                              read_features, save_features, confirm_outfile)
 
 # NOTE: all the references to "features" in this file mean a variable that is
 #       like Features.features; "features_tup" means an instance of Features
@@ -137,7 +137,9 @@ def process_features(features_tup, verbose=False,
         pr("Normalizing features to mean 0, variance 1...")
         features = normalize(features)
 
-    return Features(*features_tup[:-1], features=features)
+    return Features(features=features,
+        **dict((k, getattr(features_tup, k))
+               for k in features_attrs if k != 'features'))
 
 
 def parse_args(args=None):

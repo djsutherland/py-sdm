@@ -44,6 +44,7 @@ DEFAULT_SVM_SHRINKING = True
 
 DEFAULT_C_VALS = tuple(2.0 ** np.arange(-9, 19, 3))
 DEFAULT_SIGMA_VALS = tuple(2.0 ** np.arange(-4, 11, 2))
+DEFAULT_SVR_NU_VALS = (0.2, 0.3, 0.5, 0.7)
 DEFAULT_K = 3
 DEFAULT_TUNING_FOLDS = 3
 
@@ -137,7 +138,8 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
 ################################################################################
 ### Parameter tuning
 
-def try_params(km, labels, train_idx, test_idx, C, params):
+def try_params_SVC(km, train_idx, test_idx, C, labels, params):
+    '''Try params in an SVC; returns classification accuracy.'''
     train_km, test_km = split_km(km.value, train_idx, test_idx)
 
     clf = svm.SVC(C=C, **params)
@@ -146,17 +148,29 @@ def try_params(km, labels, train_idx, test_idx, C, params):
     preds = clf.predict(test_km)
     return np.mean(preds == labels.value[test_idx])
 
-def _assign_score(scores, C_vals, sigma_vals, print_fn,
-                 C_idx, sigma_idx, f_idx, val):
-    scores[C_idx, sigma_idx, f_idx] = val
+def try_params_NuSVR(km, train_idx, test_idx, C, nu, labels, params):
+    '''Try params in a NuSVR; returns negative of mean squared error.'''
+    train_km, test_km = split_km(km.value, train_idx, test_idx)
+
+    clf = svm.NuSVR(C=C, nu=nu, **params)
+    clf.fit(train_km, labels.value[train_idx])
+
+    preds = clf.predict(test_km)
+    return -np.mean((preds - labels.value[test_idx]) ** 2)
+
+def _assign_score(scores, C_vals, sigma_vals, print_fn, indices, val):
+    # indices should be a tuple
+    scores[indices] = val
     #print_fn('C {}, sigma {}, fold {}: acc {}'.format(
     #    C_vals[C_idx], sigma_vals[sigma_idx], f_idx, val))
 
 def tune_params(divs, labels,
+                mode='SVC',
                 num_folds=DEFAULT_TUNING_FOLDS,
                 n_proc=None,
                 C_vals=DEFAULT_C_VALS,
                 sigma_vals=DEFAULT_SIGMA_VALS, scale_sigma=True,
+                svr_nu_vals=DEFAULT_SVR_NU_VALS,
                 weight_classes=False,
                 cache_size=DEFAULT_SVM_CACHE,
                 svm_tol=DEFAULT_SVM_TOL,
@@ -168,28 +182,37 @@ def tune_params(divs, labels,
         progressbar = status_fn is True
     status_fn = get_status_fn(status_fn)
 
+    assert mode in ('SVC', 'NuSVR')
+
     C_vals = np.asarray(C_vals)
     sigma_vals = np.asarray(sigma_vals)
     if scale_sigma:
         sigma_vals *= np.median(divs[divs > 0])
 
+    if mode == 'NuSVR':
+        svr_nu_vals = np.asarray(svr_nu_vals)
+
     if C_vals.size <= 1 and sigma_vals.size <= 1:
-        # no tuning necessary
-        return C_vals[0], sigma_vals[0]
+        # no tuning necessary, unless we're regressing and have nu_vals
+        if mode == 'SVC':
+            return C_vals[0], sigma_vals[0]
+        elif mode == 'NuSVR' and svr_nu_vals.size <= 1:
+            return C_vals[0], sigma_vals[0], svr_nu_vals[0]
 
     num_bags = divs.shape[0]
     assert divs.ndim == 2 and divs.shape[1] == num_bags
     assert labels.shape == (num_bags,)
 
-    svm_params = dict(
-        cache_size=cache_size,
-        class_weight='auto' if weight_classes else None,
-        kernel='precomputed',
-        tol=svm_tol,
-        max_iter=svm_max_iter,
-        shrinking=svm_shrinking,
-        #verbose=True,
-    )
+    svm_params = {
+        'cache_size': cache_size,
+        'kernel': 'precomputed',
+        'tol': svm_tol,
+        'max_iter': svm_max_iter,
+        'shrinking': svm_shrinking,
+        # 'verbose': True,
+    }
+    if mode == 'SVC':
+        svm_params['class_weight'] = 'auto' if weight_classes else None
 
     # get kernel matrices for the sigma vals we're trying
     # TODO: could be more careful about making copies here
@@ -201,28 +224,42 @@ def tune_params(divs, labels,
 
     labels_d = ForkedData(labels)
 
-    # try each sigma/C combination and see how they do
-    scores = np.empty((C_vals.size, sigma_vals.size, num_folds))
+    # try each param combination and see how they do
+    if mode == 'NuSVR':
+        shape = (sigma_vals.size, C_vals.size, svr_nu_vals.size, num_folds)
+    else:
+        shape = (sigma_vals.size, C_vals.size, num_folds)
+    scores = np.empty(shape)
     scores.fill(np.nan)
+
+    status_fn('Cross-validating parameter sets...')
     assign_score = partial(_assign_score, scores, C_vals, sigma_vals, status_fn)
     if progressbar:
         assign_score_ = assign_score
-        pbar, tick_pbar = progressbar_and_updater(
-                maxval=len(C_vals) * len(sigma_vals) * num_folds)
+        pbar, tick_pbar = progressbar_and_updater(maxval=scores.size)
         def assign_score(*args, **kwargs):
             assign_score_(*args, **kwargs)
             tick_pbar()
 
-    status_fn('Cross-validating parameter sets...')
-    jobs = itertools.product(enumerate(C_vals), enumerate(sigma_vals))
+    if mode == 'NuSVR':
+        jobs = itertools.product(
+            enumerate(sigma_vals), enumerate(C_vals), enumerate(svr_nu_vals))
+    else:
+        jobs = itertools.product(enumerate(sigma_vals), enumerate(C_vals))
     folds = list(enumerate(KFold(n=num_bags, n_folds=num_folds, shuffle=True)))
+
+    try_params = partial(try_params_SVC if mode == 'SVC' else try_params_NuSVR,
+                  labels=labels_d, params=svm_params)
+
     with get_pool(n_proc) as pool:
-        for (C_idx, C), (sigma_idx, sigma) in jobs:
+        for job in jobs:
+            indices, param_vals = zip(*job)
+            sigma = param_vals[0]
+
             for f_idx, (train, test) in folds:
-                set_res = partial(assign_score, C_idx, sigma_idx, f_idx)
-                pool.apply_async(try_params,
-                    [sigma_kms[sigma], labels_d, train, test, C, svm_params],
-                    callback=set_res)
+                set_res = partial(assign_score, (indices + (f_idx,)))
+                args = (sigma_kms[sigma], train, test) + param_vals[1:]
+                pool.apply_async(try_params, args, callback=set_res)
 
     if progressbar:
         pbar.finish()
@@ -230,9 +267,13 @@ def tune_params(divs, labels,
     # figure out which ones were best
     # TODO: randomize when there are ties...
     cv_means = scores.mean(axis=-1)
-    best_C, best_sigma = np.unravel_index(cv_means.argmax(), cv_means.shape)
-
-    return sigma_vals[best_sigma], C_vals[best_C]
+    best_indices = np.unravel_index(cv_means.argmax(), cv_means.shape)
+    if mode == 'NuSVR':
+        best_sigma, best_C, best_svr_nu = best_indices
+        return sigma_vals[best_sigma], C_vals[best_C], svr_nu_vals[best_svr_nu]
+    else:
+        best_sigma, best_C = best_indices
+        return sigma_vals[best_sigma], C_vals[best_C]
 
 
 ################################################################################
@@ -242,10 +283,12 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
     def __init__(self,
                  div_func='renyi:.9',
                  K=DEFAULT_K,
+                 mode='SVC',
                  tuning_folds=DEFAULT_TUNING_FOLDS,
                  n_proc=None,
                  C_vals=DEFAULT_C_VALS,
                  sigma_vals=DEFAULT_SIGMA_VALS, scale_sigma=True,
+                 svr_nu_vals=DEFAULT_SVR_NU_VALS,
                  weight_classes=False,
                  cache_size=DEFAULT_SVM_CACHE,
                  tuning_cache_size=DEFAULT_SVM_CACHE,
@@ -256,6 +299,8 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
                  svm_shrinking=DEFAULT_SVM_SHRINKING,
                  status_fn=None, progressbar=None,
                  fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None):
+        assert mode in ('SVC', 'NuSVR')
+        self.mode = mode
         self.div_func = div_func
         self.K = K
         self.tuning_folds = tuning_folds
@@ -263,6 +308,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         self.C_vals = C_vals
         self.sigma_vals = sigma_vals
         self.scale_sigma = scale_sigma
+        self.svr_nu_vals = svr_nu_vals
         self.weight_classes = weight_classes
         self.cache_size = cache_size
         self.tuning_cache_size = tuning_cache_size
@@ -276,6 +322,14 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         self.fix_mode = FIX_MODE_DEFAULT
         self.tail = tail
         self.min_dist = min_dist
+
+    @property
+    def classifier(self):
+        return self.mode == 'SVC'
+
+    @property
+    def regressor(self):
+        return self.mode == 'NuSVR'
 
     @property
     def status_fn(self):
@@ -292,20 +346,26 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         '''
         X: a list of row-instance data matrices, with common dimensionality
 
-        y: a vector of nonnegative integer class labels.
+        If classifying, y should be a vector of nonnegative integer class labels
             -1 corresponds to data that should be used semi-supervised, ie
             used in projecting the Gram matrix, but not in training the SVM.
+        If regressing, y should be a vector of real-valued class labels
+            nan is the corresponding semi-supervised indicator value
 
         divs: precomputed divergences among the passed points
         '''
         n_bags = len(X)
 
         y = np.squeeze(y)
-        assert is_integer_type(y)
         assert y.shape == (n_bags,)
-        assert np.all(y >= -1)
+        if self.classifier:
+            assert is_integer_type(y)
+            assert np.all(y >= -1)
 
-        train_idx = y != -1
+            train_idx = y != -1
+        else:
+            train_idx = ~np.isnan(y)
+
         train_y = y[train_idx]
         assert train_y.size >= 2
         self.train_bags_ = [X[i] for i, b in enumerate(train_idx) if b]
@@ -324,13 +384,15 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
 
         # tune params
         self.status_fn('Tuning SVM parameters...')
-        self.sigma_, self.C_ = tune_params(
+        tuned_params = tune_params(
                 divs=np.ascontiguousarray(divs[np.ix_(train_idx, train_idx)]),
+                mode=self.mode,
                 labels=train_y,
                 num_folds=self.tuning_folds,
                 n_proc=self.n_proc,
                 C_vals=self.C_vals,
                 sigma_vals=self.sigma_vals, scale_sigma=self.scale_sigma,
+                svr_nu_vals=self.svr_nu_vals,
                 weight_classes=self.weight_classes,
                 cache_size=self.tuning_cache_size,
                 svm_tol=self.tuning_svm_tol,
@@ -338,7 +400,14 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
                 svm_shrinking=self.svm_shrinking,
                 status_fn=self.status_fn,
                 progressbar=self.progressbar)
-        self.status_fn('Selected sigma {}, C {}'.format(self.sigma_, self.C_))
+        if self.mode == 'SVC':
+            self.sigma_, self.C_ = tuned_params
+            self.status_fn('Chose sigma {}, C {}'.format(*tuned_params))
+        elif self.mode == 'NuSVR':
+            self.sigma_, self.C_, self.svr_nu_ = tuned_params
+            self.status_fn('Chose sigma {}, C {}, nu {}'.format(*tuned_params))
+        else:
+            raise ValueError
 
         # project the final Gram matrix
         self.status_fn('Doing final projection')
@@ -347,15 +416,20 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
 
         # train the selected SVM
         self.status_fn('Training final SVM')
-        clf = svm.SVC(
-                C=self.C_,
-                cache_size=self.cache_size,
-                class_weight='auto' if self.weight_classes else None,
-                tol=self.svm_tol,
-                kernel='precomputed',
-                max_iter=self.svm_max_iter,
-                shrinking=self.svm_shrinking,
-        )
+        params = {
+            'cache_size': self.cache_size,
+            'tol': self.svm_tol,
+            'kernel': 'precomputed',
+            'max_iter': self.svm_max_iter,
+            'shrinking': self.svm_shrinking,
+        }
+        if self.mode == 'SVC':
+            params['class_weight'] = 'auto' if self.weight_classes else None
+            clf = svm.SVC(C=self.C_, **params)
+        elif self.mode == 'NuSVR':
+            clf = svm.NuSVR(C=self.C_, nu=self.nu_, **params)
+        else:
+            raise ValueError
         clf.fit(train_km, train_y)
         self.svm_ = clf
 
@@ -390,17 +464,22 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         # TODO: smarter projection options for inductive use
 
         preds = self.svm_.predict(divs)
-        assert np.all(preds == np.round(preds))
-        return preds.astype(int)
+        if self.classifier:
+            assert np.all(preds == np.round(preds))
+            return preds.astype(int)
+        else:
+            return preds
 
 
 def transduct(train_bags, train_labels, test_bags,
               div_func='renyi:.9',
               K=DEFAULT_K,
+              mode='SVC',
               tuning_folds=DEFAULT_TUNING_FOLDS,
               n_proc=None,
               C_vals=DEFAULT_C_VALS,
               sigma_vals=DEFAULT_SIGMA_VALS, scale_sigma=True,
+              svr_nu_vals=DEFAULT_SVR_NU_VALS,
               weight_classes=False,
               cache_size=DEFAULT_SVM_CACHE, tuning_cache_size=DEFAULT_SVM_CACHE,
               svm_tol=DEFAULT_SVM_TOL, tuning_svm_tol=DEFAULT_SVM_TOL,
@@ -417,6 +496,9 @@ def transduct(train_bags, train_labels, test_bags,
     # TODO: support CVing between multiple div funcs, values of K
     # TODO: support more SVM options
 
+    assert mode in ('SVC', 'NuSVR')
+    classifier = mode == 'SVC'
+
     if progressbar is None:
         progressbar = status_fn is True
     status_fn = get_status_fn(status_fn)
@@ -424,7 +506,11 @@ def transduct(train_bags, train_labels, test_bags,
     num_train = len(train_bags)
     train_labels = np.squeeze(train_labels)
     assert train_labels.shape == (num_train,)
-    assert is_integer_type(train_labels)
+    if classifier:
+        assert is_integer_type(train_labels)
+        assert np.all(train_labels >= 0)
+    else:
+        assert np.all(np.isfinite(train_labels))
 
     if divs is None:
         status_fn('Getting divergences...')
@@ -441,13 +527,15 @@ def transduct(train_bags, train_labels, test_bags,
         assert divs.shape == (n_bags, n_bags)
 
     status_fn('Tuning parameters...')
-    sigma, C = tune_params(
+    tuned_params = tune_params(
+            mode=mode,
             divs=np.ascontiguousarray(divs[:num_train, :num_train]),
             labels=train_labels,
             num_folds=tuning_folds,
             n_proc=n_proc,
             C_vals=C_vals,
             sigma_vals=sigma_vals, scale_sigma=scale_sigma,
+            svr_nu_vals=svr_nu_vals,
             weight_classes=weight_classes,
             cache_size=tuning_cache_size,
             svm_tol=tuning_svm_tol,
@@ -455,7 +543,14 @@ def transduct(train_bags, train_labels, test_bags,
             svm_shrinking=svm_shrinking,
             status_fn=status_fn,
             progressbar=progressbar)
-    status_fn('Selected sigma {}, C {}'.format(sigma, C))
+    if mode == 'SVC':
+        sigma, C = tuned_params
+        status_fn('Chose sigma {}, C {}'.format(*tuned_params))
+    elif mode == 'NuSVR':
+        sigma, C, svr_nu = tuned_params
+        status_fn('Chose sigma {}, C {}, nu {}'.format(*tuned_params))
+    else:
+        raise ValueError
 
     status_fn('Doing final projection')
     train_km, test_km = split_km(
@@ -464,28 +559,33 @@ def transduct(train_bags, train_labels, test_bags,
             xrange(num_train, divs.shape[0]))
 
     status_fn('Training final SVM')
-    clf = svm.SVC(
-            C=C,
-            cache_size=cache_size,
-            class_weight='auto' if weight_classes else None,
-            tol=svm_tol,
-            kernel='precomputed',
-            max_iter=svm_max_iter,
-            shrinking=svm_shrinking,
-    )
+    params = {
+        'cache_size': cache_size,
+        'tol': svm_tol,
+        'kernel': 'precomputed',
+        'max_iter': svm_max_iter,
+        'shrinking': svm_shrinking,
+    }
+    if mode == 'SVC':
+        params['class_weight'] = 'auto' if weight_classes else None
+        clf = svm.SVC(C=C, **params)
+    elif mode == 'NuSVR':
+        clf = svm.NuSVR(C=C, nu=svr_nu, **params)
     clf.fit(train_km, train_labels)
 
     preds = clf.predict(test_km)
-    assert np.all(preds == np.round(preds))
-    preds = preds.astype(int)
+    if classifier:
+        assert np.all(preds == np.round(preds))
+        preds = preds.astype(int)
 
-    return (preds, (sigma, C)) if return_config else preds
+    return (preds, tuned_params) if return_config else preds
 
 
 ################################################################################
 ### Cross-validation helper
 
 def crossvalidate(bags, labels, num_folds=10,
+        mode='SVC',
         div_func='renyi:.9',
         K=DEFAULT_K,
         tuning_folds=DEFAULT_TUNING_FOLDS,
@@ -493,6 +593,7 @@ def crossvalidate(bags, labels, num_folds=10,
         n_proc=None,
         C_vals=DEFAULT_C_VALS,
         sigma_vals=DEFAULT_SIGMA_VALS, scale_sigma=True,
+        svr_nu_vals=DEFAULT_SVR_NU_VALS,
         weight_classes=False,
         cache_size=DEFAULT_SVM_CACHE, tuning_cache_size=DEFAULT_SVM_CACHE,
         svm_tol=DEFAULT_SVM_TOL, tuning_svm_tol=DEFAULT_SVM_TOL,
@@ -505,12 +606,17 @@ def crossvalidate(bags, labels, num_folds=10,
         divs=None,
         divs_cache=None):
 
+    # TODO: allow specifying what the folds should be
+    # TODO: optionally return params for each fold, what the folds were, ...
+
     args = locals()
     opts = dict((v, args[v]) for v in
-        ['div_func', 'K', 'tuning_folds', 'n_proc', 'C_vals', 'sigma_vals',
-         'scale_sigma', 'weight_classes', 'cache_size', 'tuning_cache_size',
-         'svm_tol', 'tuning_svm_tol', 'svm_max_iter', 'tuning_svm_max_iter',
-         'svm_shrinking', 'status_fn', 'progressbar', 'fix_mode', 'tail'])
+        ['mode', 'div_func', 'K', 'tuning_folds', 'n_proc',
+         'C_vals', 'sigma_vals', 'scale_sigma', 'svr_nu_vals', 'weight_classes',
+         'cache_size', 'tuning_cache_size', 'svm_tol', 'tuning_svm_tol',
+         'svm_max_iter', 'tuning_svm_max_iter', 'svm_shrinking',
+         'status_fn', 'progressbar',
+         'fix_mode', 'tail', 'min_dist'])
 
     status = get_status_fn(status_fn)
 
@@ -519,9 +625,15 @@ def crossvalidate(bags, labels, num_folds=10,
     assert all(bag.ndim == 2 and bag.shape[1] == dim and bag.shape[0] > 0
                for bag in bags)
 
+    classifier = mode == 'SVC'
+
     labels = np.squeeze(labels)
     assert labels.shape == (num_bags,)
-    assert is_integer_type(labels)
+    if classifier:
+        assert is_integer_type(labels)
+        assert np.all(labels >= 0)
+    else:
+        assert np.all(np.isfinite(labels))
 
     if divs is None:
         status('Getting divergences...')
@@ -533,7 +645,11 @@ def crossvalidate(bags, labels, num_folds=10,
         #status_fn('Using passed-in divergences...')
         assert divs.shape == (num_bags, num_bags)
 
-    preds = -np.ones(num_bags, dtype=int)
+    if classifier:
+        preds = -np.ones(num_bags, dtype=int)
+    else:
+        preds = np.empty(num_bags)
+        preds.fill(np.nan)
 
     for i, (train, test) in \
             enumerate(KFold(n=num_bags, n_folds=num_folds, shuffle=True), 1):
@@ -553,9 +669,17 @@ def crossvalidate(bags, labels, num_folds=10,
             clf.fit(train_bags, train_labels, divs=divs[np.ix_(train, train)])
             preds[test] = clf.predict(test_bags)
 
-    # TODO: optionally return params for each fold, what the folds were, ...
+        if classifier:
+            acc = np.mean(preds[test] == labels[test])
+            status('Fold accuracy: {:.1%}'.format(acc))
+        else:
+            rmse = np.sqrt(np.mean((preds[test] - labels[test]) ** 2))
+            status('Fold RMSE: {}'.format(rmse))
 
-    return np.mean(preds == labels), preds
+    if classifier:
+        return np.mean(preds == labels), preds
+    else:
+        return np.sqrt(np.mean((preds - labels) ** 2)), preds
 
 
 ################################################################################
@@ -602,6 +726,15 @@ def parse_args():
             action='store_const', dest='mode', const='induct',
                 help="Operate inductively (only project training Gram matrix).")
 
+        m = algo.add_mutually_exclusive_group()
+        m.set_defaults(svm_mode='SVC')
+        m.add_argument('--svc',
+            action='store_const', dest='svm_mode', const='SVC',
+            help="Use the standard support vector classifier (default).")
+        m.add_argument('--nu-svr',
+            action='store_const', dest='svm_mode', const='NuSVR',
+            help="Use a NuSVR support vector regressor.")
+
         algo.add_argument('--div-func', '-d', default='renyi:.9',
             type=normalize_div_name,
             help="The divergence function to use " + _def)
@@ -623,10 +756,11 @@ def parse_args():
         comp.add_argument('--svm-tol',
             type=positive_float, default=DEFAULT_SVM_TOL,
             help="SVM solution tolerance " + _def)
-        comp.add_argument('--svm-max-iter',
+        g = comp.add_mutually_exclusive_group()
+        g.add_argument('--svm-max-iter',
             type=positive_int, default=DEFAULT_SVM_ITER,
             help="Limit on the number of SVM iterations " + _def)
-        comp.add_argument('--svm-unlimited-iter',
+        g.add_argument('--svm-unlimited-iter',
             action='store_const', const=-1, dest='svm_max_iter',
             help="Let the SVM try to iterate until full convergence.")
         comp.add_argument('--cache-size',
@@ -649,7 +783,8 @@ def parse_args():
             help="Size of tuning SVMs' cache, in megabytes " + _def)
 
         algo._add_action(ActionNoYes('weight-classes', default=False,
-            help="Reweight SVM loss to equalize classes (default: don't)."))
+            help="Reweight SVM loss to equalize classes (default: don't). "
+                 "Only applies to classification."))
 
         algo.add_argument('--c-vals', '-C', type=positive_float, nargs='+',
             default=DEFAULT_C_VALS, metavar='C',
@@ -657,15 +792,18 @@ def parse_args():
         algo.add_argument('--sigma-vals', '-S', type=positive_float, nargs='+',
             default=DEFAULT_SIGMA_VALS, metavar='SIGMA',
             help="Values to try for tuning kernel bandwidth sigma " + _def)
-
         algo._add_action(ActionNoYes('scale-sigma', default=True,
             help="Scale --sigma-vals by the median nonzero divergence; "
                  "does by default."))
+        algo.add_argument('--svr-nu-vals', type=portion, nargs='+',
+            default=DEFAULT_SVR_NU_VALS, metavar='NU',
+            help="Values to try for tuning the nu of NuSVR, a lower bound on "
+                 "the fraction of support vectors " + _def)
 
         algo.add_argument('--trim-tails', type=portion, metavar='PORTION',
             default=TAIL_DEFAULT,
             help="How much to trim when using a trimmed mean estimator " + _def)
-        parser.add_argument('--trim-mode',
+        algo.add_argument('--trim-mode',
             choices=FIX_TERM_MODES, default=FIX_MODE_DEFAULT,
             help="Whether to trim or clip ends; default %(default)s.")
         algo.add_argument('--min-dist', type=float, default=None,
@@ -686,14 +824,16 @@ def parse_args():
 
     io = parser_pred.add_argument_group('input/output options')
     io.add_argument('input_file',
-        help="The input HDF5 file (e.g. a .mat file with -v7.3).")
+        help="The input HDF5 file (e.g. a .mat file with -v7.3). Prediction "
+             'currently only supports the "matlab-style" format.')
 
     io.add_argument('--train-bags-name', default='train_bags',
         help="The name of a cell array of row-instance data matrices " + _def)
     io.add_argument('--test-bags-name', default='test_bags',
         help="The name of a cell array of row-instance data matrices " + _def)
     io.add_argument('--train-labels-name', default='train_labels',
-        help="The name of a vector of integer training labels " + _def)
+        help="The name of a vector of training labels, int if classifying, "
+             "float if regressing " + _def)
 
     io.add_argument('--output-file', required=False,
         help="Name of the output file; defaults to input_file.sdm_preds.mat.")
@@ -719,9 +859,11 @@ def parse_args():
     io.add_argument('--bags-name', default='bags',
         help="The name of a cell array of row-instance data matrices " + _def
              + " Only used for matlab format.")
-    io.add_argument('--labels-name', default='labels',
-        help="The name of a vector of training labels (integers) " + _def
-             + " Only used for matlab format.")
+    io.add_argument('--labels-name', default=None,
+        help="The name of a vector of training labels (integers if "
+             "classifying, reals if regressing). If matlab format, default "
+             "'labels'; if regressing in python format, no default; if "
+             "classifying in python format, ignored.")
 
     io.add_argument('--cv-folds', '-f', type=positive_int, default=10,
         help="The number of cross-validation folds " + _def)
@@ -752,12 +894,14 @@ def parse_args():
 
 def opts_dict(args):
     return dict(
+        mode=args.svm_mode,
         div_func=args.div_func,
         K=args.K,
         tuning_folds=args.tuning_folds,
         n_proc=args.n_proc,
         C_vals=args.c_vals,
         sigma_vals=args.sigma_vals, scale_sigma=args.scale_sigma,
+        svr_nu_vals=args.svr_nu_vals,
         weight_classes=args.weight_classes,
         cache_size=args.cache_size,
         tuning_cache_size=args.tuning_cache_size,
@@ -820,8 +964,8 @@ def do_cv(args):
     with h5py.File(args.input_file, 'r') as f:
         if args.input_format == 'matlab':
             bags = read_cell_array(f, f[args.bags_name])
-            labels = f[args.labels_name][...]
-        else:
+            labels = f[args.labels_name or 'labels'][...]
+        elif args.svm_mode == 'SVC':
             label_encoder = LabelEncoder()
             bags = []
             label_strs = []
@@ -830,18 +974,38 @@ def do_cv(args):
                     bags.append(g['features'][...])
                     label_strs.append(label)
             labels = label_encoder.fit_transform(label_strs)
+        elif args.svm_mode == 'NuSVR':
+            assert args.labels_name
+            bags = []
+            labels = []
+            for label_g in itervalues(f):
+                for g in itervalues(label_g):
+                    bags.append(g['features'][...])
+                    label = g[args.labels_name][()]
+                    if not np.isscalar(label):
+                        msg = "expected scalar label, not {!r}".format(label)
+                        raise TypeError(msg)
+                    labels.append(label)
+            labels = np.asarray(labels)
+        else:
+            raise ValueError
+
         if args.n_points:
             bags = subset_data(bags, args.n_points)
 
-    assert np.all(labels == np.round(labels))
-    labels = labels.astype(int)
+    if args.mode == 'SVC' and not is_integer_type(labels):
+        assert np.all(labels == np.round(labels))
+        labels = labels.astype(int)
 
     opts = opts_dict(args)
     acc, preds = crossvalidate(bags, labels, num_folds=args.cv_folds,
                                divs_cache=args.div_cache_file, **opts)
 
     status_fn('')
-    status_fn('Accuracy: {:.1%}'.format(acc))
+    if args.svm_mode == 'SVC':
+        status_fn('Accuracy: {:.1%}'.format(acc))
+    elif args.svm_mode == 'NuSVR':
+        status_fn('RMSE: {}'.format(acc))
 
     out = {
         'div_func': args.div_func,
@@ -850,8 +1014,13 @@ def do_cv(args):
         'sigma_vals': args.sigma_vals,
         'scale_sigma': args.scale_sigma,
         'preds': preds,
-        'acc': acc,
+        'svm_mode': args.svm_mode,
     }
+    if 'svm_mode' == 'SVC':
+        out['acc'] = acc
+    elif args.svm_mode == 'NuSVR':
+        out['rmse'] = acc
+        out['svr_nu_vals'] = args.svr_nu_vals
     status_fn('Saving output to {}'.format(args.output_file))
     scipy.io.savemat(args.output_file, out, oned_as='column')
 
