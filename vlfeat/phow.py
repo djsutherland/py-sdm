@@ -37,6 +37,12 @@ def vl_phow(image, fast=True, sizes=DEFAULT_SIZES, step=DEFAULT_STEP,
         raise TypeError("image should be 2d or 3d")
     image = as_float_image(image, order='F')
 
+    assert 2 <= image.ndim <= 3
+    if image.ndim == 3 and image.shape[2] == 4:
+        import warnings
+        warnings.warn("ignoring alpha channel")
+        image = image[:, :, :3]
+
     if color == 'gray':
         channels = 1
         if image.ndim == 3 and image.shape[2] > 1:
@@ -48,6 +54,9 @@ def vl_phow(image, fast=True, sizes=DEFAULT_SIZES, step=DEFAULT_STEP,
             import warnings
             warnings.warn("asked for color features from a grayscale image")
             image = np.dstack([image] * 3)
+
+        assert image.ndim == 3
+        assert image.shape[2] == 3
 
         if color == 'hsv':
             image = rgb2hsv(image)
