@@ -274,7 +274,8 @@ def parse_args():
 
     class AddDir(argparse.Action):
         def __call__(self, parser, namespace, values, option_string=None):
-            getattr(namespace, self.dest).update(dict((d, d) for d in values))
+            getattr(namespace, self.dest).update(dict(
+                (d, os.path.basename(d.rstrip('/'))) for d in values))
     files.add_argument('--dirs', nargs='+', action=AddDir, dest='dirs',
         metavar='DIR', help="Adds the path as a directory.")
 
