@@ -151,7 +151,7 @@ def l2_dist_sq(A, B):
 def default_min_dist(dim):
     return min(1e-2, 1e-100 ** (1.0 / dim))
 
-def knn_search(x, y, K, min_dist=None):
+def knn_search(x, y, K, min_dist=None, cores=1):
     '''
     Calculates distances to the first K closest elements of y for each x,
     which are row-instance data matrices.
@@ -171,7 +171,7 @@ def knn_search(x, y, K, min_dist=None):
 
     if searcher is not None:
         algorithm = 'linear' if dim > 5 else 'kdtree'
-        idx, dist = searcher.nn(y, x, K, algorithm=algorithm)
+        idx, dist = searcher.nn(y, x, K, algorithm=algorithm, cores=cores)
     else:
         D = l2_dist_sq(x, y)
         idx = np.argsort(D, 1)[:, :K]
