@@ -88,9 +88,17 @@ def _load_features(filename, imread_mode=IMREAD_MODES, size=None, **kwargs):
         import skimage.transform
         curr_x, curr_y = img.shape[:2]
         new_x, new_y = size
-        if new_x is None or new_y is None:
-            scale = new_x / curr_x if new_y is None else new_y / curr_y
-            img = skimage.transform.rescale(img, scale)
+#        if new_x is None or new_y is None:
+#            scale = new_x / curr_x if new_y is None else new_y / curr_y
+#            img = skimage.transform.rescale(img, scale)
+        if new_x is None:
+            scale = new_y / curr_y
+            newsize = (int(np.round(curr_x * scale)), new_y)
+            img = skimage.transform.resize(img, newsize)
+        elif new_y is None:
+            scale = new_x / curr_x
+            newsize = (new_x, int(np.round(curr_y * scale)))
+            img = skimage.transform.resize(img, newsize)
         else:
             img = skimage.transform.resize(img, size)
 
