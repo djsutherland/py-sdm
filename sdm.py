@@ -638,7 +638,7 @@ def crossvalidate(bags, labels, num_folds=10,
     if divs is None:
         status('Getting divergences...')
         divs = get_divs_cache(bags, div_func=div_func, K=K,
-                cache_filename=divs_cache,
+                cache_filename=divs_cache, n_proc=n_proc,
                 fix_mode=fix_mode, tail=tail, min_dist=min_dist,
                 status_fn=status_fn, progressbar=progressbar)
     else:
