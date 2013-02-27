@@ -177,10 +177,6 @@ def test_fix_terms_with_inf_and_nan():
 ################################################################################
 
 K = 3
-div_funcs = ['bc', 'hellinger', 'l2', 'renyi:.999']
-div_names = ['Bhattacharyya coefficient', 'Hellinger distance', 'L2 divergence',
-             'Renyi-0.999 divergence']
-
 
 def load_bags(filename, groupname):
     bags = []
@@ -196,19 +192,21 @@ def load_bags(filename, groupname):
 
 
 def load_divs(filename, groupname):
-    divs = []
+    divs = {}
     with h5py.File(filename, 'r') as f:
         g = f[groupname]['divs']
-        for name in div_names:
-            divs.append(g[name][...])
+        for name, val in iteritems(g):
+            divs[name] = val[...]
     return divs
 
 
-def assert_close(got, expected, msg, atol=1e-4):
-    assert np.allclose(got, expected, atol=atol), msg
+def assert_close(got, expected, msg, atol=1e-8, rtol=1e-5):
+    assert np.allclose(got, expected, atol=atol, rtol=rtol), msg
 
 
 def check_div(bags, expected, name, **args):
+    div_funcs = expected.keys()
+
     capturer = capture_output(True, True, merge=False)
     with capturer:
         divs = get_divs(bags, specs=div_funcs, Ks=[K],
@@ -217,28 +215,37 @@ def check_div(bags, expected, name, **args):
     argstr = ', '.join('{}={}'.format(k, v) for k, v in iteritems(args))
 
     divs = divs.transpose((2, 0, 1))
-    for df, calc, exp in zip(div_funcs, divs, expected):
-        f = partial(assert_close, calc, exp,
-                    "bad results for {}:{}".format(name, df),
-                    atol=1e-3)
+    for df, calc in zip(div_funcs, divs):
+        exp = expected[df]
+        if df == 'bc':
+            exp = np.minimum(exp, 1)  # matlab code doesn't threshold here
+
+        i, j = np.unravel_index(np.argmax(np.abs(calc - exp)), calc.shape)
+        f = partial(assert_close, calc, exp, atol=1e-7,
+            msg="bad results for {}:{}\n".format(name, df) +
+                "(max diff {:.1} = {:.3} - {:.3} at {},{})".format(
+                    abs(calc[i, j] - exp[i, j]), calc[i, j], exp[i, j], i, j))
         f.description = "divs: {} - {} - {}".format(name, df, argstr)
         yield f,
 
 
 def test_divs():
-    filename = os.path.join(os.path.dirname(__file__), 'test_dists.hdf5')
+    filename = os.path.join(os.path.dirname(__file__), 'test_dists.h5')
     args = [{'n_proc': n_proc, 'status_fn': status_fn}
             for n_proc in [1, None]
-            for status_fn in [None, True]]
+            for status_fn in [None]]  # , True]]
     # TODO: test a custom status_fn also
 
-    for groupname in ['gaussian', 'gaussian-50']:
+    for groupname in ['gaussian-2d-std12', 'gaussian-20d-std12']:
         bags, labels = load_bags(filename, groupname)
         expected = load_divs(filename, groupname)
         name = "test_dists.{}".format(groupname)
+
+        tests = []
         for extra in args:
-            for test in check_div(bags, expected, name, **extra):
-                yield test
+            tests.extend(check_div(bags, expected, name, **extra))
+        for test in sorted(tests, key=lambda t: t[0].description):
+            yield test
 
 ################################################################################
 

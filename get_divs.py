@@ -121,7 +121,7 @@ def fix_terms_clip(terms, tail=TAIL_DEFAULT):
     terms = terms[np.logical_not(np.isnan(terms))]
 
     find_noninf_max = True
-    if tail > 0:
+    if 0 < tail < 1:
         cutoff = quantile(terms, 1 - tail)
         find_noninf_max = not np.isfinite(cutoff)
 
@@ -170,7 +170,7 @@ def knn_search(x, y, K, min_dist=None, cores=1):
         raise TypeError("K must be a positive integer")
 
     if searcher is not None:
-        algorithm = 'linear' if dim > 5 else 'kdtree'
+        algorithm = 'linear' if dim > 5 else 'kdtree_single'
         idx, dist = searcher.nn(y, x, K, algorithm=algorithm, cores=cores)
     else:
         D = l2_dist_sq(x, y)
@@ -199,8 +199,9 @@ def knn_search_forked(bags, i, j, K, min_dist=None):
 def l2(xx, xy, yy, yx, Ks, dim, tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT,
        **opts):
     '''
-    Estimate the L2 distance between two divergences, based on kNN distances.
-    Returns a vector: one element for each K in opt['Ks'].
+    Estimate the L2 distance between two distributions, based on kNN distances.
+
+    Returns a vector: one element for each K.
     '''
     fix = functools.partial(fix_terms, tail=tail, mode=fix_mode)
 
@@ -216,11 +217,18 @@ def l2(xx, xy, yy, yx, Ks, dim, tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT,
         rho_x, nu_x = get_col(xx, K-1), get_col(xy, K-1)
         rho_y, nu_y = get_col(yy, K-1), get_col(yx, K-1)
 
-        total = (fix((K-1) / ((N-1)*c) / (rho_x ** dim)).mean()
-               + fix((K-1) / ((M-1)*c) / (rho_y ** dim)).mean()
-               - fix((K-1) / (  M * c) / ( nu_x ** dim)).mean()
-               - fix((K-1) / (  N * c) / ( nu_y ** dim)).mean())
+        e_p2 = (K-1) / ((N-1)*c) / (rho_x ** dim)  # \int p^2
+        e_pq = (K-1) / (  M * c) / ( nu_x ** dim)  # \int pq (p is proposal)
+        e_qp = (K-1) / (  N * c) / ( nu_y ** dim)  # \int qp (q is proposal)
+        e_q2 = (K-1) / ((M-1)*c) / (rho_y ** dim)  # \int q^2
 
+        if N == M:  # TODO: this should probably go away?
+            total = fix(e_p2 - e_pq - e_qp + e_q2).mean()
+        else:
+            total = (fix(e_p2).mean()
+                   - fix(e_pq).mean()
+                   - fix(e_qp).mean()
+                   + fix(e_q2).mean())
         rs.append(np.sqrt(max(0, total)))
 
     return np.array(rs)
@@ -230,9 +238,11 @@ l2.name = 'NP-L2'
 
 def alpha_div(xx, xy, yy, yx, alphas, Ks, dim,
               tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT, **opts):
-    '''
-    Estimate the alpha divergence between distributions, based on kNN distances.
-    Used in Renyi and Hellinger divergence estimation.
+    r'''
+    Estimate the alpha divergence between distributions, based on kNN distances:
+        \int p^\alpha q^(1-\alpha)
+    Used in Renyi, Hellinger, Bhattacharyya divergence estimation.
+
     Returns a matrix: each row corresponds to an alpha, each column to a K.
     '''
     if xy is None:  # identical bags
@@ -263,16 +273,24 @@ alpha_div.name = 'NP-A'
 
 
 def bhattacharyya(xx, xy, yy, yx, Ks, **opts):
+    r'''
+    Estimate the Bhattacharyya coefficient between distributions, based on kNN
+    distances:  \int \sqrt{p q}
+
+    Returns a vector, one element for each K.
+    '''
     del opts['alphas']
-    return alpha_div(xx, xy, yy, yx, alphas=[.5], Ks=Ks, **opts)
-bhattacharyya.is_symmetric = False
+    est = alpha_div(xx, xy, yy, yx, alphas=[.5], Ks=Ks, **opts)[0]
+    return np.minimum(est, 1)  # BC <= 1
+bhattacharyya.is_symmetric = False  # the true BC is, but not our estimate
 bhattacharyya.name = 'NP-BC'
 
 
 def renyi(xx, xy, yy, yx, alphas, Ks, **opts):
-    '''
+    r'''
     Estimate the Renyi-alpha divergence between distributions, based on kNN
-    distances.
+    distances:  1/(\alpha-1) \log \int p^alpha q^(1-\alpha)
+
     Returns a matrix: each row corresponds to an alpha, each column to a K.
     '''
     alphas = np.asarray(alphas)
@@ -287,9 +305,9 @@ renyi.name = 'NP-R'
 
 def hellinger(xx, xy, yy, yx, Ks, dim,
               tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT, **opts):
-    '''
+    r'''
     Estimate the Hellinger distance between distributions, based on kNN
-    distances.
+    distances:  \sqrt{1 - \int \sqrt{p q}}
     Returns a vector: one element for each K.
     '''
     est = np.squeeze(alpha_div(xx, xy, yy, yx, alphas=[0.5], Ks=Ks, dim=dim,
@@ -378,7 +396,7 @@ def process_func_specs(div_specs, Ks):
             func_name, alpha_spec = func_spec.split(':', 2)
 
             new_alphas = np.sort([float(a) for a in alpha_spec.split(',')])
-            if alphas and not np.all(alphas == new_alphas):
+            if len(alphas) and not np.all(alphas == new_alphas):
                 raise ValueError("Can't do conflicting alpha options yet.")
             alphas = new_alphas
 
@@ -389,8 +407,7 @@ def process_func_specs(div_specs, Ks):
         else:
             func = func_mapping[func_spec]
             funcs.append(func)
-            div_names.extend(['{}[K={}]'.format(func.name, K)
-                              for K in Ks])
+            div_names.extend(['{}[K={}]'.format(func.name, K) for K in Ks])
     return funcs, div_names, alphas
 
 def read_cell_array(f, data):
@@ -498,6 +515,9 @@ def get_divs(bags,
             elif mask[j, i]:
                 jobs.append((j, i, False))
 
+    # TODO: instead of processor returning basically a crappy list-formatted
+    #       sparse spec of the matrix that gets pickled, just have it fill in
+    #       directly with ForkedData
     status_fn('Doing the real work...')
     with get_pool(n_proc) as pool:
         if progressbar:
