@@ -41,6 +41,7 @@ from mp_utils import ForkedData, map_unordered_with_progressbar, get_pool
 ################################################################################
 ### Helpers for robust mean estimation
 # XXX: old code used _clip, but _trim seems better
+# TODO: figure out the "right" way to do this
 
 TAIL_DEFAULT = 0.01
 FIX_MODE_DEFAULT = 'trim'

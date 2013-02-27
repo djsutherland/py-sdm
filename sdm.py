@@ -31,9 +31,7 @@ from utils import (positive_int, positive_float, portion, is_integer_type,
                    itervalues, iteritems)
 from mp_utils import ForkedData, get_pool, progressbar_and_updater
 
-# TODO: handle input files from {extract,proc}_features
 # TODO: better logging
-# TODO: better divergence cache support
 # TODO: support getting decision values / probabilities
 
 DEFAULT_SVM_CACHE = 1000
