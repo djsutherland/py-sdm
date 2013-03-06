@@ -151,7 +151,7 @@ def _sample_uniform(lst, n):
     if len(lst) <= n:
         return lst
     indices = np.round(np.linspace(0, len(lst) - 1, n))
-    assert np.diff(indices) >= 1
+    assert np.all(np.diff(indices) >= 1)
     return [lst[int(i)] for i in indices]
 
 SAMPLERS = {
@@ -194,7 +194,7 @@ def extract_features(dirs, img_per_cla=None, sampler='first',
     seen_names = defaultdict(set)
     for dirname, label in iteritems(dirs):
         for fname in os.listdir(dirname):
-            if fname.rsplit('.', 1)[1].lower() in extensions:
+            if '.' in fname and fname.rsplit('.', 1)[1].lower() in extensions:
                 if fname in seen_names[label]:
                     raise ValueError("more than one {!r} with label {!r}"
                             .format(fname, label))

@@ -126,8 +126,11 @@ def process_features(features_tup, verbose=False,
 
     if do_pca:
         pr("Running PCA...")
+        old_dim = features[0].shape[1]
         features = pca_features(features,
             k=pca_k, varfrac=pca_varfrac, randomize=pca_random)
+        new_dim = features[0].shape[1]
+        pr("Reduced dimensionality from {} to {}.".format(old_dim, new_dim))
 
     if add_x or add_y:
         pr("Adding spatial info...")
