@@ -26,8 +26,8 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn import svm  # NOTE: needs version 0.13+ for svm iter limits
 
 from get_divs import (get_divs, FIX_MODE_DEFAULT, FIX_TERM_MODES, TAIL_DEFAULT,
-                      read_cell_array, subset_data, check_h5_settings,
-                      normalize_div_name)
+                      read_cell_array, subset_data,
+                      check_h5_settings, add_to_h5_cache, normalize_div_name)
 from utils import (positive_int, positive_float, portion, is_integer_type,
                    itervalues, iteritems)
 from mp_utils import ForkedData, get_pool, progressbar_and_updater
@@ -105,8 +105,9 @@ def split_km(km, train_idx, test_idx):
 ### Cached divs helper
 
 def get_divs_cache(bags, div_func, K, cache_filename=None,
-                   n_proc=None, fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT,
-                   min_dist=None, status_fn=True, progressbar=None):
+                   names=None, labels=None, cats=None,
+                   fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
+                   n_proc=None, status_fn=True, progressbar=None):
 
     status = get_status_fn(status_fn)
 
@@ -114,7 +115,8 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
         path = '{}/{}'.format(div_func, K)
         with h5py.File(cache_filename, 'r') as f:
             check_h5_settings(f, n=len(bags), dim=bags[0].shape[1],
-                fix_mode=fix_mode, tail=tail, min_dist=min_dist)
+                fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+                labels=labels, names=names, cats=cats)
             if path in f:
                 divs = f[path]
                 # assert divs.shape == (len(bags), len(bags)) # in check
@@ -130,6 +132,10 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
     if cache_filename:
         status("Saving divs to cache '{}'".format(cache_filename))
         with h5py.File(cache_filename) as f:
+            add_to_h5_cache(f, {(div_func, K): divs},
+                            dim=bags[0].shape[1],
+                            fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+                            names=names, labels=labels, cats=cats)
             f.require_group(div_func).create_dataset(str(K), data=divs)
 
     return divs
@@ -342,7 +348,8 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         else:
             return self._progressbar
 
-    def fit(self, X, y, divs=None, divs_cache=None):
+    def fit(self, X, y, divs=None, divs_cache=None,
+            names=None, labels=None, cats=None):
         '''
         X: a list of row-instance data matrices, with common dimensionality
 
@@ -353,6 +360,10 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
             nan is the corresponding semi-supervised indicator value
 
         divs: precomputed divergences among the passed points
+
+        divs_cache: a filename for a cache file
+        names, labels, cats: optional metadata to verify the cache file is
+                             actually for the right data
         '''
         n_bags = len(X)
 
@@ -377,6 +388,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
                     cache_filename=divs_cache,
                     n_proc=self.n_proc, min_dist=self.min_dist,
                     fix_mode=self.fix_mode, tail=self.tail,
+                    names=names, labels=labels, cats=cats,
                     status_fn=self.status_fn, progressbar=self.progressbar)
         else:
             #self.status_fn('Using passed-in divergences...')
@@ -491,7 +503,9 @@ def transduct(train_bags, train_labels, test_bags,
               fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
               divs=None,
               divs_cache=None,
+              names=None, labels=None, cats=None,
               return_config=False):
+    # names, labels, cats should be for (train_bags + test_bags)
     # TODO: support non-Gaussian kernels
     # TODO: support CVing between multiple div funcs, values of K
     # TODO: support more SVM options
@@ -520,7 +534,8 @@ def transduct(train_bags, train_labels, test_bags,
                 div_func=div_func, K=K,
                 cache_filename=divs_cache,
                 n_proc=n_proc, fix_mode=fix_mode, tail=tail, min_dist=min_dist,
-                status_fn=status_fn, progressbar=progressbar)
+                status_fn=status_fn, progressbar=progressbar,
+                names=names, labels=labels, cats=cats)
     else:
         #status_fn('Using passed-in divergences...')
         n_bags = len(train_bags) + len(test_bags)
