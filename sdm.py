@@ -194,7 +194,8 @@ def tune_params(divs, labels,
     C_vals = np.asarray(C_vals)
     sigma_vals = np.asarray(sigma_vals)
     if scale_sigma:
-        sigma_vals *= np.median(divs[divs > 0])
+        sigma_vals = sigma_vals * np.median(divs[divs > 0])
+        # make sure not to modify the passed-in sigma values...
 
     if mode == 'NuSVR':
         svr_nu_vals = np.asarray(svr_nu_vals)
