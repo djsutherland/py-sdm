@@ -136,7 +136,6 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
                             dim=bags[0].shape[1],
                             fix_mode=fix_mode, tail=tail, min_dist=min_dist,
                             names=names, labels=labels, cats=cats)
-            f.require_group(div_func).create_dataset(str(K), data=divs)
 
     return divs
 
