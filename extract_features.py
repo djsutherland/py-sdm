@@ -21,7 +21,7 @@ from vlfeat.phow import (vl_phow, DEFAULT_MAGNIF, DEFAULT_CONTRAST_THRESH,
 # NOTE: depends on skimage for resizing, and either opencv, matplotlib with PIL,
 # or skimage with one of the plugins below for reading images
 
-features_attrs = ['labels', 'names', 'frames', 'features', 'extras']
+features_attrs = ['categories', 'names', 'frames', 'features', 'extras']
 Features = namedtuple('Features', features_attrs)
 
 
@@ -52,6 +52,7 @@ def get_features(img, color=DEFAULT_COLOR,
 IMREAD_MODES = ['skimage-pil', 'skimage-qt', 'skimage-gdal', 'cv2',
                 'matplotlib', 'skimage-freeimage']
 def _find_working_imread(modes=IMREAD_MODES):
+    "Finds an image-reading mode that works; returns the name and a function."
     if isinstance(modes, str_types):
         modes = [modes]
 
@@ -81,6 +82,7 @@ def _find_working_imread(modes=IMREAD_MODES):
 
 
 def _load_features(filename, imread_mode=IMREAD_MODES, size=None, **kwargs):
+    "Loads filename, optionally resizes it, and calls get_features."
     _, imread = _find_working_imread(imread_mode)
     img = imread(filename)
 
@@ -106,6 +108,7 @@ def _load_features(filename, imread_mode=IMREAD_MODES, size=None, **kwargs):
 
 
 def _load_extras(paths):
+    "Returns a list of dicts mapping extra_name to a value for each file."
     dirnames = set(os.path.dirname(path) for path in paths)
 
     lists = {}
@@ -170,7 +173,7 @@ def extract_features(dirs, img_per_cla=None, sampler='first',
     Extracts features from images in a list of data directories.
 
     dirs: either an iterable of directory names
-          or a dict with directory names as keys and class labels as values
+          or a dict with directory names as keys and categories as values
     img_per_cla: how many images to read from each directory; None means all
     sampler: 'first' for the first img_per_cla lexicographically
              'uniform': evenly spaced from the images
@@ -184,28 +187,28 @@ def extract_features(dirs, img_per_cla=None, sampler='first',
 
     Other arguments are passed on to get_features().
 
-    Returns tuples of labels, image names, descriptor locations, descriptors.
+    Returns a Features tuple.
     '''
     if not hasattr(dirs, 'items'):
         dirs = dict((dirname, dirname) for dirname in dirs)
 
-    # make a dict of label => list of (dirname, fname) pairs
-    ims_by_label = defaultdict(list)
+    # make a dict of cat => list of (dirname, fname) pairs
+    ims_by_cat = defaultdict(list)
     seen_names = defaultdict(set)
-    for dirname, label in iteritems(dirs):
+    for dirname, cat in iteritems(dirs):
         for fname in os.listdir(dirname):
             if '.' in fname and fname.rsplit('.', 1)[1].lower() in extensions:
-                if fname in seen_names[label]:
-                    raise ValueError("more than one {!r} with label {!r}"
-                            .format(fname, label))
-                seen_names[label].add(fname)
-                ims_by_label[label].append((dirname, fname))
+                if fname in seen_names[cat]:
+                    raise ValueError("more than one {!r} with category {!r}"
+                            .format(fname, cat))
+                seen_names[cat].add(fname)
+                ims_by_cat[cat].append((dirname, fname))
 
     # do sampling and split it up
     sample = (lambda x, n: x) if img_per_cla is None else SAMPLERS[sampler]
-    labels, image_names, paths = zip(*[
-        (label, fname, os.path.join(dirname, fname))
-        for label, images in iteritems(ims_by_label)
+    cats, image_names, paths = zip(*[
+        (cat, fname, os.path.join(dirname, fname))
+        for cat, images in iteritems(ims_by_cat)
         for dirname, fname in sample(sorted(images), img_per_cla)
     ])
     extras = _load_extras(paths)
@@ -227,7 +230,7 @@ def extract_features(dirs, img_per_cla=None, sampler='first',
     # do the actual extraction
     load_features = partial(_load_features, imread_mode=imread_mode, **kwargs)
     frames, descrs = zip(*do_map(load_features, paths))
-    return Features(labels, image_names, frames, descrs, extras)
+    return Features(cats, image_names, frames, descrs, extras)
 
 
 def parse_args():
@@ -264,7 +267,7 @@ def parse_args():
 
     parser.add_argument('save_file',
         help="Save into this HDF5 file. Each image's features go in "
-             "/label/filename/{'features','frames'}.")
+             "/cat/filename/{'features','frames'}.")
 
     # options for finding and loading images
     files = parser.add_argument_group('File options')
@@ -287,15 +290,15 @@ def parse_args():
     files.add_argument('--dirs', nargs='+', action=AddDir, dest='dirs',
         metavar='DIR', help="Adds the path as a directory.")
 
-    class AddLabeledDir(argparse.Action):
+    class AddDirWithCat(argparse.Action):
         def __call__(self, parser, namespace, values, option_string=None):
-            path, label = values
-            getattr(namespace, self.dest)[path] = label
-    files.add_argument('--labeled-dir', nargs=2, action=AddLabeledDir,
-        dest='dirs', metavar=('DIR', 'LABEL'),
-        help="Adds a directory with a specified class label.")
+            path, cat = values
+            getattr(namespace, self.dest)[path] = cat
+    files.add_argument('--dir-with-cat', '--labeled-dir',
+        nargs=2, action=AddDirWithCat, dest='dirs', metavar=('DIR', 'CATEGORY'),
+        help="Adds a directory with a specified category.")
 
-    files.add_argument('--num-per-class', default=None, type=int,
+    files.add_argument('--num-per-category', default=None, type=int,
         dest='img_per_cla', metavar='NUM',
         help="Limit the number of images loaded from each class; "
              "default is unlimited.")
@@ -358,16 +361,19 @@ def save_features(filename, features, **attrs):
     '''
     Saves a Features namedtuple into an HDF5 file.
     Also sets any keyword args as root attributes.
-    Each bag is saved as "features" and "frames" in /label/filename.
+    Each bag is saved as "features" and "frames" in /category/filename;
+    any "extras" get added there as a (probably scalar) dataset named by the
+    extra's name.
     '''
     import h5py
     with h5py.File(filename) as f:
-        for label, name, frames, descrs, extra in izip(*features):
-            g = f.require_group(label).create_group(name)
+        for category, name, frames, descrs, extra in izip(*features):
+            g = f.require_group(category).create_group(name)
             g['frames'] = frames
             g['features'] = descrs
             if extra:
                 for k, v in iteritems(extra):
+                    assert k not in ['frames', 'features']
                     g[k] = v
 
         for k, v in iteritems(attrs):
@@ -380,12 +386,12 @@ def read_features(filename, load_attrs=False, features_dtype=None):
     If load_attrs, also returns a dictionary of the root attributes.
     '''
     import h5py
-    ret = Features([], [], [], [], [])
+    ret = Features(*[[] for _ in features_attrs])
 
     with h5py.File(filename, 'r') as f:
-        for label, label_g in iteritems(f):
-            for fname, g in iteritems(label_g):
-                ret.labels.append(label)
+        for cat, cat_g in iteritems(f):
+            for fname, g in iteritems(cat_g):
+                ret.categories.append(cat)
                 ret.names.append(fname)
                 extra = {}
                 for k, v in iteritems(g):

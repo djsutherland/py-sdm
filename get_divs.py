@@ -34,7 +34,7 @@ except ImportError:
     searcher = None
 
 from utils import (eps, col, get_col, izip, lazy_range, is_integer, raw_input,
-                   str_types, portion, positive_int, confirm_outfile,
+                   str_types, bytes, portion, positive_int, confirm_outfile,
                    iteritems, itervalues)
 from mp_utils import ForkedData, map_unordered_with_progressbar, get_pool
 
@@ -616,7 +616,12 @@ def main():
         if not os.path.exists(args.output_file):
             confirm_outfile(args.output_file)
         else:
-            check_h5_file_agreement(args.output_file, bags, data, args)
+            check = functools.partial(check_h5_file_agreement,
+                        args.output_file, bags=bags, args=args)
+            if args.input_format == 'matlab':
+                check(cats=cats)
+            else:
+                check(names=data.names, cats=data.categories)
             status_fn("Output file already exists, but agrees with args.")
 
     if args.n_points:
@@ -638,7 +643,7 @@ def main():
     if args.input_format == 'matlab':
         opts['cats'] = cats
     else:
-        opts['labels'] = data.labels
+        opts['cats'] = data.categories
         opts['names'] = data.names
 
     if args.output_format == 'mat':
@@ -653,59 +658,95 @@ def main():
 ################################################################################
 ### Stuff relating to result files
 
-def reconcile_labels(f, labels=None, names=None, cats=None, write=False):
+def _convert_cats(ary):
+    ary = np.asarray(ary)
+
+    kind = ary.dtype.kind
+    if kind == 'O':
+        assert isinstance(ary[0], str_types)
+        is_str = True
+    elif kind in 'SUa':
+        is_str = True
+    elif kind in 'fc':
+        is_str = False
+        as_int = ary.astype(int)
+        assert np.all(ary == as_int)
+        ary = as_int
+    elif kind in 'iub':
+        is_str = False
+    else:
+        raise TypeError
+
+    if is_str:
+        import h5py
+        ary = np.asarray(ary, h5py.special_dtype(vlen=bytes))
+
+    return ary, is_str
+
+
+def reconcile_file_order(f, names=None, cats=None, write=False):
     '''
-    labels and names should be string arrays, cats an array of integers.
+    Checks that the passed names, cats agree with the cache file f. If both have
+    names, checks only that; otherwise, checks that they agree as well as
+    possible.
+
+    f: an h5py.File
+    names: a string array or None
+    cats: a string array, an array of integers, or None
+    write: if true, add any additional info to the file once they seem the same
     '''
-    f_names = f_labels = f_cats = None
-    if 'names' in f.attrs:
-        assert 'labels' in f.attrs
+
+    have_names = names is not None
+    have_cats = cats is not None
+
+    if not have_names and not have_cats:
+        raise ValueError("reconcile_file_order needs names or cats...")
+
+    have_f_names = 'names' in f.attrs
+    have_f_cats = 'cats' in f.attrs
+
+    if have_names:
+        import h5py
+        names = np.asarray(names, dtype=h5py.special_dtype(vlen=bytes))
+    if have_f_names:
         f_names = f.attrs['names']
-        f_labels = f.attrs['labels']
-    else:
-        assert 'labels' not in f.attrs
-        if 'cats' in f.attrs:
-            f_cats = f.attrs['cats']
 
-    if cats is not None and labels is None and names is None:
-        if f_labels is not None:  # passed cats, have label/names
-            _, f_cats = np.unique(f_labels, return_inverse=True)
+    if have_cats:
+        cats, cats_is_str = _convert_cats(cats)
+    if have_f_cats:
+        f_cats, f_cats_is_str = _convert_cats(f.attrs['cats'])
+
+    # check name agreement, if both sides have it
+    if have_names and have_f_names:
+        assert np.all(names == f_names)
+
+    # check category agreement
+    if have_cats and have_f_cats:
+        if cats_is_str and f_cats_is_str:
+            assert np.all(cats == f_cats)
+        else:
+            # at least one, maybe both, are just ints
+            # so we only want to check equivalence up to relabelings
             _, cats_relabeled = np.unique(cats, return_inverse=True)
-            assert np.all(f_cats == cats_relabeled)
+            _, f_cats_relabeled = np.unique(f_cats, return_inverse=True)
+            assert np.all(cats_relabeled == f_cats_relabeled)
 
-        elif f_cats is not None:  # passed cats, have cats
-            assert np.all(cats == f_cats)
-
-        else:  # passed cats, have nothing
-            if write:
-                f.attrs['cats'] = cats
-
-    elif cats is None and labels is not None and names is not None:
-        if f_labels is not None:  # passed label/names, have label/names
-            assert np.all(f_labels == labels)
-            assert np.all(f_names == names)
-
-        elif f_cats is not None:  # passed label/names, have cats
-            _, cats = np.unique(labels, return_inverse=True)
-            assert np.all(cats == f_cats)
-            if write:
-                f.attrs['names'] = names
-                f.attrs['labels'] = labels
-                del f.attrs['cats']
-
-        else:  # passed label/names, have nothing
-            if write:
-                f.attrs['names'] = names
-                f.attrs['labels'] = labels
-
-    else:
-        raise ValueError("should pass either cats or labels&names")
+    # Everything agrees to as much as we can check it.
+    # Now it's time to write anything we have that the file doesn't.
+    if write:
+        if have_names and not have_f_names:
+            f.attrs['names'] = names
+        if (have_cats and
+                (not have_f_cats or (cats_is_str and not f_cats_is_str))):
+            f.attrs['cats'] = cats
 
 
 def check_h5_settings(f, n, dim, fix_mode, tail, min_dist=None,
-                      names=None, labels=None, cats=None, write=False):
-    import h5py
-
+                      names=None, cats=None, write=False):
+    """
+    Checks that the hdf5 div cache file has settings that agree with the
+    passed settings. If write, adds them to the file if not present.
+    """
     assert all(divs.shape == (n, n)
                for div_group in f.values()
                for divs in div_group.values())
@@ -725,25 +766,15 @@ def check_h5_settings(f, n, dim, fix_mode, tail, min_dist=None,
     check('tail', tail)
     check('min_dist', default_min_dist(dim) if min_dist is None else min_dist)
 
-    str_dtype = h5py.special_dtype(vlen=str)
-    labelish = {'labels': (labels, str_dtype),
-                'names': (names, str_dtype),
-                'cats': (cats, int)}
-    labelish = dict((k, np.asarray(v, dtype=dtype))
-                    for k, (v, dtype) in iteritems(labelish)
-                    if v is not None)
-    if any(x is not None for x in itervalues(labelish)):
-        for v in itervalues(labelish):
-            assert np.shape(v) == (n,)
-        reconcile_labels(f, write=write, **labelish)
-    else:
-        for name in ['labels', 'names', 'cats']:
-            if name in f.attrs:
-                assert np.shape(f.attrs[name]) == (n,)
+    for x in ['names', 'cats']:
+        if x in f.attrs:
+            assert np.shape(f.attrs[x]) == (n,)
+    if names is not None or cats is not None:
+        reconcile_file_order(f, names=names, cats=cats, write=write)
 
 
 def add_to_h5_cache(f, div_dict, dim, fix_mode, tail, min_dist,
-                    names=None, labels=None, cats=None):
+                    names=None, cats=None):
     """
     Add some divergences to an hdf5 file of divergences.
 
@@ -758,8 +789,7 @@ def add_to_h5_cache(f, div_dict, dim, fix_mode, tail, min_dist,
 
     check_h5_settings(f, n=n,
                       dim=dim, fix_mode=fix_mode, tail=tail, min_dist=min_dist,
-                      names=names, labels=labels, cats=cats,
-                      write=True)
+                      names=names, cats=cats, write=True)
 
     for (div_func, K), divs in iteritems(div_dict):
         f.require_group(div_func).create_dataset(str(K), data=divs)
@@ -774,31 +804,26 @@ def add_to_h5_file(filename, opts):
             name, K = reverse_div_name(div_name)
             div_dict[name, K] = divs
 
-        add_to_h5_cache(f, div_dict, dim=opts['dim'], fix_mode=opts['fix_mode'],
+        add_to_h5_cache(f, div_dict,
+                        dim=opts['dim'], fix_mode=opts['fix_mode'],
                         tail=opts['tail'], min_dist=opts['min_dist'],
                         names=opts.get('names', None),
-                        labels=opts.get('labels', None),
                         cats=opts.get('cats', None))
 
 
-def check_h5_file_agreement(filename, bags, data, args, interactive=True):
+def check_h5_file_agreement(filename, bags, args, names=None, cats=None,
+                            interactive=True):
     import h5py
     with h5py.File(filename) as f:
         # output file already exists; make sure args agree
         if not f.attrs.keys() and not f.keys():
             return
 
-        if data is None:
-            labelish = {}
-        elif hasattr(data, 'labels'):
-            labelish = {'labels': data.labels, 'names': data.names}
-        elif hasattr(data, 'cats'):
-            labelish = {'cats': data.cats}
-        else:
-            raise TypeError("don't know how to handle data argument")
-        check_h5_settings(f, n=len(bags), dim=bags[0].shape[1],
+        check_h5_settings(f, n=len(bags),
+                          dim=bags[0].shape[1], min_dist=args.min_dist,
                           fix_mode=args.trim_mode, tail=args.trim_tails,
-                          min_dist=args.min_dist, write=False, **labelish)
+                          names=names, cats=cats,
+                          write=False)
 
         # any overlap with stuff we've already calculated?
         div_funcs = []
@@ -819,6 +844,9 @@ def check_h5_file_agreement(filename, bags, data, args, interactive=True):
                 sys.exit("Aborting.")
 
 
+################################################################################
+### Normalize and reverse divergence names
+
 _rev_name_map = dict((f.name, k) for k, f in iteritems(func_mapping))
 _name_fmt = re.compile(r'''
     ([^\[]+)          # div func name, eg NP-H
@@ -838,6 +866,7 @@ def reverse_div_name(name):
     s = '{}:{}'.format(div_name, alpha) if alpha else div_name
     return s, k
 
+
 def normalize_div_name_list(name):
     if ':' in name:
         main, alpha = name.split(':')
@@ -845,9 +874,12 @@ def normalize_div_name_list(name):
                 for al in alpha.split(',')]
     return [name]
 
+
 def normalize_div_name(name):
     n, = normalize_div_name_list(name)  # has to be just one
     return n
 
+
+################################################################################
 if __name__ == '__main__':
     main()

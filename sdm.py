@@ -25,6 +25,7 @@ from sklearn.cross_validation import KFold, StratifiedKFold
 from sklearn.preprocessing import LabelEncoder
 from sklearn import svm  # NOTE: needs version 0.13+ for svm iter limits
 
+from extract_features import read_features
 from get_divs import (get_divs, FIX_MODE_DEFAULT, FIX_TERM_MODES, TAIL_DEFAULT,
                       read_cell_array, subset_data,
                       check_h5_settings, add_to_h5_cache, normalize_div_name)
@@ -105,9 +106,10 @@ def split_km(km, train_idx, test_idx):
 ### Cached divs helper
 
 def get_divs_cache(bags, div_func, K, cache_filename=None,
-                   names=None, labels=None, cats=None,
+                   names=None, cats=None,
                    fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
                    n_proc=None, status_fn=True, progressbar=None):
+    # TODO: support loading subsets of the file based on names
 
     status = get_status_fn(status_fn)
 
@@ -116,7 +118,7 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
         with h5py.File(cache_filename, 'r') as f:
             check_h5_settings(f, n=len(bags), dim=bags[0].shape[1],
                 fix_mode=fix_mode, tail=tail, min_dist=min_dist,
-                labels=labels, names=names, cats=cats)
+                names=names, cats=cats)
             if path in f:
                 divs = f[path]
                 # assert divs.shape == (len(bags), len(bags)) # in check
@@ -135,7 +137,7 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
             add_to_h5_cache(f, {(div_func, K): divs},
                             dim=bags[0].shape[1],
                             fix_mode=fix_mode, tail=tail, min_dist=min_dist,
-                            names=names, labels=labels, cats=cats)
+                            names=names, cats=cats)
 
     return divs
 
@@ -347,8 +349,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         else:
             return self._progressbar
 
-    def fit(self, X, y, divs=None, divs_cache=None,
-            names=None, labels=None, cats=None):
+    def fit(self, X, y, divs=None, divs_cache=None, names=None, cats=None):
         '''
         X: a list of row-instance data matrices, with common dimensionality
 
@@ -360,9 +361,10 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
 
         divs: precomputed divergences among the passed points
 
-        divs_cache: a filename for a cache file
-        names, labels, cats: optional metadata to verify the cache file is
-                             actually for the right data
+        divs_cache: a filename for a cache file. Note that this needs to be
+                    on the TRAINING data only, in the same order.
+        names, cats: optional metadata to verify the cache file is actually
+                     for the right data (highly recommended if available)
         '''
         n_bags = len(X)
 
@@ -387,7 +389,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
                     cache_filename=divs_cache,
                     n_proc=self.n_proc, min_dist=self.min_dist,
                     fix_mode=self.fix_mode, tail=self.tail,
-                    names=names, labels=labels, cats=cats,
+                    names=names, cats=cats,
                     status_fn=self.status_fn, progressbar=self.progressbar)
         else:
             #self.status_fn('Using passed-in divergences...')
@@ -501,10 +503,21 @@ def transduct(train_bags, train_labels, test_bags,
               progressbar=None,
               fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
               divs=None,
-              divs_cache=None,
-              names=None, labels=None, cats=None,
               return_config=False):
-    # names, labels, cats should be for (train_bags + test_bags)
+    '''
+    Trains an SDM transductively, where the kernel matrix is constructed on
+    the training + test points, the SVM is trained on training points, and
+    predictions are done on the test points.
+
+    The SVM itself is inductive (given the kernel).
+
+    See SupportDistributionMachine for the meaning of most arguments.
+
+    If divs is passed, it should be a div matrix for train_bags + test_bags.
+    Transparent caching is not yet supported here because of the re-ordering
+    issue.
+    '''
+    # TODO: support transparent caching in transduct by passing in indices
     # TODO: support non-Gaussian kernels
     # TODO: support CVing between multiple div funcs, values of K
     # TODO: support more SVM options
@@ -528,13 +541,11 @@ def transduct(train_bags, train_labels, test_bags,
     if divs is None:
         status_fn('Getting divergences...')
 
-        divs = get_divs_cache(
+        divs = np.squeeze(get_divs(
                 train_bags + test_bags,
-                div_func=div_func, K=K,
-                cache_filename=divs_cache,
+                specs=[div_func], Ks=[K],
                 n_proc=n_proc, fix_mode=fix_mode, tail=tail, min_dist=min_dist,
-                status_fn=status_fn, progressbar=progressbar,
-                names=names, labels=labels, cats=cats)
+                status_fn=status_fn, progressbar=progressbar))
     else:
         #status_fn('Using passed-in divergences...')
         n_bags = len(train_bags) + len(test_bags)
@@ -619,7 +630,7 @@ def crossvalidate(bags, labels,
         progressbar=None,
         fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
         divs=None,
-        divs_cache=None):
+        divs_cache=None, names=None, cats=None):
 
     # TODO: allow specifying what the folds should be
     # TODO: optionally return params for each fold, what the folds were, ...
@@ -655,6 +666,7 @@ def crossvalidate(bags, labels,
         divs = get_divs_cache(bags, div_func=div_func, K=K,
                 cache_filename=divs_cache, n_proc=n_proc,
                 fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+                names=names, cats=cats,
                 status_fn=status_fn, progressbar=progressbar)
     else:
         #status_fn('Using passed-in divergences...')
@@ -881,10 +893,15 @@ def parse_args():
         help="The name of a cell array of row-instance data matrices " + _def
              + " Only used for matlab format.")
     io.add_argument('--labels-name', default=None,
-        help="The name of a vector of training labels (integers if "
-             "classifying, reals if regressing). If matlab format, default "
-             "'cats'; if regressing in python format, no default; if "
-             "classifying in python format, ignored.")
+        help="The name of a vector of training labels "
+             "(integers if classifying, reals if regressing). "
+             "If matlab format, default 'cats'; "
+             "if classifying in python format, default is --classify-by-cats; "
+             "if regressing in python format, no default.")
+    io.add_argument('--classify-by-cats',
+        dest='labels_name', action='store_const', const=None,
+        help="When classifying in python format, use as labels the category "
+             "names (the default).")
 
     io.add_argument('--output-file', required=False,
         help="Name of the output file; defaults to input_file.sdm_cv.mat.")
@@ -986,43 +1003,46 @@ def do_cv(args):
     status_fn = get_status_fn(True)
 
     status_fn('Reading inputs...')
-    with h5py.File(args.input_file, 'r') as f:
-        if args.input_format == 'matlab':
+    if args.input_format == 'matlab':
+        with h5py.File(args.input_file, 'r') as f:
             bags = read_cell_array(f, f[args.bags_name])
-            labels = np.squeeze(f[args.labels_name or 'cats'][...])
-        elif args.svm_mode == 'SVC':
-            label_encoder = LabelEncoder()
-            bags = []
-            label_strs = []
-            for label, label_g in iteritems(f):
-                for g in itervalues(label_g):
-                    bags.append(g['features'][...])
-                    label_strs.append(label)
-            labels = label_encoder.fit_transform(label_strs)
-        elif args.svm_mode == 'NuSVR':
-            assert args.labels_name
-            bags = []
-            labels = []
-            for label_g in itervalues(f):
-                for g in itervalues(label_g):
-                    bags.append(g['features'][...])
-                    label = g[args.labels_name][()]
-                    if not np.isscalar(label):
-                        msg = "expected scalar label, not {!r}".format(label)
-                        raise TypeError(msg)
-                    labels.append(label)
-            labels = np.asarray(labels)
-        else:
-            raise ValueError
+            cats = np.squeeze(f['cats'][...])
+            if args.labels_name:
+                labels = np.squeeze(f[args.labels_name][...])
+            else:
+                labels = cats
+    else:
+        assert args.input_format == 'python'
 
-        if args.n_points:
-            bags = subset_data(bags, args.n_points)
+        feats = read_features(args.input_file)
+        bags = feats.features
+        names = feats.names
+        cats = feats.categories
+
+        if args.labels_name:
+            labels = np.vectorize(itemgetter(args.labels_name))(feats.extras)
+        elif args.labels_name is None and args.svm_mode == 'SVC':
+            labels = cats
+        else:
+            raise ValueError("must provide a label name when regressing")
+
+        del feats
 
     if args.svm_mode == 'SVC' and not is_integer_type(labels):
-        assert np.all(labels == np.round(labels))
-        labels = labels.astype(int)
+        if labels.dtype.kind == 'f' and np.all(labels == np.round(labels)):
+            labels = labels.astype(int)
+        else:
+            label_names = labels
+            label_encoder = LabelEncoder()
+            labels = label_encoder.fit_transform(label_names)
+
+    if args.n_points:
+        bags = subset_data(bags, args.n_points)
 
     opts = opts_dict(args)
+    opts['cats'] = cats
+    if args.input_format == 'python':
+        opts['names'] = names
     acc, preds = crossvalidate(bags, labels,
         num_folds=args.cv_folds, stratified_cv=args.stratified_cv,
         divs_cache=args.div_cache_file, **opts)
