@@ -1021,7 +1021,7 @@ def do_cv(args):
         cats = feats.categories
 
         if args.labels_name:
-            labels = np.vectorize(itemgetter(args.labels_name))(feats.extras)
+            labels = np.array([ex[args.labels_name] for ex in feats.extras])
         elif args.labels_name is None and args.svm_mode == 'SVC':
             labels = cats
         else:
