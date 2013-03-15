@@ -116,7 +116,8 @@ def process_features(features_tup, verbose=False,
         blank_thresh=DEFAULT_BLANK_THRESH, blank_handler=DEFAULT_BLANK_HANDLER,
         do_pca=True, pca_k=None, pca_varfrac=DEFAULT_VARFRAC, pca_random=False,
         add_x=True, add_y=True,
-        normalize_feats=True):
+        normalize_feats=True,
+        ret_pca=False):
     pr = partial(print, file=sys.stderr) if verbose else _do_nothing
 
     features = features_tup.features
@@ -129,8 +130,8 @@ def process_features(features_tup, verbose=False,
     if do_pca:
         pr("Running PCA...")
         old_dim = features[0].shape[1]
-        features = pca_features(features,
-            k=pca_k, varfrac=pca_varfrac, randomize=pca_random)
+        features, pca = pca_features(features,
+            k=pca_k, varfrac=pca_varfrac, randomize=pca_random, ret_pca=True)
         new_dim = features[0].shape[1]
         pr("Reduced dimensionality from {} to {}.".format(old_dim, new_dim))
 
@@ -142,9 +143,10 @@ def process_features(features_tup, verbose=False,
         pr("Normalizing features to mean 0, variance 1...")
         features = normalize(features)
 
-    return Features(features=features,
+    feats = Features(features=features,
         **dict((k, getattr(features_tup, k))
                for k in features_attrs if k != 'features'))
+    return (feats, pca) if ret_pca else feats
 
 
 def parse_args(args=None):
@@ -229,10 +231,13 @@ def main():
     f = read_features_perimage if os.path.isdir(load_file) else read_features
     orig, orig_attrs = f(load_file, load_attrs=True, features_dtype=np.float32)
 
-    new = process_features(orig, **vars(args))
+    new, pca = process_features(orig, ret_pca=True, **vars(args))
 
     pr("Saving features to '{}'...".format(save_file))
-    save_features(save_file, new, process_args=repr(vars(args)), **orig_attrs)
+    save_features(save_file, new,
+                  process_args=repr(vars(args)),
+                  pca_mean=pca.mean_, pca_components=pca.components_,
+                  **orig_attrs)
 
 
 if __name__ == '__main__':
