@@ -22,7 +22,9 @@ Requirements
  * This code is written for Python 2.7 with 3.2+ compatability in mind.
    It is known not to work for 2.6, though adding support would not be overly difficult.
    The [Enthought Python Distribution](http://www.enthought.com/epd), which
-   has an academic license, includes
+   has an academic license, includes numpy, scipy, h5py, and PIL -- the hardest to
+   install of the dependencies. It also includes scikit-image and scikit-learn, but we
+   need newer versions than it ships with.
 
  * [numpy](http://numpy.org) - if you're going to run on largeish datasets,
    the PCA and PSD projection stages will be faster if your numpy is linked to a
