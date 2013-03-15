@@ -2,13 +2,15 @@
 from __future__ import division, print_function
 
 from functools import partial
+import os
 import sys
 
 import numpy as np
 
 from utils import izip, positive_int, portion, nonnegative_float, strict_map
 from extract_features import (Features, features_attrs,
-                              read_features, save_features, confirm_outfile)
+                              read_features, read_features_perimage,
+                              save_features, confirm_outfile)
 
 # NOTE: all the references to "features" in this file mean a variable that is
 #       like Features.features; "features_tup" means an instance of Features
@@ -224,8 +226,8 @@ def main():
     pr = partial(print, file=sys.stderr) if args.verbose else _do_nothing
 
     pr("Loading features from '{}'...".format(load_file))
-    orig, orig_attrs = read_features(load_file, load_attrs=True,
-                                     features_dtype=np.float32)
+    f = read_features_perimage if os.path.isdir(load_file) else read_features
+    orig, orig_attrs = f(load_file, load_attrs=True, features_dtype=np.float32)
 
     new = process_features(orig, **vars(args))
 

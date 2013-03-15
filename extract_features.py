@@ -163,10 +163,14 @@ SAMPLERS = {
     'uniform': _sample_uniform,
 }
 
-
 DEFAULT_EXTENSIONS = frozenset(['jpg', 'png', 'bmp'])
 def find_paths(dirs, img_per_cla=None, sampler='first',
                extensions=DEFAULT_EXTENSIONS):
+    '''
+    Choose paths from directories.
+
+    Returns corresponding lists of selected categories and paths.
+    '''
     if not hasattr(dirs, 'items'):
         dirs = dict((dirname, dirname) for dirname in dirs)
 
@@ -237,6 +241,128 @@ def extract_features(paths, cats, imread_mode=IMREAD_MODES,
     return Features(cats, image_names, frames, descrs, extras)
 
 
+################################################################################
+### Stuff relating to hdf5 features files
+
+def save_features(filename, features, **attrs):
+    '''
+    Saves a Features namedtuple into an HDF5 file.
+    Also sets any keyword args as root attributes.
+    Each bag is saved as "features" and "frames" in /category/filename;
+    any "extras" get added there as a (probably scalar) dataset named by the
+    extra's name.
+    '''
+    import h5py
+    with h5py.File(filename) as f:
+        for category, name, frames, descrs, extra in izip(*features):
+            g = f.require_group(category).create_group(name)
+            g['frames'] = frames
+            g['features'] = descrs
+            if extra:
+                for k, v in iteritems(extra):
+                    assert k not in ['frames', 'features']
+                    g[k] = v
+
+        for k, v in iteritems(attrs):
+            f.attrs[k] = v
+
+
+def read_features(filename, load_attrs=False, features_dtype=None):
+    '''
+    Reads a Features namedtuple from save_features().
+    If load_attrs, also returns a dictionary of the root attributes.
+    '''
+    import h5py
+    ret = Features(*[[] for _ in features_attrs])
+
+    with h5py.File(filename, 'r') as f:
+        for cat, cat_g in iteritems(f):
+            for fname, g in iteritems(cat_g):
+                ret.categories.append(cat)
+                ret.names.append(fname)
+                extra = {}
+                for k, v in iteritems(g):
+                    if k == 'frames':
+                        ret.frames.append(v[()])
+                    elif k == 'features':
+                        if features_dtype is not None:
+                            feats = np.asarray(v, dtype=features_dtype)
+                        else:
+                            feats = v[()]
+                    else:
+                        extra[k] = v[()]
+                ret.features.append(feats)
+                ret.extras.append(extra)
+
+        return (ret, dict(**f.attrs)) if load_attrs else ret
+
+
+################################################################################
+### Stuff relating to per-image npz feature files
+
+def save_features_perimage(path, features, **attrs):
+    '''
+    Save a Features namedtuple into per-image npz files.
+    '''
+    import pickle
+    with open(os.path.join(path, 'attrs.pkl'), 'wb') as f:
+        pickle.dump(attrs, f)
+
+    for cat, name, frames, features, extras in zip(*features):
+        dirpath = os.path.join(path, cat)
+        if not os.path.isdir(dirpath):
+            os.mkdir(dirpath)
+        np.savez(os.path.join(dirpath, name + '.npz'),
+            frames=frames, features=features, **extras)
+
+
+def read_features_perimage(path, load_attrs=False, features_dtype=None):
+    '''
+    Reads a Features namedtuple from save_features().
+    '''
+    from glob import glob
+
+    ret = Features(*[[] for _ in features_attrs])
+
+    for cat in os.listdir(path):
+        dirpath = os.path.join(path, cat)
+        if not os.path.isdir(dirpath):
+            continue
+
+        for fname in glob(os.path.join(dirpath, '*.npz')):
+            ret.categories.append(cat)
+            ret.names.append(fname[len(dirpath) + 1:-len('.npz')])
+
+            data = np.load(fname)
+            extra = {}
+            for k, v in iteritems(data):
+                if k == 'frames':
+                    ret.frames.append(v[()])
+                elif k == 'features':
+                    if features_dtype is not None:
+                        feats = np.asarray(v, dtype=features_dtype)
+                    else:
+                        feats = v[()]
+                else:
+                    extra[k] = v[()]
+            ret.features.append(feats)
+            ret.extras.append(extra)
+
+    if load_attrs:
+        import pickle
+        try:
+            with open(os.path.join(path, 'attrs.pkl'), 'rb') as f:
+                attrs = pickle.load(f)
+        except IOError:
+            attrs = {}
+        return ret, attrs
+    else:
+        return ret
+
+
+################################################################################
+### Command line
+
 def parse_args():
     import argparse
     parser = argparse.ArgumentParser(
@@ -268,10 +394,6 @@ def parse_args():
     parser.add_argument('--n-proc', default=None, dest='parallel',
         type=lambda x: False if x.strip() == '1' else positive_int(x),
         help="Number of processes to use; default is as many as CPU cores.")
-
-    parser.add_argument('save_file',
-        help="Save into this HDF5 file. Each image's features go in "
-             "/cat/filename/{'features','frames'}.")
 
     # options for finding and loading images
     files = parser.add_argument_group('File options')
@@ -328,6 +450,17 @@ def parse_args():
              "aspect ratio. Requires scikit-image. Default: keep at "
              "original size.")
 
+    # options for output files
+    out = parser.add_argument_group('Ouptut options')
+    out.add_argument('--output-format',
+        choices=['single-hdf5', 'perimage-npz'], default='single-hdf5',
+        help="Output format: single-hdf5 for a single hdf5 file (the default), "
+             "or perimage-npz for npz files for each image.")
+
+    out.add_argument('save_path',
+        help="The output file path if single-hdf5, "
+              "or the base directory to put the per-image files.")
+
     # options for feature extraction
     sift = parser.add_argument_group('SIFT options')
 
@@ -359,68 +492,12 @@ def parse_args():
     args = parser.parse_args()
     if not args.dirs and not args.paths_csv:
         parser.error("Must specify some images to load.")
-
-    save_file = args.save_file
-    del args.save_file
-    return args, save_file
-
-
-def save_features(filename, features, **attrs):
-    '''
-    Saves a Features namedtuple into an HDF5 file.
-    Also sets any keyword args as root attributes.
-    Each bag is saved as "features" and "frames" in /category/filename;
-    any "extras" get added there as a (probably scalar) dataset named by the
-    extra's name.
-    '''
-    import h5py
-    with h5py.File(filename) as f:
-        for category, name, frames, descrs, extra in izip(*features):
-            g = f.require_group(category).create_group(name)
-            g['frames'] = frames
-            g['features'] = descrs
-            if extra:
-                for k, v in iteritems(extra):
-                    assert k not in ['frames', 'features']
-                    g[k] = v
-
-        for k, v in iteritems(attrs):
-            f.attrs[k] = v
-
-
-def read_features(filename, load_attrs=False, features_dtype=None):
-    '''
-    Reads a Features namedtuple from save_features().
-    If load_attrs, also returns a dictionary of the root attributes.
-    '''
-    import h5py
-    ret = Features(*[[] for _ in features_attrs])
-
-    with h5py.File(filename, 'r') as f:
-        for cat, cat_g in iteritems(f):
-            for fname, g in iteritems(cat_g):
-                ret.categories.append(cat)
-                ret.names.append(fname)
-                extra = {}
-                for k, v in iteritems(g):
-                    if k == 'frames':
-                        ret.frames.append(v[()])
-                    elif k == 'features':
-                        if features_dtype is not None:
-                            feats = np.asarray(v, dtype=features_dtype)
-                        else:
-                            feats = v[()]
-                    else:
-                        extra[k] = v[()]
-                ret.features.append(feats)
-                ret.extras.append(extra)
-
-        return (ret, dict(**f.attrs)) if load_attrs else ret
+    return args
 
 
 def main():
-    args, save_file = parse_args()
-    confirm_outfile(save_file)
+    args = parse_args()
+    confirm_outfile(args.save_path, dir=args.output_format != 'single-hdf5')
 
     if args.paths_csv:
         cats = []
@@ -436,13 +513,16 @@ def main():
                                  img_per_cla=args.img_per_cla,
                                  sampler=args.sampler)
 
-    del args.paths_csv, args.dirs, args.extensions, args.img_per_cla, \
-        args.sampler
-    features = extract_features(paths, cats, **vars(args))  # TODO: progressbar
+    skip = set('paths_csv dirs extensions img_per_cla '
+               'sampler output_format save_path'.split())
+    kwargs = dict((k, v) for k, v in vars(args).iteritems() if k not in skip)
+    features = extract_features(paths, cats, **kwargs)  # TODO: progressbar
 
-    print("Saving results to '{}'".format(save_file))
-    save_features(save_file, features, args=repr(vars(args)))
-
+    print("Saving results to '{}'".format(args.save_path))
+    if args.output_format == 'single-hdf5':
+        save_features(args.save_path, features, args=repr(vars(args)))
+    else:
+        save_features_perimage(args.save_path, features, args=repr(vars(args)))
 
 if __name__ == '__main__':
     main()

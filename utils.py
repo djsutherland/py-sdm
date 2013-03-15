@@ -4,6 +4,7 @@ import functools
 import itertools
 from operator import methodcaller
 import os
+import shutil
 import sys
 
 import numpy as np
@@ -84,16 +85,29 @@ def portion(val):
     return val
 
 
-def confirm_outfile(filename):
+def confirm_outfile(filename, dir=False):
     '''
     Check that a file doesn't exist, prompt if it does, and check it's writable.
     Calls sys.exit() if not.
     '''
     if os.path.exists(filename):
-        resp = raw_input("Output file '{}' already exists; will be deleted. "
-                         "Continue? [yN] ".format(filename))
+        if os.path.isdir(filename):
+            msg = "Output {} '{}' is already a directory! We'll delete it."
+        else:
+            msg = "Output {} '{}' already exists; will be deleted."
+        msg += " Continue? [yN] "
+        resp = raw_input(msg.format('dir' if dir else 'file', filename))
+
         if not resp.lower().startswith('y'):
             sys.exit("Aborting.")
+
+        if os.path.isdir(filename):
+            shutil.rmtree(filename)
+
+    if dir:
+        os.makedirs(filename)
+        filename = os.path.join(filename, 'test')
+
     try:
         with open(filename, 'w'):
             pass
