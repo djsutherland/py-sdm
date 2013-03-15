@@ -163,11 +163,36 @@ SAMPLERS = {
     'uniform': _sample_uniform,
 }
 
+
 DEFAULT_EXTENSIONS = frozenset(['jpg', 'png', 'bmp'])
-def extract_features(dirs, img_per_cla=None, sampler='first',
-                     extensions=DEFAULT_EXTENSIONS,
-                     imread_mode=IMREAD_MODES,
-                     pick_up_csv=True,
+def find_paths(dirs, img_per_cla=None, sampler='first',
+               extensions=DEFAULT_EXTENSIONS):
+    if not hasattr(dirs, 'items'):
+        dirs = dict((dirname, dirname) for dirname in dirs)
+
+    # make a dict of cat => list of (dirname, fname) pairs
+    ims_by_cat = defaultdict(list)
+    seen_names = defaultdict(set)
+    for dirname, cat in iteritems(dirs):
+        for fname in os.listdir(dirname):
+            if '.' in fname and fname.rsplit('.', 1)[1].lower() in extensions:
+                if fname in seen_names[cat]:
+                    raise ValueError("more than one {!r} with category {!r}"
+                                     .format(fname, cat))
+                seen_names[cat].add(fname)
+                ims_by_cat[cat].append((dirname, fname))
+
+    # do sampling and split it up
+    sample = (lambda x, n: x) if img_per_cla is None else SAMPLERS[sampler]
+    cats, paths = zip(*[
+        (cat, os.path.join(dirname, fname))
+        for cat, images in iteritems(ims_by_cat)
+        for dirname, fname in sample(sorted(images), img_per_cla)
+    ])
+    return cats, paths
+
+
+def extract_features(paths, cats, imread_mode=IMREAD_MODES,
                      parallel=False, **kwargs):
     '''
     Extracts features from images in a list of data directories.
@@ -189,29 +214,8 @@ def extract_features(dirs, img_per_cla=None, sampler='first',
 
     Returns a Features tuple.
     '''
-    if not hasattr(dirs, 'items'):
-        dirs = dict((dirname, dirname) for dirname in dirs)
-
-    # make a dict of cat => list of (dirname, fname) pairs
-    ims_by_cat = defaultdict(list)
-    seen_names = defaultdict(set)
-    for dirname, cat in iteritems(dirs):
-        for fname in os.listdir(dirname):
-            if '.' in fname and fname.rsplit('.', 1)[1].lower() in extensions:
-                if fname in seen_names[cat]:
-                    raise ValueError("more than one {!r} with category {!r}"
-                            .format(fname, cat))
-                seen_names[cat].add(fname)
-                ims_by_cat[cat].append((dirname, fname))
-
-    # do sampling and split it up
-    sample = (lambda x, n: x) if img_per_cla is None else SAMPLERS[sampler]
-    cats, image_names, paths = zip(*[
-        (cat, fname, os.path.join(dirname, fname))
-        for cat, images in iteritems(ims_by_cat)
-        for dirname, fname in sample(sorted(images), img_per_cla)
-    ])
     extras = _load_extras(paths)
+    image_names = [os.path.basename(path) for path in paths]
 
     # sort out parallelism options
     pool = None
@@ -271,6 +275,10 @@ def parse_args():
 
     # options for finding and loading images
     files = parser.add_argument_group('File options')
+
+    files.add_argument('--paths-csv', metavar='FILE',
+        help="A CSV file with columns 'path' and optionally 'cat' specifying "
+             "the files to load (overrides the directory-related args).")
 
     parser.set_defaults(dirs={})
 
@@ -349,7 +357,7 @@ def parse_args():
         help="Whether to use fast SIFT computation in dsift; does by default."))
 
     args = parser.parse_args()
-    if not args.dirs:
+    if not args.dirs and not args.paths_csv:
         parser.error("Must specify some images to load.")
 
     save_file = args.save_file
@@ -414,7 +422,23 @@ def main():
     args, save_file = parse_args()
     confirm_outfile(save_file)
 
-    features = extract_features(**vars(args))  # TODO: progressbar
+    if args.paths_csv:
+        cats = []
+        paths = []
+        with open(args.paths_csv, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                paths.append(os.path.expanduser(row['path']))
+                cats.append(row.get('cat', 'default'))
+    else:
+        cats, paths = find_paths(args.dirs,
+                                 extensions=args.extensions,
+                                 img_per_cla=args.img_per_cla,
+                                 sampler=args.sampler)
+
+    del args.paths_csv, args.dirs, args.extensions, args.img_per_cla, \
+        args.sampler
+    features = extract_features(paths, cats, **vars(args))  # TODO: progressbar
 
     print("Saving results to '{}'".format(save_file))
     save_features(save_file, features, args=repr(vars(args)))
