@@ -68,11 +68,13 @@ Data Format
 
 If you're doing classification, it's easiest if your images are in a single
 directory containing one directory per class, and images for that class in the
-directory:  root-dir/class-name/image-name.jpg
+directory: `root-dir/class-name/image-name.jpg`
 
 If you're doing regression, it's easiest to have your images all in a single
 directory, and a CSV file $target_name.csv with labels of the form
+
     image1.jpg,2.4
+
 for each image in the directory (no header).
 
 
