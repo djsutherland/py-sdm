@@ -13,6 +13,7 @@ from functools import partial
 import itertools
 from operator import itemgetter
 import os
+import random
 import sys
 import weakref
 
@@ -273,9 +274,9 @@ def tune_params(divs, labels,
         pbar.finish()
 
     # figure out which ones were best
-    # TODO: randomize when there are ties...
     cv_means = scores.mean(axis=-1)
-    best_indices = np.unravel_index(cv_means.argmax(), cv_means.shape)
+    top_elts = cv_means == cv_means.max()
+    best_indices = random.choice(np.transpose(top_elts.nonzero()))
     if mode == 'NuSVR':
         best_sigma, best_C, best_svr_nu = best_indices
         return sigma_vals[best_sigma], C_vals[best_C], svr_nu_vals[best_svr_nu]
