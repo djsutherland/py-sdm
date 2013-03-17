@@ -30,8 +30,7 @@ from extract_features import read_features
 from get_divs import (get_divs, FIX_MODE_DEFAULT, FIX_TERM_MODES, TAIL_DEFAULT,
                       read_cell_array, subset_data,
                       check_h5_settings, add_to_h5_cache, normalize_div_name)
-from utils import (positive_int, positive_float, portion, is_integer_type,
-                   itervalues, iteritems)
+from utils import positive_int, positive_float, portion, is_integer_type
 from mp_utils import ForkedData, get_pool, progressbar_and_updater
 
 # TODO: better logging
@@ -87,15 +86,23 @@ def project_psd(mat, min_eig=0, destroy=False):
         mat /= 2
     return mat
 
-def make_km(divs, sigma):
+
+def make_km(divs, sigma, project=True, destroy=False):
     # pass through a Gaussian
-    km = divs / sigma  # makes a copy
+    km = divs if destroy else divs.copy()
+    km /= sigma
     km **= 2
     km /= -2
     np.exp(km, km)  # inplace
 
     # PSD projection
-    return project_psd(weakref.proxy(km), destroy=True)
+    if project:
+        # FIXME: weakref.proxy doesn't actually do anything here since the
+        #        caller still has a reference. can we work around that?
+        km = project_psd(weakref.proxy(km), destroy=True)
+
+    return km
+
 
 def split_km(km, train_idx, test_idx):
     train_km = np.ascontiguousarray(km[np.ix_(train_idx, train_idx)])
@@ -470,15 +477,10 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
             assert divs.shape == (n_test, n_train)
             divs = divs.copy()
 
-        # pass divs through a gaussian kernel
-        divs /= self.sigma_
-        divs **= 2
-        divs /= -2
-        np.exp(divs, divs)
-
         # TODO: smarter projection options for inductive use
+        km = make_km(divs, self.sigma_, project=False, destroy=True)
 
-        preds = self.svm_.predict(divs)
+        preds = self.svm_.predict(km)
         if self.classifier:
             assert np.all(preds == np.round(preds))
             return preds.astype(int)
