@@ -314,7 +314,8 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
                  tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
                  svm_shrinking=DEFAULT_SVM_SHRINKING,
                  status_fn=None, progressbar=None,
-                 fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None):
+                 fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
+                 save_bags=True):
         assert mode in ('SVC', 'NuSVR')
         self.mode = mode
         self.div_func = div_func
@@ -338,6 +339,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         self.fix_mode = FIX_MODE_DEFAULT
         self.tail = tail
         self.min_dist = min_dist
+        self.save_bags = save_bags
 
     @property
     def classifier(self):
@@ -358,7 +360,8 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         else:
             return self._progressbar
 
-    def fit(self, X, y, divs=None, divs_cache=None, names=None, cats=None):
+    def fit(self, X, y, divs=None, divs_cache=None, names=None, cats=None,
+            ret_km=False):
         '''
         X: a list of row-instance data matrices, with common dimensionality
 
@@ -389,7 +392,8 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
 
         train_y = y[train_idx]
         assert train_y.size >= 2
-        self.train_bags_ = [X[i] for i, b in enumerate(train_idx) if b]
+        if self.save_bags:
+            self.train_bags_ = itemgetter(*train_idx.nonzero()[0])(X)
 
         # get divergences
         if divs is None:
@@ -433,8 +437,8 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
 
         # project the final Gram matrix
         self.status_fn('Doing final projection')
-        train_km = np.ascontiguousarray(
-                make_km(divs, self.sigma_)[np.ix_(train_idx, train_idx)])
+        full_km = make_km(divs, self.sigma_)
+        train_km = np.ascontiguousarray(full_km[np.ix_(train_idx, train_idx)])
 
         # train the selected SVM
         self.status_fn('Training final SVM')
@@ -455,11 +459,25 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         clf.fit(train_km, train_y)
         self.svm_ = clf
 
-    def predict(self, data, divs=None):
-        n_train = len(self.train_bags_)
-        n_test = len(data)
+        if ret_km:
+            return full_km
 
-        if divs is None:
+    def predict(self, data, divs=None, km=None):
+        if getattr(self, 'svm_', None) is None:
+            raise ValueError("SDM: need to fit before you can predict!")
+
+        if km is not None:
+            pass
+        elif divs is not None:
+            km = make_km(divs, self.sigma_, project=False, destroy=False)
+        else:
+            if not self.save_bags:
+                raise ValueError("SDM that doesn't save_bags can't predict "
+                                 "without explicit divs")
+
+            n_train = len(self.train_bags_)
+            n_test = len(data)
+
             self.status_fn('Getting test bag divergences...')
 
             mask = np.zeros((n_train + n_test, n_train + n_test), dtype=bool)
@@ -473,12 +491,9 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
                     fix_mode=self.fix_mode, tail=self.tail,
                     status_fn=self.status_fn, progressbar=self.progressbar))
             divs = (divs[-n_test:, :n_train] + divs[:n_train, -n_test].T) / 2
-        else:
-            assert divs.shape == (n_test, n_train)
-            divs = divs.copy()
+            km = make_km(divs, self.sigma_, project=False, destroy=True)
 
         # TODO: smarter projection options for inductive use
-        km = make_km(divs, self.sigma_, project=False, destroy=True)
 
         preds = self.svm_.predict(km)
         if self.classifier:
@@ -529,85 +544,47 @@ def transduct(train_bags, train_labels, test_bags,
     assert mode in ('SVC', 'NuSVR')
     classifier = mode == 'SVC'
 
-    if progressbar is None:
-        progressbar = status_fn is True
-    status_fn = get_status_fn(status_fn)
+    n_train = len(train_bags)
+    n_test = len(test_bags)
 
-    num_train = len(train_bags)
     train_labels = np.squeeze(train_labels)
-    assert train_labels.shape == (num_train,)
+    assert train_labels.shape == (n_train,)
     if classifier:
         assert is_integer_type(train_labels)
         assert np.all(train_labels >= 0)
     else:
         assert np.all(np.isfinite(train_labels))
 
-    if divs is None:
-        status_fn('Getting divergences...')
+    combo_bags = train_bags + test_bags
 
-        divs = np.squeeze(get_divs(
-                train_bags + test_bags,
-                specs=[div_func], Ks=[K],
-                n_proc=n_proc, fix_mode=fix_mode, tail=tail, min_dist=min_dist,
-                status_fn=status_fn, progressbar=progressbar))
-    else:
-        #status_fn('Using passed-in divergences...')
-        n_bags = len(train_bags) + len(test_bags)
-        assert divs.shape == (n_bags, n_bags)
+    sdm = SupportDistributionMachine(
+        div_func=div_func, K=K, mode=mode,
+        tuning_folds=tuning_folds, n_proc=n_proc,
+        C_vals=C_vals, sigma_vals=sigma_vals, scale_sigma=scale_sigma,
+        svr_nu_vals=svr_nu_vals,
+        weight_classes=weight_classes,
+        cache_size=cache_size, tuning_cache_size=tuning_cache_size,
+        svm_tol=svm_tol, tuning_svm_tol=tuning_svm_tol,
+        svm_max_iter=svm_max_iter, tuning_svm_max_iter=tuning_svm_max_iter,
+        svm_shrinking=svm_shrinking,
+        status_fn=status_fn, progressbar=progressbar,
+        fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+        save_bags=False)
 
-    status_fn('Tuning parameters...')
-    tuned_params = tune_params(
-            mode=mode,
-            divs=np.ascontiguousarray(divs[:num_train, :num_train]),
-            labels=train_labels,
-            num_folds=tuning_folds,
-            n_proc=n_proc,
-            C_vals=C_vals,
-            sigma_vals=sigma_vals, scale_sigma=scale_sigma,
-            svr_nu_vals=svr_nu_vals,
-            weight_classes=weight_classes,
-            cache_size=tuning_cache_size,
-            svm_tol=tuning_svm_tol,
-            svm_max_iter=tuning_svm_max_iter,
-            svm_shrinking=svm_shrinking,
-            status_fn=status_fn,
-            progressbar=progressbar)
-    if mode == 'SVC':
-        sigma, C = tuned_params
-        status_fn('Chose sigma {}, C {}'.format(*tuned_params))
-    elif mode == 'NuSVR':
-        sigma, C, svr_nu = tuned_params
-        status_fn('Chose sigma {}, C {}, nu {}'.format(*tuned_params))
-    else:
-        raise ValueError
+    # make fake labels for test data, so SDM class knows what they are
+    test_fake_labels = np.empty(n_test, dtype=train_labels.dtype)
+    test_fake_labels.fill(-1 if classifier else np.nan)
+    combo_labels = np.hstack((train_labels, test_fake_labels))
 
-    status_fn('Doing final projection')
-    train_km, test_km = split_km(
-            make_km(divs, sigma),
-            xrange(num_train),
-            xrange(num_train, divs.shape[0]))
+    full_km = sdm.fit(combo_bags, combo_labels, divs=divs, ret_km=True)
+    preds = sdm.predict(test_bags, km=full_km[-n_test:, :n_train])
 
-    status_fn('Training final SVM')
-    params = {
-        'cache_size': cache_size,
-        'tol': svm_tol,
-        'kernel': 'precomputed',
-        'max_iter': svm_max_iter,
-        'shrinking': svm_shrinking,
-    }
-    if mode == 'SVC':
-        params['class_weight'] = 'auto' if weight_classes else None
-        clf = svm.SVC(C=C, **params)
-    elif mode == 'NuSVR':
-        clf = svm.NuSVR(C=C, nu=svr_nu, **params)
-    clf.fit(train_km, train_labels)
-
-    preds = clf.predict(test_km)
-    if classifier:
-        assert np.all(preds == np.round(preds))
-        preds = preds.astype(int)
-
-    return (preds, tuned_params) if return_config else preds
+    if return_config:
+        tuned_params = (sdm.sigma_, sdm.C_)
+        if not classifier:
+            tuned_params += (sdm.svr_nu_,)
+        return (preds, tuned_params)
+    return preds
 
 
 ################################################################################
