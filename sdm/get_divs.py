@@ -33,10 +33,10 @@ except ImportError:
     warnings.warn('Cannot find FLANN. KNN searches will be much slower.')
     searcher = None
 
-from utils import (eps, col, get_col, izip, lazy_range, is_integer, raw_input,
-                   str_types, bytes, portion, positive_int, confirm_outfile,
-                   iteritems, itervalues)
-from mp_utils import ForkedData, map_unordered_with_progressbar, get_pool
+from .utils import (eps, col, get_col, izip, lazy_range, is_integer, raw_input,
+                    str_types, bytes, portion, positive_int, confirm_outfile,
+                    iteritems, itervalues)
+from .mp_utils import ForkedData, map_unordered_with_progressbar, get_pool
 
 ################################################################################
 ### Helpers for robust mean estimation

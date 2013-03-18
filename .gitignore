@@ -1,3 +1,9 @@
 *.pyc
 __pycache__
+
+/build/
+/dist/
+/py_sdm.egg-info/
+/MANIFEST
+
 /data

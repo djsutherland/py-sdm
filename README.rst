@@ -21,42 +21,42 @@ Requirements
 
  * This code is written for Python 2.7 with 3.2+ compatability in mind.
    It is known not to work for 2.6, though adding support would not be overly difficult.
-   The [Enthought Python Distribution](http://www.enthought.com/epd), which
+   The `Enthought Python Distribution <http://www.enthought.com/epd>`_, which
    has an academic license, includes numpy, scipy, h5py, and PIL -- the hardest to
    install of the dependencies. It also includes scikit-image and scikit-learn, but we
    need newer versions than it ships with.
 
- * [numpy](http://numpy.org) - if you're going to run on largeish datasets,
+ * `numpy <http://numpy.org>`_ - if you're going to run on largeish datasets,
    the PCA and PSD projection stages will be faster if your numpy is linked to a
    fast BLAS/LAPACK like MKL (true of EPD).
 
- * [SciPy](http://scipy.org)
+ * `SciPy <http://scipy.org>`_
 
- * [bottleneck](http://berkeleyanalytics.com/bottleneck/) is used a little bit.
+ * `bottleneck <http://berkeleyanalytics.com/bottleneck/>`_ is used a little bit.
 
- * [FLANN](http://people.cs.ubc.ca/~mariusm/index.php/FLANN/FLANN),
+ * `FLANN <http://people.cs.ubc.ca/~mariusm/index.php/FLANN/FLANN>`_,
    including the Python interface, is highly recommended for much
    faster nearest neighbor searches. This isn't in pip but is in homebrew,
    ubuntu's apt, etc.
 
- * [h5py](http://code.google.com/p/h5py/) is optionally used in the
+ * `h5py <http://code.google.com/p/h5py/>`_ is optionally used in the
    command-line interface and in tests for input and output.
 
- * [scikit-learn](http://scikit-learn.org/) 0.13 or higher is used in the SDM
+ * `scikit-learn <http://scikit-learn.org/>`_ 0.13 or higher is used in the SDM
    code and in feature processing.
 
- * [vlfeat](http://vlfeat.org) is used in the image featurization code. We use
-   a ctypes interface to libvl.(so|dylib); that should be on your path.
-   (Get it from http://www.vlfeat.org/download/vlfeat-0.9.16-bin.tar.gz,
-   and just extract e.g. vlfeat-0.9.16/bin/glnxa64/libvl.so.)
+ * `vlfeat-ctypes <https://github.com/dougalsutherland/vlfeat-ctypes>`_, a
+   minimal ctypes interface to the `vlfeat <http://www.vlfeat.org>`_ computer
+   vision algorithm library. Make sure to run ``python -m vlfeat.download`` to
+   download the library binary.
 
- * [scikit-image](http://scikit-image.org/) is used in the image featurization
+ * `scikit-image <http://scikit-image.org/>`_ is used in the image featurization
    code for resizing. Additionally, you'll need either one of its plugins,
    opencv, or matplotlib and PIL installed to load images.
 
- * [progressbar](pypi.python.org/pypi/progressbar/) is optional in the CLI.
+ * `progressbar <pypi.python.org/pypi/progressbar/>`_ is optional in the CLI.
 
- * [nose](nose.readthedocs.org) for tests.
+ * `nose <nose.readthedocs.org>`_ for tests.
 
 
 

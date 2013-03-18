@@ -10,7 +10,7 @@ import os
 import random
 import string
 
-from utils import strict_map, imap, izip
+from .utils import strict_map, imap, izip
 
 
 def _apply(func_args):

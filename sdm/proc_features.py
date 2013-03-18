@@ -7,10 +7,10 @@ import sys
 
 import numpy as np
 
-from utils import izip, positive_int, portion, nonnegative_float, strict_map
-from extract_features import (Features, features_attrs,
-                              read_features, read_features_perimage,
-                              save_features, confirm_outfile)
+from .utils import izip, positive_int, portion, nonnegative_float, strict_map
+from .extract_features import (Features, features_attrs,
+                               read_features, read_features_perimage,
+                               save_features, confirm_outfile)
 
 # NOTE: all the references to "features" in this file mean a variable that is
 #       like Features.features; "features_tup" means an instance of Features

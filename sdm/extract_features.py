@@ -12,9 +12,9 @@ import warnings
 
 import numpy as np
 
-from utils import (positive_int, positive_float, nonnegative_float,
-                   strict_map, str_types, izip, confirm_outfile,
-                   iteritems)
+from .utils import (positive_int, positive_float, nonnegative_float,
+                    strict_map, str_types, izip, confirm_outfile,
+                    iteritems)
 from vlfeat.phow import (vl_phow, DEFAULT_MAGNIF, DEFAULT_CONTRAST_THRESH,
                          DEFAULT_WINDOW_SIZE, DEFAULT_COLOR, COLOR_CHOICES)
 

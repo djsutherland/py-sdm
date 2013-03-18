@@ -26,12 +26,12 @@ from sklearn.cross_validation import KFold, StratifiedKFold
 from sklearn.preprocessing import LabelEncoder
 from sklearn import svm  # NOTE: needs version 0.13+ for svm iter limits
 
-from extract_features import read_features
-from get_divs import (get_divs, FIX_MODE_DEFAULT, FIX_TERM_MODES, TAIL_DEFAULT,
-                      read_cell_array, subset_data,
-                      check_h5_settings, add_to_h5_cache, normalize_div_name)
-from utils import positive_int, positive_float, portion, is_integer_type
-from mp_utils import ForkedData, get_pool, progressbar_and_updater
+from .extract_features import read_features
+from .get_divs import (get_divs, FIX_MODE_DEFAULT, FIX_TERM_MODES, TAIL_DEFAULT,
+                       read_cell_array, subset_data,
+                       check_h5_settings, add_to_h5_cache, normalize_div_name)
+from .utils import positive_int, positive_float, portion, is_integer_type
+from .mp_utils import ForkedData, get_pool, progressbar_and_updater
 
 # TODO: better logging
 # TODO: support getting decision values / probabilities

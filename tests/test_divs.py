@@ -10,8 +10,8 @@ else:
 import numpy as np
 import h5py
 
-from get_divs import fix_terms_clip, get_divs
-from utils import iteritems
+from sdm.get_divs import fix_terms_clip, get_divs
+from sdm.utils import iteritems
 
 ################################################################################
 
