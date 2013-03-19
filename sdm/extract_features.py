@@ -14,7 +14,7 @@ import numpy as np
 
 from .utils import (positive_int, positive_float, nonnegative_float,
                     strict_map, str_types, izip, confirm_outfile,
-                    iteritems)
+                    iterkeys, iteritems)
 from vlfeat.phow import (vl_phow, DEFAULT_MAGNIF, DEFAULT_CONTRAST_THRESH,
                          DEFAULT_WINDOW_SIZE, DEFAULT_COLOR, COLOR_CHOICES)
 
@@ -267,7 +267,8 @@ def save_features(filename, features, **attrs):
             f.attrs[k] = v
 
 
-def read_features(filename, load_attrs=False, features_dtype=None):
+def read_features(filename, load_attrs=False, features_dtype=None,
+                  cats=None, pairs=None, subsample_fn=None):
     '''
     Reads a Features namedtuple from save_features().
     If load_attrs, also returns a dictionary of the root attributes.
@@ -276,23 +277,32 @@ def read_features(filename, load_attrs=False, features_dtype=None):
     ret = Features(*[[] for _ in features_attrs])
 
     with h5py.File(filename, 'r') as f:
+        bag_names = []
         for cat, cat_g in iteritems(f):
-            for fname, g in iteritems(cat_g):
-                ret.categories.append(cat)
-                ret.names.append(fname)
-                extra = {}
-                for k, v in iteritems(g):
-                    if k == 'frames':
-                        ret.frames.append(v[()])
-                    elif k == 'features':
-                        if features_dtype is not None:
-                            feats = np.asarray(v, dtype=features_dtype)
-                        else:
-                            feats = v[()]
+            if cats is None or cat in cats:
+                for fname in iterkeys(cat_g):
+                    if pairs is None or (cat, fname) in pairs:
+                        bag_names.append((cat, fname))
+
+        if subsample_fn is not None:
+            bag_names = subsample_fn(bag_names)
+
+        for cat, fname in bag_names:
+            ret.categories.append(cat)
+            ret.names.append(fname)
+            extra = {}
+            for k, v in iteritems(f[cat][fname]):
+                if k == 'frames':
+                    ret.frames.append(v[()])
+                elif k == 'features':
+                    if features_dtype is not None:
+                        feats = np.asarray(v, dtype=features_dtype)
                     else:
-                        extra[k] = v[()]
-                ret.features.append(feats)
-                ret.extras.append(extra)
+                        feats = v[()]
+                    ret.features.append(feats)
+                else:
+                    extra[k] = v[()]
+            ret.extras.append(extra)
 
         return (ret, dict(**f.attrs)) if load_attrs else ret
 
@@ -316,7 +326,8 @@ def save_features_perimage(path, features, **attrs):
             frames=frames, features=features, **extras)
 
 
-def read_features_perimage(path, load_attrs=False, features_dtype=None):
+def read_features_perimage(path, load_attrs=False, features_dtype=None,
+                           cats=None, pairs=None, subsample_fn=None):
     '''
     Reads a Features namedtuple from save_features().
     '''
@@ -324,29 +335,36 @@ def read_features_perimage(path, load_attrs=False, features_dtype=None):
 
     ret = Features(*[[] for _ in features_attrs])
 
+    bag_names = []
     for cat in os.listdir(path):
         dirpath = os.path.join(path, cat)
-        if not os.path.isdir(dirpath):
-            continue
+        if os.path.isdir(dirpath) and (cats is None or cat in cats):
+            for npz_fname in glob(os.path.join(dirpath, '*.npz')):
+                fname = npz_fname[len(dirpath) + 1:-len('.npz')]
+                if pairs is None or (cat, fname) in pairs:
+                    bag_names.append((cat, fname))
 
-        for fname in glob(os.path.join(dirpath, '*.npz')):
-            ret.categories.append(cat)
-            ret.names.append(fname[len(dirpath) + 1:-len('.npz')])
+    if subsample_fn is not None:
+        bag_names = subsample_fn(bag_names)
 
-            data = np.load(fname)
-            extra = {}
-            for k, v in iteritems(data):
-                if k == 'frames':
-                    ret.frames.append(v[()])
-                elif k == 'features':
-                    if features_dtype is not None:
-                        feats = np.asarray(v, dtype=features_dtype)
-                    else:
-                        feats = v[()]
+    for cat, fname in bag_names:
+        ret.categories.append(cat)
+        ret.names.append(fname)
+
+        data = np.load(os.path.join(path, cat, fname + '.npz'))
+        extra = {}
+        for k, v in iteritems(data):
+            if k == 'frames':
+                ret.frames.append(v[()])
+            elif k == 'features':
+                if features_dtype is not None:
+                    feats = np.asarray(v, dtype=features_dtype)
                 else:
-                    extra[k] = v[()]
-            ret.features.append(feats)
-            ret.extras.append(extra)
+                    feats = v[()]
+                ret.features.append(feats)
+            else:
+                extra[k] = v[()]
+        ret.extras.append(extra)
 
     if load_attrs:
         import pickle
