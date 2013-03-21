@@ -104,20 +104,22 @@ def add_spatial_info(features, frames, add_x=True, add_y=True):
     return ret
 
 
-def normalize(features):
+def normalize(features, ret_scaler=False):
     from sklearn.preprocessing import StandardScaler
     # TODO: get mean and variance without explicitly stacking...
     scaler = StandardScaler(copy=False)
     scaler.fit(np.vstack(features))
-    return strict_map(scaler.transform, features)
+    transformed = strict_map(scaler.transform, features)
+    return (transformed, scaler) if ret_scaler else transformed
 
 
 def process_features(features_tup, verbose=False,
         blank_thresh=DEFAULT_BLANK_THRESH, blank_handler=DEFAULT_BLANK_HANDLER,
         do_pca=True, pca_k=None, pca_varfrac=DEFAULT_VARFRAC, pca_random=False,
+        pca=None,
         add_x=True, add_y=True,
-        normalize_feats=True,
-        ret_pca=False):
+        normalize_feats=True, scaler=None,
+        ret_pca=False, ret_scaler=False):
     pr = partial(print, file=sys.stderr) if verbose else _do_nothing
 
     features = features_tup.features
@@ -130,8 +132,8 @@ def process_features(features_tup, verbose=False,
     if do_pca:
         pr("Running PCA...")
         old_dim = features[0].shape[1]
-        features, pca = pca_features(features,
-            k=pca_k, varfrac=pca_varfrac, randomize=pca_random, ret_pca=True)
+        features, pca = pca_features(features, ret_pca=True,
+            k=pca_k, varfrac=pca_varfrac, randomize=pca_random, pca=pca)
         new_dim = features[0].shape[1]
         pr("Reduced dimensionality from {} to {}.".format(old_dim, new_dim))
 
@@ -140,13 +142,25 @@ def process_features(features_tup, verbose=False,
         features = add_spatial_info(features, features_tup.frames, add_x, add_y)
 
     if normalize_feats:
-        pr("Normalizing features to mean 0, variance 1...")
-        features = normalize(features)
+        if scaler is None:
+            pr("Normalizing features to mean 0, variance 1...")
+            features, scaler = normalize(features, ret_scaler=True)
+        else:
+            pr("Normalizing features...")
+            features = strict_map(scaler.transform, features)
 
     feats = Features(features=features,
         **dict((k, getattr(features_tup, k))
                for k in features_attrs if k != 'features'))
-    return (feats, pca) if ret_pca else feats
+
+    if not ret_pca and not ret_scaler:
+        return feats
+    ret = [feats]
+    if ret_pca:
+        ret.append(pca)
+    if ret_scaler:
+        ret.append(scaler)
+    return ret
 
 
 def parse_args(args=None):
@@ -229,15 +243,19 @@ def main():
 
     pr("Loading features from '{}'...".format(load_file))
     f = read_features_perimage if os.path.isdir(load_file) else read_features
-    orig, orig_attrs = f(load_file, load_attrs=True, features_dtype=np.float32)
+    orig, attrs = f(load_file, load_attrs=True, features_dtype=np.float32)
 
-    new, pca = process_features(orig, ret_pca=True, **vars(args))
+    new, pca, scaler = process_features(orig, ret_pca=True, **vars(args))
+
+    if pca is not None:
+        attrs['pca_mean'] = pca.mean_
+        attrs['pca_components'] = pca.components_
+    if scaler is not None:
+        attrs['scaler_mean'] = scaler.mean_
+        attrs['scaler_std'] = scaler.std_
 
     pr("Saving features to '{}'...".format(save_file))
-    save_features(save_file, new,
-                  process_args=repr(vars(args)),
-                  pca_mean=pca.mean_, pca_components=pca.components_,
-                  **orig_attrs)
+    save_features(save_file, new, process_args=repr(vars(args)), **attrs)
 
 
 if __name__ == '__main__':
