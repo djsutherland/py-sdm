@@ -56,6 +56,10 @@ def get_status_fn(val):
     else:
         return val
 
+def is_categorical_type(ary):
+    return is_integer_type(ary) or ary.dtype.kind == 'b'
+
+
 ################################################################################
 ### PSD projection and friends
 
@@ -281,6 +285,7 @@ def tune_params(divs, labels,
         pbar.finish()
 
     # figure out which ones were best
+    assert not np.any(np.isnan(scores))
     cv_means = scores.mean(axis=-1)
     top_elts = cv_means == cv_means.max()
     best_indices = random.choice(np.transpose(top_elts.nonzero()))
@@ -353,12 +358,20 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
     def status_fn(self):
         return get_status_fn(self._status_fn)
 
+    @status_fn.setter
+    def status_fn(self, value):
+        self._status_fn = value
+
     @property
     def progressbar(self):
         if self._progressbar is None:
             return self._status_fn is True
         else:
             return self._progressbar
+
+    @progressbar.setter
+    def progressbar(self, value):
+        self._progressbar = value
 
     def fit(self, X, y, divs=None, divs_cache=None, names=None, cats=None,
             ret_km=False):
@@ -383,7 +396,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         y = np.squeeze(y)
         assert y.shape == (n_bags,)
         if self.classifier:
-            assert is_integer_type(y)
+            assert is_categorical_type(y)
             assert np.all(y >= -1)
 
             train_idx = y != -1
@@ -392,6 +405,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
 
         train_y = y[train_idx]
         assert train_y.size >= 2
+        assert not np.all(train_y == train_y[0])
         if self.save_bags:
             self.train_bags_ = itemgetter(*train_idx.nonzero()[0])(X)
 
@@ -485,7 +499,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
             mask[-n_test:, :n_train] = True
 
             divs = np.squeeze(get_divs(
-                    self.train_bags_ + data, mask=mask,
+                    self.train_bags_ + tuple(data), mask=mask,
                     specs=[self.div_func], Ks=[self.K],
                     n_proc=self.n_proc, min_dist=self.min_dist,
                     fix_mode=self.fix_mode, tail=self.tail,
@@ -550,7 +564,7 @@ def transduct(train_bags, train_labels, test_bags,
     train_labels = np.squeeze(train_labels)
     assert train_labels.shape == (n_train,)
     if classifier:
-        assert is_integer_type(train_labels)
+        assert is_categorical_type(train_labels)
         assert np.all(train_labels >= 0)
     else:
         assert np.all(np.isfinite(train_labels))
@@ -637,7 +651,7 @@ def crossvalidate(bags, labels,
     labels = np.squeeze(labels)
     assert labels.shape == (num_bags,)
     if classifier:
-        assert is_integer_type(labels)
+        assert is_categorical_type(labels)
         assert np.all(labels >= 0)
     else:
         assert np.all(np.isfinite(labels))
@@ -1009,7 +1023,7 @@ def do_cv(args):
 
         del feats
 
-    if args.svm_mode == 'SVC' and not is_integer_type(labels):
+    if args.svm_mode == 'SVC' and not is_categorical_type(labels):
         if labels.dtype.kind == 'f' and np.all(labels == np.round(labels)):
             labels = labels.astype(int)
         else:
