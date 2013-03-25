@@ -82,27 +82,27 @@ def _find_working_imread(modes=IMREAD_MODES):
 
 
 def _load_features(filename, imread_mode=IMREAD_MODES, size=None, **kwargs):
-    "Loads filename, optionally resizes it, and calls get_features."
+    """
+    Loads filename, optionally resizes it, and calls get_features.
+
+    size should be either None or a (width, height) tuple, where having one
+    element be None means that the relevant entry is chosen so as to maintain
+    the aspect ratio.
+    """
     _, imread = _find_working_imread(imread_mode)
     img = imread(filename)
 
     if size is not None and size != (None, None):
         import skimage.transform
         curr_x, curr_y = img.shape[:2]
-        new_x, new_y = size
-#        if new_x is None or new_y is None:
-#            scale = new_x / curr_x if new_y is None else new_y / curr_y
-#            img = skimage.transform.rescale(img, scale)
+        new_y, new_x = size
         if new_x is None:
-            scale = new_y / curr_y
-            newsize = (int(np.round(curr_x * scale)), new_y)
-            img = skimage.transform.resize(img, newsize)
+            newsize = (int(np.round(curr_x * new_y / curr_y)), new_y)
         elif new_y is None:
-            scale = new_x / curr_x
-            newsize = (new_x, int(np.round(curr_y * scale)))
-            img = skimage.transform.resize(img, newsize)
+            newsize = (new_x, int(np.round(curr_y * new_x / curr_y)))
         else:
-            img = skimage.transform.resize(img, size)
+            newsize = size
+        img = skimage.transform.resize(img, newsize)
 
     return get_features(img, **kwargs)
 
