@@ -235,9 +235,18 @@ def extract_features(paths, cats, imread_mode=IMREAD_MODES,
     # find an imread mode now, so we don't have to try bad imports every time
     imread_mode, _ = _find_working_imread(imread_mode)
 
-    # do the actual extraction
+    # do the actual extraction, skipping any images we get no features from
+    n_skipped = [0]  # python closure silliness
+    def predicate(f_d):
+        if f_d[0].size == 0:
+            n_skipped[0] += 1
+            return False
+        return True
     load_features = partial(_load_features, imread_mode=imread_mode, **kwargs)
-    frames, descrs = zip(*do_map(load_features, paths))
+    frames, descrs = zip(*filter(predicate, do_map(load_features, paths)))
+    if n_skipped[0]:
+        msg = "Skipped {} images that got no features out.".format(n_skipped[0])
+        warnings.warn(msg)
     return Features(cats, image_names, frames, descrs, extras)
 
 
