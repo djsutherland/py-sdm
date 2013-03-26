@@ -245,7 +245,8 @@ def main():
     f = read_features_perimage if os.path.isdir(load_file) else read_features
     orig, attrs = f(load_file, load_attrs=True, features_dtype=np.float32)
 
-    new, pca, scaler = process_features(orig, ret_pca=True, **vars(args))
+    new, pca, scaler = process_features(orig, ret_pca=True, ret_scaler=True,
+                                        **vars(args))
 
     if pca is not None:
         attrs['pca_mean'] = pca.mean_
