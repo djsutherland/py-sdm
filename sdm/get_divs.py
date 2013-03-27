@@ -371,8 +371,9 @@ def process_pair(funcs, opts, bags, xxs, row, col, symm=True):
         xx, yy = xxs[row], xxs[col]
 
         mK = max(opts['Ks'])
-        xy = knn_search(xbag, ybag, mK)[:, opts['Ks'] - 1]  # col 0 is nearest
-        yx = knn_search(ybag, xbag, mK)[:, opts['Ks'] - 1]
+        K_is = opts['Ks'] - 1  # col 0 is nearest
+        xy = tuple(r[:, K_is] for r in knn_search(xbag, ybag, mK))
+        yx = tuple(r[:, K_is] for r in knn_search(ybag, xbag, mK))
 
         r = handle(xx, xy, yy, yx)
         if symm:
