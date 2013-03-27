@@ -15,6 +15,7 @@ from operator import itemgetter
 import os
 import random
 import sys
+import warnings
 import weakref
 
 import h5py
@@ -24,6 +25,7 @@ import scipy.linalg
 import sklearn.base
 from sklearn.cross_validation import KFold, StratifiedKFold
 from sklearn.preprocessing import LabelEncoder
+from sklearn.utils import ConvergenceWarning
 from sklearn import svm  # NOTE: needs version 0.13+ for svm iter limits
 
 from .extract_features import read_features
@@ -165,7 +167,7 @@ def try_params_SVC(km, train_idx, test_idx, C, labels, params):
     clf.fit(train_km, labels.value[train_idx])
 
     preds = clf.predict(test_km)
-    return np.mean(preds == labels.value[test_idx])
+    return np.mean(preds == labels.value[test_idx]), clf.fit_status_
 
 def try_params_NuSVR(km, train_idx, test_idx, C, nu, labels, params):
     '''Try params in a NuSVR; returns negative of mean squared error.'''
@@ -175,13 +177,7 @@ def try_params_NuSVR(km, train_idx, test_idx, C, nu, labels, params):
     clf.fit(train_km, labels.value[train_idx])
 
     preds = clf.predict(test_km)
-    return -np.mean((preds - labels.value[test_idx]) ** 2)
-
-def _assign_score(scores, C_vals, sigma_vals, print_fn, indices, val):
-    # indices should be a tuple
-    scores[indices] = val
-    #print_fn('C {}, sigma {}, fold {}: acc {}'.format(
-    #    C_vals[C_idx], sigma_vals[sigma_idx], f_idx, val))
+    return -np.mean((preds - labels.value[test_idx]) ** 2), clf.fit_status_
 
 def tune_params(divs, labels,
                 mode='SVC',
@@ -253,12 +249,17 @@ def tune_params(divs, labels,
     scores.fill(np.nan)
 
     status_fn('Cross-validating parameter sets...')
-    assign_score = partial(_assign_score, scores, C_vals, sigma_vals, status_fn)
+
+    conv_warning_counter = itertools.count()
     if progressbar:
-        assign_score_ = assign_score
         pbar, tick_pbar = progressbar_and_updater(maxval=scores.size)
-        def assign_score(*args, **kwargs):
-            assign_score_(*args, **kwargs)
+
+    def assign_score(indices, val_and_status):
+        val, status = val_and_status
+        scores[indices] = val
+        if status:
+            next(conv_warning_counter)
+        if progressbar:
             tick_pbar()
 
     if mode == 'NuSVR':
@@ -270,6 +271,9 @@ def tune_params(divs, labels,
 
     try_params = partial(try_params_SVC if mode == 'SVC' else try_params_NuSVR,
                   labels=labels_d, params=svm_params)
+
+    warnings.filterwarnings('ignore', category=ConvergenceWarning)
+    ignore_conv = warnings.filters[0]
 
     with get_pool(n_proc) as pool:
         for job in jobs:
@@ -283,6 +287,10 @@ def tune_params(divs, labels,
 
     if progressbar:
         pbar.finish()
+
+    warnings.filters.remove(ignore_conv)
+    status_fn('{} SVMs terminated early, after {:,} steps'.format(
+        next(conv_warning_counter), svm_max_iter))
 
     # figure out which ones were best
     assert not np.any(np.isnan(scores))
