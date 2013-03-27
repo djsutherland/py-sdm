@@ -600,7 +600,7 @@ def main():
     if args.input_format == 'matlab':
         with h5py.File(args.input_file, 'r') as f:
             bags = read_cell_array(f, f[args.input_var_name])
-            cats = f['cats'][()]
+            cats = np.squeeze(f['cats'][()])
     else:
         from extract_features import read_features
         data = read_features(args.input_file)
