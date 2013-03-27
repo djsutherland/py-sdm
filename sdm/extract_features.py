@@ -256,7 +256,9 @@ def extract_features(paths, cats, imread_mode=IMREAD_MODES,
 def save_features(filename, features, **attrs):
     '''
     Saves a Features namedtuple into an HDF5 file.
-    Also sets any keyword args as root attributes.
+
+    Also saves any keyword args as a dateset under '/meta'.
+
     Each bag is saved as "features" and "frames" in /category/filename;
     any "extras" get added there as a (probably scalar) dataset named by the
     extra's name.
@@ -272,15 +274,18 @@ def save_features(filename, features, **attrs):
                     assert k not in ['frames', 'features']
                     g[k] = v
 
+        meta = f.require_group('_meta')
         for k, v in iteritems(attrs):
-            f.attrs[k] = v
+            meta[k] = v
 
 
 def read_features(filename, load_attrs=False, features_dtype=None,
                   cats=None, pairs=None, subsample_fn=None):
     '''
     Reads a Features namedtuple from save_features().
-    If load_attrs, also returns a dictionary of the root attributes.
+
+    If load_attrs, also returns a dictionary of meta values loaded from
+    root attributes, '/_meta' attributes, '/_meta' datasets.
     '''
     import h5py
     ret = Features(*[[] for _ in features_attrs])
@@ -313,7 +318,20 @@ def read_features(filename, load_attrs=False, features_dtype=None,
                     extra[k] = v[()]
             ret.extras.append(extra)
 
-        return (ret, dict(**f.attrs)) if load_attrs else ret
+        if load_attrs:
+            attrs = {}
+            if '_meta' in f:
+                for k, v in iteritems(f['_meta']):
+                    attrs[k] = v[()]
+                for k, v in iteritems(f['_meta'].attrs):
+                    if k not in attrs:
+                        attrs[k] = v
+            for k, v in iteritems(f.attrs):
+                if k not in attrs:
+                    attrs[k] = v
+            return ret, attrs
+
+        return ret
 
 
 ################################################################################
