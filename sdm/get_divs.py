@@ -209,21 +209,19 @@ def l2(xx, xy, yy, yx, Ks, dim, tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT,
     if xy is None:  # identical bags
         return np.zeros(len(Ks))
 
-    hdim = dim / 2  # used in exponent below b/c distances are squared
-
     N = xx.shape[0]
     M = yy.shape[0]
-    c = np.pi ** hdim / gamma(hdim + 1)
+    c = np.pi ** (dim / 2) / gamma(dim / 2 + 1)
 
     rs = []
     for knd, K in enumerate(Ks):
         rho_x, nu_x = get_col(xx, knd), get_col(xy, knd)
         rho_y, nu_y = get_col(yy, knd), get_col(yx, knd)
 
-        e_p2 = (K-1) / ((N-1)*c) / (rho_x ** hdim)  # \int p^2
-        e_pq = (K-1) / (  M * c) / ( nu_x ** hdim)  # \int pq (p is proposal)
-        e_qp = (K-1) / (  N * c) / ( nu_y ** hdim)  # \int qp (q is proposal)
-        e_q2 = (K-1) / ((M-1)*c) / (rho_y ** hdim)  # \int q^2
+        e_p2 = (K-1) / ((N-1)*c) / (rho_x ** dim)  # \int p^2
+        e_pq = (K-1) / (  M * c) / ( nu_x ** dim)  # \int pq (p is proposal)
+        e_qp = (K-1) / (  N * c) / ( nu_y ** dim)  # \int qp (q is proposal)
+        e_q2 = (K-1) / ((M-1)*c) / (rho_y ** dim)  # \int q^2
 
         if N == M:  # TODO: this should probably go away?
             total = fix(e_p2 - e_pq - e_qp + e_q2).mean()
@@ -264,8 +262,8 @@ def alpha_div(xx, xy, yy, yx, alphas, Ks, dim,
         ratios = fix(rho / nu)
 
         for ind, alpha in enumerate(alphas):
-            oalph = 1 - alpha  # /2 in exponent b/c distances are squared
-            es = (size_c ** oalph) * (ratios ** (dim * oalph / 2)).mean()
+            oalph = 1 - alpha
+            es = (size_c ** oalph) * (ratios ** (dim * oalph)).mean()
             B = np.exp(gammaln(K)*2 - gammaln(K + oalph) - gammaln(K - oalph))
 
             rs[ind, knd] = es * B
