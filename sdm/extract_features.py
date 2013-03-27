@@ -302,6 +302,9 @@ def read_features(filename, load_attrs=False, features_dtype=None,
             bag_names = subsample_fn(bag_names)
 
         for cat, fname in bag_names:
+            if cat == '_meta':
+                continue
+
             ret.categories.append(cat)
             ret.names.append(fname)
             extra = {}
