@@ -23,27 +23,27 @@ Installation
 Requirements
 ============
 
-This code is written for Python 2.7 with 3.2+ compatability in mind.
+This code is written for Python 2.7, with 3.2+ compatability in mind (but not tested).
 It is known not to work for 2.6, though adding support would not be overly difficult.
 The `Enthought Python Distribution <http://www.enthought.com/epd>`_, which
 has an academic license, includes numpy, scipy, h5py, and PIL -- the hardest to
 install of the dependencies. It also includes scikit-image and scikit-learn, but we
 need newer versions than it ships with.
 
- * `numpy <http://numpy.org>`_ and `scipy <http://scipy.org>`_ are not included in
-   the pip requirements, to avoid over-eager reinstallation with ``pip install -U``.
-   If you're going to run on largeish datasets, the PCA and PSD projection stages
-   will be faster if your numpy is linked to a fast BLAS/LAPACK like MKL (true of EPD).
+* `numpy <http://numpy.org>`_ and `scipy <http://scipy.org>`_ are not included in
+  the pip requirements, to avoid over-eager reinstallation with ``pip install -U``.
+  If you're going to run on largeish datasets, the PCA and PSD projection stages
+  will be faster if your numpy is linked to a fast BLAS/LAPACK like MKL (true of EPD).
 
- * `FLANN <http://people.cs.ubc.ca/~mariusm/index.php/FLANN/FLANN>`_,
-   including the Python interface, is highly recommended for much
-   faster nearest neighbor searches. This isn't in pip but is in homebrew,
-   ubuntu's apt, etc.
+* `FLANN <http://people.cs.ubc.ca/~mariusm/index.php/FLANN/FLANN>`_,
+  including the Python interface, is highly recommended for much
+  faster nearest neighbor searches. This isn't in pip but is in homebrew,
+  ubuntu's apt, etc.
 
- * `vlfeat-ctypes <https://github.com/dougalsutherland/vlfeat-ctypes>`_, a
-   minimal ctypes interface to the `vlfeat <http://www.vlfeat.org>`_ computer
-   vision algorithm library. This *is* installed by pip automatically, but
-   make sure to run ``python -m vlfeat.download`` to download the library binary.
+* `vlfeat-ctypes <https://github.com/dougalsutherland/vlfeat-ctypes>`_, a
+  minimal ctypes interface to the `vlfeat <http://www.vlfeat.org>`_ computer
+  vision algorithm library. This *is* installed by pip automatically, but
+  make sure to run ``python -m vlfeat.download`` to download the library binary.
 
 Actual installation
 ===================
@@ -229,15 +229,17 @@ The structure that you want to make is::
     /cat2
       ...
 
- * All of the names except ``features`` can be replaced with whatever you like.
- * If you have a single "natural" classification label, it can be convenient to
-   use that for the category, but you can put them all in the same category if
-   you like.
- * The features matrices can have any number of rows but must have the same
-   numbers of columns.
- * Different bags need not have the same labels, unless you want to use them
-   for training / cross-validating in ``sdm``. Each bag can have any number
-   of labels.
+Some notes:
+
+* All of the names except ``features`` can be replaced with whatever you like.
+* If you have a single "natural" classification label, it can be convenient to
+  use that for the category, but you can put them all in the same category if
+  you like.
+* The features matrices can have any number of rows but must have the same
+  numbers of columns.
+* Different bags need not have the same labels, unless you want to use them
+  for training / cross-validating in ``sdm``. Each bag can have any number
+  of labels.
 
 Alternatively, you can use the "per-image" format, where you make a ``.npz``
 file (with ``np.savez``) at ``root-path/cat-name/bag-name.npz`` with a
