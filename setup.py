@@ -50,4 +50,5 @@ setup(
         ],
     },
 )
-# TODO: use "extras" to make some of the dependencies optional?
+# TODO: use "extras" to make some of the dependencies optional
+#       but figure out how to make it work with distribute, etc...
