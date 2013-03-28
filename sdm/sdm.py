@@ -28,12 +28,12 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.utils import ConvergenceWarning
 from sklearn import svm  # NOTE: needs version 0.13+ for svm iter limits
 
-from .extract_features import read_features
-from .get_divs import (get_divs, FIX_MODE_DEFAULT, FIX_TERM_MODES, TAIL_DEFAULT,
-                       read_cell_array, subset_data,
-                       check_h5_settings, add_to_h5_cache, normalize_div_name)
 from .utils import positive_int, positive_float, portion, is_integer_type
 from .mp_utils import ForkedData, get_pool, progressbar_and_updater
+from .np_divs import (estimate_divs,
+                      FIX_MODE_DEFAULT, FIX_TERM_MODES, TAIL_DEFAULT,
+                      read_cell_array, subset_data,
+                      check_h5_settings, add_to_h5_cache, normalize_div_name)
 
 # TODO: better logging
 # TODO: support getting decision values / probabilities
@@ -140,7 +140,7 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
                 status("Loading divs from cache '{}'".format(cache_filename))
                 return divs[...]
 
-    divs = np.squeeze(get_divs(
+    divs = np.squeeze(estimate_divs(
             bags, specs=[div_func], Ks=[K],
             n_proc=n_proc, fix_mode=fix_mode, tail=tail, min_dist=min_dist,
             status_fn=status_fn, progressbar=progressbar))
@@ -506,7 +506,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
             mask[:n_train, -n_test:] = True
             mask[-n_test:, :n_train] = True
 
-            divs = np.squeeze(get_divs(
+            divs = np.squeeze(estimate_divs(
                     self.train_bags_ + tuple(data), mask=mask,
                     specs=[self.div_func], Ks=[self.K],
                     n_proc=self.n_proc, min_dist=self.min_dist,
@@ -1017,7 +1017,12 @@ def do_cv(args):
     else:
         assert args.input_format == 'python'
 
-        feats = read_features(args.input_file)
+        if os.path.isdir(args.input_file):
+            from .image_features import read_features_perimage
+            feats = read_features_perimage(args.input_file)
+        else:
+            from .image_features import read_features
+            feats = read_features(args.input_file)
         bags = feats.features
         names = feats.names
         cats = feats.categories

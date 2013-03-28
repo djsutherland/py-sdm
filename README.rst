@@ -129,7 +129,7 @@ See ``--help`` for more options.
 Post-Processing Features
 ========================
 
-This step handles "blanks", does dimensionality reduction via PCA, adds
+This step handles "blanks," does dimensionality reduction via PCA, adds
 spatial information, and standardizes features.
 
 The basic command is::
@@ -195,10 +195,99 @@ let ``sdm`` do them all separately.
 (This will hopefully no longer be true once ``sdm`` crossvalidates among
 divergence functions: `issue #12 <https://github.com/dougalsutherland/py-sdm/issues/12>`_.)
 
-The ``get_divs`` command does this, using a command along the lines of::
+The ``extract_divs`` command does this, using a command along the lines of::
 
-    get_divs --div-funcs renyi:.8,.9,.99 -K 1 3 5 10 --
+    extract_divs --div-funcs renyi:.8,.9,.99 -K 1 3 5 10 --
         feats_pca.h5 feats_pca.divs.h5
 
 (where the ``--`` indicates that the ``-K`` arguments are done and it's time for
 positional args.)
+
+
+
+Quick Start Guide For General Features
+--------------------------------------
+
+If you don't want to use the image feature extraction code above, you have two
+main options for using SDMs.
+
+
+Making Compatible Files
+=======================
+
+One option is to make an hdf5 file compatible with the output of
+``extract_image_features`` and ``proc_image_features``, e.g. with ``h5py``.
+The structure that you want to make is::
+
+    /cat1          # the name of a category
+      /bag1        # the name of each data sample
+        /features  # a row-instance feature matrix
+        /label-1   # a scalar dataset with the value of label-1
+        /label-2   # scalar dataset with a second label type
+      /bag2
+        ...
+    /cat2
+      ...
+
+ * All of the names except ``features`` can be replaced with whatever you like.
+ * If you have a single "natural" classification label, it can be convenient to
+   use that for the category, but you can put them all in the same category if
+   you like.
+ * The features matrices can have any number of rows but must have the same
+   numbers of columns.
+ * Different bags need not have the same labels, unless you want to use them
+   for training / cross-validating in ``sdm``. Each bag can have any number
+   of labels.
+
+Alternatively, you can use the "per-image" format, where you make a ``.npz``
+file (with ``np.savez``) at ``root-path/cat-name/bag-name.npz`` with a
+``features`` matrix and any labels (as above).
+
+Depending on the nature of your features, you may want to run PCA on them,
+standardize the dimensions, or perform other normalizations. You can do PCA and
+standardization with ``proc_image_features``, as long as you make sure to pass
+``--blank-handler none --no-add-x --no-add-y`` so it doesn't try to do image-
+specific stuff.
+
+You can then use ``sdm`` as above.
+
+
+Using the API
+=============
+
+You can also use the API directly. The following shows basic usage in the
+situation where test data is not available at training time::
+
+    import sdm
+
+    # train_features is a list of row-instance data matrices
+    # train_labels is a numpy vector of integer categories
+
+    train_x, pca = sdm.pca_features(train_features, varfrac=0.7, ret_pca=True)
+    train_x, scaler = sdm.normalize(train_x, ret_scaler=True)
+
+    clf = sdm.SupportDistributionMachine()
+    clf.fit(train_x, train_labels)
+    # ^ gets divergences and does parameter tuning. See the docstrings for
+    # more information about options, divergence caches, etc. Caching
+    # divergences is highly recommended.
+
+    # get test_features
+    test_x = sdm.pca_features(test_features, pca=pca)
+    test_x = sdm.normalize(test_x, scaler=scaler)
+
+    # get test values
+    preds = clf.predict(test_x)
+
+    accuracy = np.mean(preds == test_labels)
+
+
+To do regression, use ``clf = sdm.SupportDistributionMachine(mode='NuSVR')``;
+the rest of the usage is the same.
+
+If you're running on a nontrivial amount of data, it may be nice to pass
+``status_fn=True`` and ``progressbar=True`` to the constructor to get status
+information out along the way (like in the CLI).
+
+If test data is available at training time, it is preferable to use
+``sdm.transduct()`` instead.

@@ -10,7 +10,7 @@ else:
 import numpy as np
 import h5py
 
-from sdm.get_divs import fix_terms_clip, get_divs
+from sdm.np_divs import fix_terms_clip, estimate_divs
 from sdm.utils import iteritems
 
 ################################################################################
@@ -209,8 +209,8 @@ def check_div(bags, expected, name, **args):
 
     capturer = capture_output(True, True, merge=False)
     with capturer:
-        divs = get_divs(bags, specs=div_funcs, Ks=[K],
-                        tail=.01, min_dist=0, fix_mode='clip', **args)
+        divs = estimate_divs(bags, specs=div_funcs, Ks=[K],
+                             tail=.01, min_dist=0, fix_mode='clip', **args)
 
     argstr = ', '.join('{}={}'.format(k, v) for k, v in iteritems(args))
 
@@ -251,7 +251,7 @@ def test_divs():
 
 if __name__ == '__main__':
     import warnings
-    warnings.filterwarnings('error', module='get_divs')
+    warnings.filterwarnings('error', module='sdm')
 
     import nose
     nose.main()

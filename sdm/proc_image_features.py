@@ -7,10 +7,10 @@ import sys
 
 import numpy as np
 
-from .utils import izip, positive_int, portion, nonnegative_float, strict_map
-from .extract_features import (Features, features_attrs,
-                               read_features, read_features_perimage,
-                               save_features, confirm_outfile)
+from .utils import (izip, positive_int, portion, nonnegative_float, strict_map,
+                    confirm_outfile)
+from .image_features import (Features, features_attrs, save_features,
+                             read_features, read_features_perimage)
 
 # NOTE: all the references to "features" in this file mean a variable that is
 #       like Features.features; "features_tup" means an instance of Features
@@ -49,8 +49,7 @@ def handle_blanks(features, blank_thresh=DEFAULT_BLANK_THRESH,
 
 DEFAULT_VARFRAC = 0.7
 def pca_features(features, pca=None, k=None, varfrac=DEFAULT_VARFRAC,
-                 randomize=False, dtype=None, ret_pca=False,
-                 _stacked=None):
+                 randomize=False, dtype=None, ret_pca=False):
     '''
     PCAs a set of features.
 
@@ -104,11 +103,12 @@ def add_spatial_info(features, frames, add_x=True, add_y=True):
     return ret
 
 
-def normalize(features, ret_scaler=False):
+def normalize(features, scaler=None, ret_scaler=False):
     from sklearn.preprocessing import StandardScaler
-    # TODO: get mean and variance without explicitly stacking...
-    scaler = StandardScaler(copy=False)
-    scaler.fit(np.vstack(features))
+    if scaler is None:
+        # TODO: get mean and variance without explicitly stacking...
+        scaler = StandardScaler(copy=False)
+        scaler.fit(np.vstack(features))
     transformed = strict_map(scaler.transform, features)
     return (transformed, scaler) if ret_scaler else transformed
 
@@ -124,7 +124,7 @@ def process_features(features_tup, verbose=False,
 
     features = features_tup.features
 
-    if blank_handler is not None:
+    if blank_handler not in (None, "none"):
         pr("Handling blanks...")
         features = handle_blanks(features,
             blank_thresh=blank_thresh, blank_handler=blank_handler)
@@ -142,12 +142,8 @@ def process_features(features_tup, verbose=False,
         features = add_spatial_info(features, features_tup.frames, add_x, add_y)
 
     if normalize_feats:
-        if scaler is None:
-            pr("Normalizing features to mean 0, variance 1...")
-            features, scaler = normalize(features, ret_scaler=True)
-        else:
-            pr("Normalizing features...")
-            features = strict_map(scaler.transform, features)
+        pr("Normalizing features...")
+        features, scaler = normalize(features, scaler=scaler, ret_scaler=True)
 
     feats = Features(features=features,
         **dict((k, getattr(features_tup, k))

@@ -426,16 +426,16 @@ def subset_data(bags, n_points):
 ################################################################################
 ### The main dealio
 
-def get_divs(bags,
-             mask=None,
-             specs=['renyi:.9'],
-             Ks=[3],
-             n_proc=None,
-             tail=TAIL_DEFAULT,
-             fix_mode=FIX_MODE_DEFAULT,
-             min_dist=None,
-             status_fn=True, progressbar=None,
-             return_opts=False):
+def estimate_divs(bags,
+                  mask=None,
+                  specs=['renyi:.9'],
+                  Ks=[3],
+                  n_proc=None,
+                  tail=TAIL_DEFAULT,
+                  fix_mode=FIX_MODE_DEFAULT,
+                  min_dist=None,
+                  status_fn=True, progressbar=None,
+                  return_opts=False):
     '''
     Gets the divergences between bags.
         bags: a length n list of row-instance feature matrices
@@ -604,7 +604,7 @@ def main():
             bags = read_cell_array(f, f[args.input_var_name])
             cats = np.squeeze(f['cats'][()])
     else:
-        from extract_features import read_features
+        from .image_features import read_features
         data = read_features(args.input_file)
         bags = data.features
 
@@ -629,7 +629,7 @@ def main():
     if args.n_points:
         bags = subset_data(bags, args.n_points)
 
-    R, opts = get_divs(
+    R, opts = estimate_divs(
             bags, specs=args.div_funcs, Ks=args.K,
             n_proc=args.n_proc,
             tail=args.trim_tails, fix_mode=args.trim_mode,

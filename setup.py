@@ -43,9 +43,9 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'extract_features = sdm.extract_features:main',
-            'proc_features = sdm.proc_features:main',
-            'get_divs = sdm.get_divs:main',
+            'extract_image_features = sdm.extract_image_features:main',
+            'proc_image_features = sdm.proc_image_features:main',
+            'estimate_divs = sdm.np_divs:main',
             'sdm = sdm.sdm:main',
         ],
     },
