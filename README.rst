@@ -16,8 +16,12 @@ Code by Dougal J. Sutherland <dsutherl@cs.cmu.edu>
 based partially on code by Liang Xiong <lxiong@cs.cmu.edu>.
 
 
-Requirements
+
+Installation
 ------------
+
+Requirements
+============
 
 This code is written for Python 2.7 with 3.2+ compatability in mind.
 It is known not to work for 2.6, though adding support would not be overly difficult.
@@ -41,12 +45,45 @@ need newer versions than it ships with.
    vision algorithm library. This *is* installed by pip automatically, but
    make sure to run ``python -m vlfeat.download`` to download the library binary.
 
+Actual installation
+===================
+
+You have several options. The most straightforward way to get a snapshot is to
+just ``pip install`` the code (either into your system site-packages or
+a `virtualenv <https://pypi.python.org/pypi/virtualenv>`_) via::
+
+    pip install 'https://github.com/dougalsutherland/py-sdm/tarball/master#egg=sdm-0.1.0dev'
+
+Since this package is still in early development and not yet producing relases,
+however, this somewhat complicates the process of upgrading the code. It's
+easier to get upgrades if you do a development install. One way to do so is to
+install from the source repository, assuming you have ``git`` on your system:
+
+    pip install -e 'git+https://github.com/dougalsutherland/py-sdm.git#egg=sdm-0.1.0dev'
+
+This will check the code out into ``./src/py-sdm`` by default, and then do a
+"development" install, so that you can fetch updates simply by going into that
+directory and issuing ``git pull``.
+
+If you use the image feature extraction code, you might want to do the same for
+the ``vlfeat-ctypes`` package (which is modified less often but still does not
+have any releases). It's easiest to do this *before* the above:
+
+    pip install -e 'git+https://github.com/dougalsutherland/vlfeat-ctypes.git#egg=vlfeat-ctypes-0.1.0dev'
+
+In either case, if you want to use the image feature code you need to either
+install ``libvl.so`` (or similar for your platform)
+or issue ``python -m vlfeat.download`` to install it in your site-packages.
+(Adding ``-h`` to that shows how to avoid re-downloading the binary distribution
+if you already have it.)
 
 
-Quick Start Guide
------------------
+
+Quick Start Guide for Images
+----------------------------
 
 This shows you the basics of how to do classification or regression on images.
+
 
 Data Format
 ===========
@@ -71,11 +108,11 @@ This step extracts SIFT features for a collection of images.
 
 The basic command is something like::
 
-    ./extract_features.py --root-dir path-to-root-dir --color hsv feats_raw.h5
+    extract_image_features --root-dir path-to-root-dir --color hsv feats_raw.h5
 
 for classification, or::
 
-    ./extract_features.py --dirs path-to-root-dir --color hsv feats_raw.h5
+    extract_image_features --dirs path-to-root-dir --color hsv feats_raw.h5
 
 for regression.
 
@@ -97,7 +134,7 @@ spatial information, and standardizes features.
 
 The basic command is::
 
-    ./proc_features.py --pca-varfrac 0.7 feats_raw.h5 feats_pca.h5
+    proc_image_features --pca-varfrac 0.7 feats_raw.h5 feats_pca.h5
 
 This by default does a dense PCA; if you have a lot of images and/or the images
 are large, it'll take a lot of memory.
@@ -120,7 +157,7 @@ Classifying/Regressing
 Once you have this, to calculate divergences and run the SVMs in one step you
 can use a command like::
 
-    ./sdm.py cv --div-func renyi:.9 -K 5 --cv-folds 10 \
+    sdm cv --div-func renyi:.9 -K 5 --cv-folds 10 \
         feats_pca.h5 --div-cache-file feats_pca.divs.h5 \
         --output-file feats_pca.cv.mat
 
@@ -131,19 +168,19 @@ This can take a long time, especially when doing divergences.
 
 For regression, the command would look like::
 
-    ./sdm.py cv --nu-svr --div-func renyi:.9 -K 5 --cv-folds 10 \
+    sdm cv --nu-svr --div-func renyi:.9 -K 5 --cv-folds 10 \
         --labels-name target_name
         feats_pca.h5 --div-cache-file feats_pca.divs.h5
         --output-file feats_pca.cv.mat
 
 This uses ``--n-proc`` to specify the number of SVMs to run in parallel during parameter
-tuning. During the projection phase (which happens in serial), an MKL-linked numpy is 
+tuning. During the projection phase (which happens in serial), an MKL-linked numpy is
 likely to spawn many threads; `OMP_NUM_THREADS` will again control this.
 
-Many more options are available via ``sdm.py cv --help``.
+Many more options are available via ``sdm cv --help``.
 
-``sdm.py`` also supports predicting using a training / test set through
-``sdm.py predict`` rather than ``sdm.py cv``,
+``sdm`` also supports predicting using a training / test set through
+``sdm predict`` rather than ``sdm cv``,
 but there isn't currently code to produce the input files it assumes.
 
 
@@ -153,14 +190,14 @@ Precomputing Divergences
 
 If you'd like to try several divergence functions (e.g. different values of
 alpha or K), it's much more efficient to compute them all at once than to
-let ``sdm.py`` do them all separately.
+let ``sdm`` do them all separately.
 
-(This will hopefully no longer be true once ``sdm.py`` crossvalidates among
+(This will hopefully no longer be true once ``sdm`` crossvalidates among
 divergence functions: `issue #12 <https://github.com/dougalsutherland/py-sdm/issues/12>`_.)
 
-The ``get_divs.py`` command does this, using a command along the lines of::
+The ``get_divs`` command does this, using a command along the lines of::
 
-    ./get_divs.py --div-funcs renyi:.8,.9,.99 -K 1 3 5 10 --
+    get_divs --div-funcs renyi:.8,.9,.99 -K 1 3 5 10 --
         feats_pca.h5 feats_pca.divs.h5
 
 (where the ``--`` indicates that the ``-K`` arguments are done and it's time for
