@@ -123,7 +123,7 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
                    names=None, cats=None,
                    fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
                    n_proc=None, status_fn=True, progressbar=None):
-    # TODO: support loading subsets of the file based on names
+    # TODO: support loading subsets of the file, or reordered, based on names
 
     status = get_status_fn(status_fn)
 
@@ -159,6 +159,8 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
 ################################################################################
 ### Parameter tuning
 
+# TODO: make more general by using score(), generalize params
+
 def try_params_SVC(km, train_idx, test_idx, C, labels, params):
     '''Try params in an SVC; returns classification accuracy.'''
     train_km, test_km = split_km(km.value, train_idx, test_idx)
@@ -179,6 +181,7 @@ def try_params_NuSVR(km, train_idx, test_idx, C, nu, labels, params):
     preds = clf.predict(test_km)
     return -np.mean((preds - labels.value[test_idx]) ** 2), clf.fit_status_
 
+# generalize for the params we're going over (use sklearn helpers?)
 def tune_params(divs, labels,
                 mode='SVC',
                 num_folds=DEFAULT_TUNING_FOLDS,
@@ -309,6 +312,10 @@ def tune_params(divs, labels,
 ### Main dealio
 
 class SupportDistributionMachine(sklearn.base.BaseEstimator):
+    # TODO: split into subclasses for classification, regression, one-class
+    # TODO: support non-Gaussian kernels
+    # TODO: support CVing between multiple div funcs, values of K
+    # TODO: support more SVM options
     def __init__(self,
                  div_func='renyi:.9',
                  K=DEFAULT_K,
@@ -524,89 +531,56 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         else:
             return preds
 
+    def transduct(self, train_bags, train_labels, test_bags, divs=None,
+                  save_fit=False):
+        '''
+        Trains an SDM transductively, where the kernel matrix is constructed on
+        the training + test points, the SVM is trained on training points, and
+        predictions are done on the test points.
 
-def transduct(train_bags, train_labels, test_bags,
-              div_func='renyi:.9',
-              K=DEFAULT_K,
-              mode='SVC',
-              tuning_folds=DEFAULT_TUNING_FOLDS,
-              n_proc=None,
-              C_vals=DEFAULT_C_VALS,
-              sigma_vals=DEFAULT_SIGMA_VALS, scale_sigma=True,
-              svr_nu_vals=DEFAULT_SVR_NU_VALS,
-              weight_classes=False,
-              cache_size=DEFAULT_SVM_CACHE, tuning_cache_size=DEFAULT_SVM_CACHE,
-              svm_tol=DEFAULT_SVM_TOL, tuning_svm_tol=DEFAULT_SVM_TOL,
-              svm_max_iter=DEFAULT_SVM_ITER,
-              tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
-              svm_shrinking=DEFAULT_SVM_SHRINKING,
-              status_fn=True,
-              progressbar=None,
-              fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
-              divs=None,
-              return_config=False):
-    '''
-    Trains an SDM transductively, where the kernel matrix is constructed on
-    the training + test points, the SVM is trained on training points, and
-    predictions are done on the test points.
+        The SVM itself is inductive (given the kernel).
 
-    The SVM itself is inductive (given the kernel).
+        If divs is passed, it should be a div matrix for train_bags + test_bags.
+        Transparent caching is not yet supported here because of the re-ordering
+        issue.
 
-    See SupportDistributionMachine for the meaning of most arguments.
+        By default, the object does not save the fit state and is reset to
+        an un-fit state as if it had just been constructed.
+        Passing save_fit=True makes the fit persistent.
+        '''
+        # TODO: support transparent divs caching by passing in indices
 
-    If divs is passed, it should be a div matrix for train_bags + test_bags.
-    Transparent caching is not yet supported here because of the re-ordering
-    issue.
-    '''
-    # TODO: support transparent caching in transduct by passing in indices
-    # TODO: support non-Gaussian kernels
-    # TODO: support CVing between multiple div funcs, values of K
-    # TODO: support more SVM options
+        n_train = len(train_bags)
+        n_test = len(test_bags)
 
-    assert mode in ('SVC', 'NuSVR')
-    classifier = mode == 'SVC'
+        train_labels = np.squeeze(train_labels)
+        assert train_labels.shape == (n_train,)
+        if self.classifier:
+            assert is_categorical_type(train_labels)
+            assert np.all(train_labels >= 0)
+        else:
+            assert np.all(np.isfinite(train_labels))
 
-    n_train = len(train_bags)
-    n_test = len(test_bags)
+        combo_bags = train_bags + test_bags
 
-    train_labels = np.squeeze(train_labels)
-    assert train_labels.shape == (n_train,)
-    if classifier:
-        assert is_categorical_type(train_labels)
-        assert np.all(train_labels >= 0)
-    else:
-        assert np.all(np.isfinite(train_labels))
+        if not save_fit:
+            old_save_bags = self.save_bags
+            self.save_bags = False  # avoid keeping copies around
 
-    combo_bags = train_bags + test_bags
+        # make fake labels for test data, so fit() knows what they are
+        test_fake_labels = np.empty(n_test, dtype=train_labels.dtype)
+        test_fake_labels.fill(-1 if self.classifier else np.nan)
+        combo_labels = np.hstack((train_labels, test_fake_labels))
 
-    sdm = SupportDistributionMachine(
-        div_func=div_func, K=K, mode=mode,
-        tuning_folds=tuning_folds, n_proc=n_proc,
-        C_vals=C_vals, sigma_vals=sigma_vals, scale_sigma=scale_sigma,
-        svr_nu_vals=svr_nu_vals,
-        weight_classes=weight_classes,
-        cache_size=cache_size, tuning_cache_size=tuning_cache_size,
-        svm_tol=svm_tol, tuning_svm_tol=tuning_svm_tol,
-        svm_max_iter=svm_max_iter, tuning_svm_max_iter=tuning_svm_max_iter,
-        svm_shrinking=svm_shrinking,
-        status_fn=status_fn, progressbar=progressbar,
-        fix_mode=fix_mode, tail=tail, min_dist=min_dist,
-        save_bags=False)
+        full_km = self.fit(combo_bags, combo_labels, divs=divs, ret_km=True)
+        preds = self.predict(test_bags, km=full_km[-n_test:, :n_train])
 
-    # make fake labels for test data, so SDM class knows what they are
-    test_fake_labels = np.empty(n_test, dtype=train_labels.dtype)
-    test_fake_labels.fill(-1 if classifier else np.nan)
-    combo_labels = np.hstack((train_labels, test_fake_labels))
-
-    full_km = sdm.fit(combo_bags, combo_labels, divs=divs, ret_km=True)
-    preds = sdm.predict(test_bags, km=full_km[-n_test:, :n_train])
-
-    if return_config:
-        tuned_params = (sdm.sigma_, sdm.C_)
-        if not classifier:
-            tuned_params += (sdm.svr_nu_,)
-        return (preds, tuned_params)
-    return preds
+        if not save_fit:
+            self.save_bags = old_save_bags
+            for attr_name in dir(self):
+                if attr_name.endswith('_') and not attr_name.startswith('_'):
+                    delattr(self, attr_name)
+        return preds
 
 
 ################################################################################
@@ -697,11 +671,11 @@ def crossvalidate(bags, labels,
         if classifier:
             status('Test distribution: {}'.format(dict(Counter(labels[test]))))
 
+        clf = SupportDistributionMachine(**opts)
         if project_all:
-            preds[test] = transduct(train_bags, labels[train], test_bags,
-                                    divs=divs[np.ix_(both, both)], **opts)
+            preds[test] = clf.transduct(train_bags, labels[train], test_bags,
+                                        divs=divs[np.ix_(both, both)])
         else:
-            clf = SupportDistributionMachine(**opts)
             clf.fit(train_bags, labels[train], divs=divs[np.ix_(train, train)])
             preds[test] = clf.predict(test_bags)
 
@@ -976,17 +950,21 @@ def do_predict(args):
     assert np.all(train_labels == np.round(train_labels))
     train_labels = train_labels.astype(int)
 
+    clf = SupportDistributionMachine(status_fn=True, **opts_dict(args))
     if args.mode == 'transduct':
-        preds, (sigma, C) = transduct(
-                train_bags, train_labels, test_bags,
-                divs_cache=args.div_cache_file,
-                return_config=True, **opts_dict(args))
+        if args.div_cache_file:
+            msg = ("Can't currently use divergence cache when transducting and "
+                   "not cross-validating...out of laziness, so if you want "
+                   "this, just complain.")
+            warnings.warn(msg)
+        # TODO: support partial caching of divs here
+        preds = clf.transduct(train_bags, train_labels, test_bags)
     elif args.mode == 'induct':
-        clf = SupportDistributionMachine(status_fn=True, **opts_dict(args))
-        clf.fit(train_bags, train_labels, divs_cache=args.div_cache_file)
-        sigma = clf.sigma_
-        C = clf.C_
+        clf.fit(train_bags, train_labels,
+                divs_cache=args.div_cache_file, cats=train_labels)
         preds = clf.predict(test_bags)
+    sigma = clf.sigma_
+    C = clf.C_
 
     out = {
         'div_func': args.div_func,

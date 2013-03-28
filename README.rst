@@ -289,5 +289,5 @@ If you're running on a nontrivial amount of data, it may be nice to pass
 ``status_fn=True`` and ``progressbar=True`` to the constructor to get status
 information out along the way (like in the CLI).
 
-If test data is available at training time, it is preferable to use
-``sdm.transduct()`` instead.
+If test data is available at training time, it's preferable to use
+``SupportDistributionMachine.transduct()`` instead.
