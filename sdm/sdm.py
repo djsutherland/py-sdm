@@ -475,7 +475,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
             params['class_weight'] = 'auto' if self.weight_classes else None
             clf = svm.SVC(C=self.C_, **params)
         elif self.mode == 'NuSVR':
-            clf = svm.NuSVR(C=self.C_, nu=self.nu_, **params)
+            clf = svm.NuSVR(C=self.C_, nu=self.svr_nu_, **params)
         else:
             raise ValueError
         clf.fit(train_km, train_y)
