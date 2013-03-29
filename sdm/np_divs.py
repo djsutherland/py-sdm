@@ -154,7 +154,7 @@ def default_min_dist(dim):
 
 def knn_search(x, y, K, min_dist=None, cores=1):
     '''
-    Calculates squared Euclidean distances to the first K closest elements of y
+    Calculates Euclidean distances to the first K closest elements of y
     for each x, which are row-instance data matrices.
 
     Returns a matrix whose (i,j)th element is the distance from the ith point
@@ -213,10 +213,10 @@ def l2(xx, xy, yy, yx, Ks, dim, tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT,
     M = yy.shape[0]
     c = np.pi ** (dim / 2) / gamma(dim / 2 + 1)
 
-    rs = []
+    rs = np.empty(len(Ks))
     for knd, K in enumerate(Ks):
-        rho_x, nu_x = get_col(xx, knd), get_col(xy, knd)
-        rho_y, nu_y = get_col(yy, knd), get_col(yx, knd)
+        rho_x, nu_x = get_col(xx, K - 1), get_col(xy, K - 1)
+        rho_y, nu_y = get_col(yy, K - 1), get_col(yx, K - 1)
 
         e_p2 = (K-1) / ((N-1)*c) / (rho_x ** dim)  # \int p^2
         e_pq = (K-1) / (  M * c) / ( nu_x ** dim)  # \int pq (p is proposal)
@@ -230,9 +230,8 @@ def l2(xx, xy, yy, yx, Ks, dim, tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT,
                    - fix(e_pq).mean()
                    - fix(e_qp).mean()
                    + fix(e_q2).mean())
-        rs.append(np.sqrt(max(0, total)))
-
-    return np.array(rs)
+        rs[knd] = np.sqrt(max(0, total))
+    return rs
 l2.is_symmetric = True
 l2.name = 'NP-L2'
 
@@ -258,7 +257,7 @@ def alpha_div(xx, xy, yy, yx, alphas, Ks, dim,
 
     rs = np.empty((len(alphas), len(Ks)))
     for knd, K in enumerate(Ks):
-        rho, nu = get_col(xx, knd), get_col(xy, knd)
+        rho, nu = get_col(xx, K - 1), get_col(xy, K - 1)
         ratios = fix(rho / nu)
 
         for ind, alpha in enumerate(alphas):
@@ -371,9 +370,8 @@ def process_pair(funcs, opts, bags, xxs, row, col, symm=True):
         xx, yy = xxs[row], xxs[col]
 
         mK = max(opts['Ks'])
-        K_is = opts['Ks'] - 1  # col 0 is nearest
-        xy = tuple(r[:, K_is] for r in knn_search(xbag, ybag, mK))
-        yx = tuple(r[:, K_is] for r in knn_search(ybag, xbag, mK))
+        xy = knn_search(xbag, ybag, mK)
+        yx = knn_search(ybag, xbag, mK)
 
         r = handle(xx, xy, yy, yx)
         if symm:
@@ -490,13 +488,12 @@ def estimate_divs(bags,
     bag_data = ForkedData(bags)
 
     # do kNN searches within each bag
+    # need to throw away the closest neighbor, which will always be self
     knn_searcher = functools.partial(knn_search_forked,
             bag_data, K=max_K + 1, min_dist=min_dist)
     bag_is = lazy_range(num_bags)
     with get_pool(n_proc) as pool:
-        # here column 1 is the 1st-nearest-neighbor, since 0 is self
-        # (why we did max_K + 1 above)
-        xxs = [(xx[:, opts['Ks']], xxi[:, opts['Ks']]) for xx, xxi
+        xxs = [(xx[:, 1:], xxi[:, 1:]) for xx, xxi
                 in pool.starmap(knn_searcher, izip(bag_is, bag_is))]
 
     xxs_data = ForkedData(xxs)
