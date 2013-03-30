@@ -1014,6 +1014,7 @@ def do_cv(args):
 
         del feats
 
+    label_encoder = None
     if args.svm_mode == 'SVC' and not is_categorical_type(labels):
         if labels.dtype.kind == 'f' and np.all(labels == np.round(labels)):
             labels = labels.astype(int)
@@ -1046,11 +1047,12 @@ def do_cv(args):
         'sigma_vals': args.sigma_vals,
         'scale_sigma': args.scale_sigma,
         'preds': preds,
+        'labels': labels,
         'svm_mode': args.svm_mode,
     }
-    if 'svm_mode' == 'SVC':
+    if args.svm_mode == 'SVC':
         out['acc'] = acc
-        if args.input_format != 'matlab':
+        if label_encoder is not None:
             out['label_names'] = label_encoder.classes_
     elif args.svm_mode == 'NuSVR':
         out['rmse'] = acc
