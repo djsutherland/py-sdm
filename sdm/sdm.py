@@ -59,7 +59,7 @@ def get_status_fn(val):
         return val
 
 def is_categorical_type(ary):
-    return is_integer_type(ary) or ary.dtype.kind == 'b'
+    return is_integer_type(ary) or np.asanyarray(ary).dtype.kind == 'b'
 
 
 ################################################################################
@@ -1002,8 +1002,8 @@ def do_cv(args):
             from .image_features import read_features
             feats = read_features(args.input_file)
         bags = feats.features
-        names = feats.names
-        cats = feats.categories
+        names = np.asarray(feats.names)
+        cats = np.asarray(feats.categories)
 
         if args.labels_name:
             labels = np.array([ex[args.labels_name] for ex in feats.extras])
