@@ -40,12 +40,28 @@ def save_features(filename, features, **attrs):
 
 
 def read_features(filename, load_attrs=False, features_dtype=None,
-                  cats=None, pairs=None, subsample_fn=None):
+                  cats=None, pairs=None, subsample_fn=None,
+                  names_only=False):
     '''
-    Reads a Features namedtuple from save_features().
+    Reads a Features namedtuple from an h5py file created by save_features().
 
     If load_attrs, also returns a dictionary of meta values loaded from
     root attributes, '/_meta' attributes, '/_meta' datasets.
+
+    features_dtype specifies the datatype to load features as.
+
+    If cats is passed, only load those with a category in cats (as checked
+    by the `in` operator, aka the __contains__ special method).
+
+    If pairs is passed, tuples of (category, name) are checked with the `in`
+    operator. If cats is also passed, that check applies first.
+
+    subsample_fn is applied to a list of (category, name) pairs, and returns
+    another list of that format. functool.partial(random.sample, k=100) can
+    be used to subsample 100 bags unifornmly at random, for example.
+
+    If names_only is passed, the list of (category, name) pairs is returned
+    without having loaded any data. load_attrs is also ignored.
     '''
     import h5py
     ret = Features(*[[] for _ in features_attrs])
@@ -60,6 +76,9 @@ def read_features(filename, load_attrs=False, features_dtype=None,
 
         if subsample_fn is not None:
             bag_names = subsample_fn(bag_names)
+
+        if names_only:
+            return bag_names
 
         for cat, fname in bag_names:
             if cat == '_meta':
@@ -120,9 +139,30 @@ def save_features_perimage(path, features, **attrs):
 
 
 def read_features_perimage(path, load_attrs=False, features_dtype=None,
-                           cats=None, pairs=None, subsample_fn=None):
+                           cats=None, pairs=None, subsample_fn=None,
+                           names_only=False):
     '''
-    Reads a Features namedtuple from save_features().
+    Reads a Features namedtuple from a directory of npz files created
+    by save_features_perimage().
+
+    If load_attrs, also returns a dictionary of meta values loaded from the
+    'attrs.pkl' file, if it exists.
+
+    features_dtype specifies the datatype to load features as.
+
+    If cats is passed, only load those with a category in cats (as checked
+    by the `in` operator, aka the __contains__ special method).
+
+    If pairs is passed, tuples of (category, name) are checked with the `in`
+    operator. If cats is also passed, that check applies first.
+
+    subsample_fn is applied to a list of (category, name) pairs, and returns
+    another list of that format. functool.partial(random.sample, k=100) can
+    be used to subsample 100 bags unifornmly at random, for example.
+
+    If names_only is passed, the list of (category, name) pairs is returned
+    without having loaded any data. load_attrs is also ignored.
+
     '''
     from glob import glob
 
@@ -139,6 +179,9 @@ def read_features_perimage(path, load_attrs=False, features_dtype=None,
 
     if subsample_fn is not None:
         bag_names = subsample_fn(bag_names)
+
+    if names_only:
+        return bag_names
 
     for cat, fname in bag_names:
         ret.categories.append(cat)
