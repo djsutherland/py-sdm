@@ -16,7 +16,6 @@ import os
 import random
 import sys
 import warnings
-import weakref
 
 import h5py
 import numpy as np
@@ -65,7 +64,20 @@ def is_categorical_type(ary):
 ################################################################################
 ### PSD projection and friends
 
-def project_psd(mat, min_eig=0, destroy=False):
+def symmetrize(mat, destroy=False):
+    '''
+    Returns the mean of mat and its transpose.
+
+    If destroy, invalidates the passed-in matrix.
+    '''
+    # TODO: figure out a no-copy version of this that actually works...
+    #       might have to write it in cython. probably not worth it.
+    mat = mat + mat.T
+    mat /= 2
+    return mat
+
+
+def project_psd(mat, min_eig=0, destroy=False, negatives_likely=True):
     '''
     Project a real symmetric matrix to PSD by discarding any negative
     eigenvalues from its spectrum. Passing min_eig > 0 lets you similarly make
@@ -73,40 +85,54 @@ def project_psd(mat, min_eig=0, destroy=False):
 
     Symmetrizes the matrix before projecting.
 
-    If destroy is True, turns the passed-in matrix into gibberish. If the
-    matrix is very large, passing in a weakref.proxy to it will use the least
-    amount of memory.
+    If destroy is True, invalidates the passed-in matrix.
+
+    If negatives_likely (default), optimizes memory usage for the case where we
+    expect there to be negative eigenvalues.
     '''
-    if not destroy:
-        mat = mat.copy()
-    mat += mat.T
-    mat /= 2
+    mat = symmetrize(mat, destroy=destroy)
 
     # TODO: be smart and only get negative eigs?
-    vals, vecs = scipy.linalg.eigh(mat)
-    if vals.min() < min_eig:
+    vals, vecs = scipy.linalg.eigh(mat, overwrite_a=negatives_likely)
+    if negatives_likely or vecs.min() < min_eig:
         del mat
-        mat = np.dot(vecs, np.dot(np.diag(np.maximum(vals, min_eig)), vecs.T))
+        np.maximum(vals, min_eig, vals)  # update vals in-place
+        mat = np.dot(vecs, vals.reshape(-1, 1) * vecs.T)
         del vals, vecs
-        mat += mat.T
-        mat /= 2
+        mat = symmetrize(mat, destroy=True)  # should be symmetric, but do it
+                                             # anyway for numerical reasons
     return mat
 
 
-def make_km(divs, sigma, project=True, destroy=False):
-    # pass through a Gaussian
-    km = divs if destroy else divs.copy()
-    km **= 2  # TODO do we want to square, say, Renyi divergences?
+def rbf_kernelize(divs, sigma, destroy=False):
+    '''
+    Passes a distance matrix through an RBF kernel.
+
+    If destroy, does it in-place.
+    '''
+    if destroy:
+        km = divs
+        km **= 2
+    else:
+        km = divs ** 2
+    # TODO do we want to square, say, Renyi divergences?
     km /= -2 * sigma**2
     np.exp(km, km)  # inplace
-
-    # PSD projection
-    if project:
-        # FIXME: weakref.proxy doesn't actually do anything here since the
-        #        caller still has a reference. can we work around that?
-        km = project_psd(weakref.proxy(km), destroy=True)
-
     return km
+
+
+def make_km(divs, sigma, destroy=False, negatives_likely=True):
+    '''
+    Passes a distance matrix through an RBF kernel and then discards any
+    negative eigenvalues.
+
+    If destroy, invalidates the data in divs.
+
+    If negatives_likely (default), optimizes memory usage for the case where we
+    expect there to be negative eigenvalues.
+    '''
+    return project_psd(rbf_kernelize(divs, sigma, destroy=destroy),
+                       destroy=True, negatives_likely=negatives_likely)
 
 
 def split_km(km, train_idx, test_idx):
@@ -319,6 +345,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
     # TODO: support non-Gaussian kernels
     # TODO: support CVing between multiple div funcs, values of K
     # TODO: support more SVM options
+    # TODO: change API to be nicer to just give divs/km w/o faking data
     def __init__(self,
                  div_func='renyi:.9',
                  K=DEFAULT_K,
@@ -501,7 +528,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         if km is not None:
             pass
         elif divs is not None:
-            km = make_km(divs, self.sigma_, project=False, destroy=False)
+            km = rbf_kernelize(divs, self.sigma_, destroy=False)
         else:
             if not self.save_bags:
                 raise ValueError("SDM that doesn't save_bags can't predict "
@@ -523,7 +550,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
                     fix_mode=self.fix_mode, tail=self.tail,
                     status_fn=self.status_fn, progressbar=self.progressbar))
             divs = (divs[-n_test:, :n_train] + divs[:n_train, -n_test].T) / 2
-            km = make_km(divs, self.sigma_, project=False, destroy=True)
+            km = rbf_kernelize(divs, self.sigma_, destroy=True)
 
         # TODO: smarter projection options for inductive use
 
