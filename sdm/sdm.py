@@ -48,6 +48,7 @@ DEFAULT_SIGMA_VALS = tuple(2.0 ** np.arange(-4, 11, 2))
 DEFAULT_SVR_NU_VALS = (0.2, 0.3, 0.5, 0.7)
 DEFAULT_K = 3
 DEFAULT_TUNING_FOLDS = 3
+DEFAULT_SYMMETRIZE_DIVS = False
 
 def get_status_fn(val):
     if val is True:
@@ -210,7 +211,8 @@ def try_params_NuSVR(km, train_idx, test_idx, C, nu, labels, params):
     score = -np.mean((preds - labels.value[test_idx]) ** 2)
     return score, clf.fit_status_
 
-# generalize for the params we're going over (use sklearn helpers?)
+# TODO: generalize for the params we're going over (use sklearn helpers?)
+# TODO: make a method of SDM class, to reduce # of params
 def tune_params(divs, labels,
                 mode='SVC',
                 num_folds=DEFAULT_TUNING_FOLDS,
@@ -365,6 +367,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
                  svm_shrinking=DEFAULT_SVM_SHRINKING,
                  status_fn=None, progressbar=None,
                  fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
+                 symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
                  save_bags=True):
         assert mode in ('SVC', 'NuSVR')
         self.mode = mode
@@ -389,6 +392,7 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         self.fix_mode = FIX_MODE_DEFAULT
         self.tail = tail
         self.min_dist = min_dist
+        self.symmetrize_divs = symmetrize_divs
         self.save_bags = save_bags
 
     @property
@@ -466,6 +470,9 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
         else:
             #self.status_fn('Using passed-in divergences...')
             assert divs.shape == (n_bags, n_bags)
+
+        if self.symmetrize_divs:
+            divs = symmetrize(divs)
 
         # tune params
         self.status_fn('Tuning SVM parameters...')
@@ -636,6 +643,7 @@ def crossvalidate(bags, labels,
         status_fn=True,
         progressbar=None,
         fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
+        symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
         divs=None,
         divs_cache=None, names=None, cats=None):
 
@@ -764,7 +772,11 @@ def parse_args():
             help="Operate transductively (project full Gram matrix; default).")
         m.add_argument('--induct',
             action='store_const', dest='mode', const='induct',
-                help="Operate inductively (only project training Gram matrix).")
+            help="Operate inductively (only project training Gram matrix).")
+
+        algo._add_action(ActionNoYes('symmetrize-divs', default=False,
+            help="Symmetrize divergence estimates before passing them through "
+                 "the RBF kernel, rather than after."))
 
         m = algo.add_mutually_exclusive_group()
         m.set_defaults(svm_mode='SVC')
@@ -962,6 +974,7 @@ def opts_dict(args):
         tail=args.trim_tails,
         fix_mode=args.trim_mode,
         min_dist=args.min_dist,
+        symmetrize_divs=args.symmetrize_divs,
     )
 
 
