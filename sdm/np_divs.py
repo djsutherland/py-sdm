@@ -297,7 +297,6 @@ def renyi(xx, xy, yy, yx, alphas, Ks, **opts):
     alphas = np.asarray(alphas)
     Ks = np.asarray(Ks)
 
-    alphas[alphas == 1] = 0.99  # approximate KL
     est = alpha_div(xx, xy, yy, yx, alphas=alphas, Ks=Ks, **opts)
     return np.maximum(0, np.log(np.maximum(est, eps)) / (col(alphas) - 1))
 renyi.is_symmetric = False
