@@ -169,7 +169,9 @@ def try_params_SVC(km, train_idx, test_idx, C, labels, params):
     clf.fit(train_km, labels.value[train_idx])
 
     preds = clf.predict(test_km)
-    return np.mean(preds == labels.value[test_idx]), clf.fit_status_
+    assert not np.any(np.isnan(preds))
+    score = np.mean(preds == labels.value[test_idx])
+    return score, clf.fit_status_
 
 def try_params_NuSVR(km, train_idx, test_idx, C, nu, labels, params):
     '''Try params in a NuSVR; returns negative of mean squared error.'''
@@ -179,7 +181,9 @@ def try_params_NuSVR(km, train_idx, test_idx, C, nu, labels, params):
     clf.fit(train_km, labels.value[train_idx])
 
     preds = clf.predict(test_km)
-    return -np.mean((preds - labels.value[test_idx]) ** 2), clf.fit_status_
+    assert not np.any(np.isnan(preds))
+    score = -np.mean((preds - labels.value[test_idx]) ** 2)
+    return score, clf.fit_status_
 
 # generalize for the params we're going over (use sklearn helpers?)
 def tune_params(divs, labels,
