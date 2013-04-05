@@ -96,9 +96,8 @@ def project_psd(mat, min_eig=0, destroy=False):
 def make_km(divs, sigma, project=True, destroy=False):
     # pass through a Gaussian
     km = divs if destroy else divs.copy()
-    km /= sigma
-    km **= 2
-    km /= -2
+    km **= 2  # TODO do we want to square, say, Renyi divergences?
+    km /= -2 * sigma**2
     np.exp(km, km)  # inplace
 
     # PSD projection
