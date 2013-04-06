@@ -1138,7 +1138,7 @@ def do_cv(args):
         'preds': preds,
         'svm_mode': args.svm_mode,
     }
-    if 'svm_mode' == 'SVC':
+    if args.svm_mode == 'SVC':
         out['acc'] = score
         if label_class_names:
             out['label_names'] = label_class_names
