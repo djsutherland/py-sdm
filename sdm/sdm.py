@@ -9,9 +9,9 @@ Code to do classification with divergence kernels in SVMs, as in
 from __future__ import division, print_function
 
 from collections import Counter
-from functools import partial
+from functools import partial, reduce
 import itertools
-from operator import itemgetter
+from operator import itemgetter, mul
 import os
 import random
 import sys
@@ -23,11 +23,17 @@ import scipy.io
 import scipy.linalg
 import sklearn.base
 from sklearn.cross_validation import KFold, StratifiedKFold
+try:
+    from sklearn.grid_search import ParameterGrid
+except ImportError:
+    from sklearn.grid_search import IterGrid as ParameterGrid
+from sklearn.metrics import accuracy_score, zero_one_loss, mean_squared_error
 from sklearn.preprocessing import LabelEncoder
 from sklearn.utils import ConvergenceWarning
 from sklearn import svm  # NOTE: needs version 0.13+ for svm iter limits
 
-from .utils import positive_int, positive_float, portion, is_integer_type
+from .utils import (positive_int, positive_float, portion, is_integer_type,
+                    iteritems, izip)
 from .mp_utils import ForkedData, get_pool, progressbar_and_updater
 from .np_divs import (estimate_divs,
                       FIX_MODE_DEFAULT, FIX_TERM_MODES, TAIL_DEFAULT,
@@ -58,12 +64,18 @@ def get_status_fn(val):
     else:
         return val
 
+
 def is_categorical_type(ary):
     return is_integer_type(ary) or np.asanyarray(ary).dtype.kind == 'b'
 
 
+def rmse(y_true, y_pred):
+    return np.sqrt(mean_squared_error(y_true, y_pred))
+
+
 ################################################################################
 ### PSD projection and friends
+
 
 def symmetrize(mat, destroy=False):
     '''
@@ -183,167 +195,27 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
 
 
 ################################################################################
-### Parameter tuning
-
-# TODO: make more general by using score(), generalize params
-
-def try_params_SVC(km, train_idx, test_idx, C, labels, params):
-    '''Try params in an SVC; returns classification accuracy.'''
-    train_km, test_km = split_km(km.value, train_idx, test_idx)
-
-    clf = svm.SVC(C=C, **params)
-    clf.fit(train_km, labels.value[train_idx])
-
-    preds = clf.predict(test_km)
-    assert not np.any(np.isnan(preds))
-    score = np.mean(preds == labels.value[test_idx])
-    return score, clf.fit_status_
-
-def try_params_NuSVR(km, train_idx, test_idx, C, nu, labels, params):
-    '''Try params in a NuSVR; returns negative of mean squared error.'''
-    train_km, test_km = split_km(km.value, train_idx, test_idx)
-
-    clf = svm.NuSVR(C=C, nu=nu, **params)
-    clf.fit(train_km, labels.value[train_idx])
-
-    preds = clf.predict(test_km)
-    assert not np.any(np.isnan(preds))
-    score = -np.mean((preds - labels.value[test_idx]) ** 2)
-    return score, clf.fit_status_
-
-# TODO: generalize for the params we're going over (use sklearn helpers?)
-# TODO: make a method of SDM class, to reduce # of params
-def tune_params(divs, labels,
-                mode='SVC',
-                num_folds=DEFAULT_TUNING_FOLDS,
-                n_proc=None,
-                C_vals=DEFAULT_C_VALS,
-                sigma_vals=DEFAULT_SIGMA_VALS, scale_sigma=True,
-                svr_nu_vals=DEFAULT_SVR_NU_VALS,
-                weight_classes=False,
-                cache_size=DEFAULT_SVM_CACHE,
-                svm_tol=DEFAULT_SVM_TOL,
-                svm_max_iter=DEFAULT_SVM_ITER_TUNING,
-                svm_shrinking=DEFAULT_SVM_SHRINKING,
-                status_fn=True,
-                progressbar=None):
-    if progressbar is None:
-        progressbar = status_fn is True
-    status_fn = get_status_fn(status_fn)
-
-    assert mode in ('SVC', 'NuSVR')
-
-    C_vals = np.asarray(C_vals)
-    sigma_vals = np.asarray(sigma_vals)
-    if scale_sigma:
-        sigma_vals = sigma_vals * np.median(divs[divs > 0])
-        # make sure not to modify the passed-in sigma values...
-
-    if mode == 'NuSVR':
-        svr_nu_vals = np.asarray(svr_nu_vals)
-
-    if C_vals.size <= 1 and sigma_vals.size <= 1:
-        # no tuning necessary, unless we're regressing and have nu_vals
-        if mode == 'SVC':
-            return C_vals[0], sigma_vals[0]
-        elif mode == 'NuSVR' and svr_nu_vals.size <= 1:
-            return C_vals[0], sigma_vals[0], svr_nu_vals[0]
-
-    num_bags = divs.shape[0]
-    assert divs.ndim == 2 and divs.shape[1] == num_bags
-    assert labels.shape == (num_bags,)
-
-    svm_params = {
-        'cache_size': cache_size,
-        'kernel': 'precomputed',
-        'tol': svm_tol,
-        'max_iter': svm_max_iter,
-        'shrinking': svm_shrinking,
-        # 'verbose': True,
-    }
-    if mode == 'SVC':
-        svm_params['class_weight'] = 'auto' if weight_classes else None
-
-    # get kernel matrices for the sigma vals we're trying
-    # TODO: could be more careful about making copies here
-    sigma_kms = {}
-    status_fn('Projecting...')
-    for sigma in sigma_vals:
-        #status_fn('Projecting: sigma = {}'.format(sigma))
-        sigma_kms[sigma] = ForkedData(make_km(divs, sigma))
-
-    labels_d = ForkedData(labels)
-
-    # try each param combination and see how they do
-    if mode == 'NuSVR':
-        shape = (sigma_vals.size, C_vals.size, svr_nu_vals.size, num_folds)
-    else:
-        shape = (sigma_vals.size, C_vals.size, num_folds)
-    scores = np.empty(shape)
-    scores.fill(np.nan)
-
-    status_fn('Cross-validating parameter sets...')
-
-    conv_warning_counter = itertools.count()
-    if progressbar:
-        pbar, tick_pbar = progressbar_and_updater(maxval=scores.size)
-
-    def assign_score(indices, val_and_status):
-        val, status = val_and_status
-        scores[indices] = val
-        if status:
-            next(conv_warning_counter)
-        if progressbar:
-            tick_pbar()
-
-    if mode == 'NuSVR':
-        jobs = itertools.product(
-            enumerate(sigma_vals), enumerate(C_vals), enumerate(svr_nu_vals))
-    else:
-        jobs = itertools.product(enumerate(sigma_vals), enumerate(C_vals))
-    folds = list(enumerate(KFold(n=num_bags, n_folds=num_folds, shuffle=True)))
-
-    try_params = partial(try_params_SVC if mode == 'SVC' else try_params_NuSVR,
-                  labels=labels_d, params=svm_params)
-
-    warnings.filterwarnings('ignore', category=ConvergenceWarning)
-    ignore_conv = warnings.filters[0]
-
-    with get_pool(n_proc) as pool:
-        for job in jobs:
-            indices, param_vals = zip(*job)
-            sigma = param_vals[0]
-
-            for f_idx, (train, test) in folds:
-                set_res = partial(assign_score, (indices + (f_idx,)))
-                args = (sigma_kms[sigma], train, test) + param_vals[1:]
-                pool.apply_async(try_params, args, callback=set_res)
-
-    if progressbar:
-        pbar.finish()
-
-    warnings.filters.remove(ignore_conv)
-    status_fn('{} SVMs terminated early, after {:,} steps'.format(
-        next(conv_warning_counter), svm_max_iter))
-
-    # figure out which ones were best
-    assert not np.any(np.isnan(scores))
-    cv_means = scores.mean(axis=-1)
-    top_elts = cv_means == cv_means.max()
-    best_indices = random.choice(np.transpose(top_elts.nonzero()))
-    if mode == 'NuSVR':
-        best_sigma, best_C, best_svr_nu = best_indices
-        return sigma_vals[best_sigma], C_vals[best_C], svr_nu_vals[best_svr_nu]
-    else:
-        best_sigma, best_C = best_indices
-        return sigma_vals[best_sigma], C_vals[best_C]
-
-
-################################################################################
 ### Main dealio
 
-class SupportDistributionMachine(sklearn.base.BaseEstimator):
-    # TODO: split into subclasses for classification, regression, one-class
+
+def _try_params(cls, tuning_params, sigma_kms, labels, folds, svm_params):
+    params = tuning_params.copy()
+
+    train_idx, test_idx = folds.value[params.pop('fold_idx')]
+    train_km, test_km = split_km(
+        sigma_kms[params.pop('sigma')].value, train_idx, test_idx)
+
+    params.update(svm_params)
+    clf = cls.svm_class(**params)
+    clf.fit(train_km, labels.value[train_idx])
+
+    preds = clf.predict(test_km)
+    assert not np.any(np.isnan(preds))
+    loss = cls.tuning_loss(labels.value[test_idx], preds)
+    return tuning_params, loss, clf.fit_status_
+
+
+class BaseSDM(sklearn.base.BaseEstimator):
     # TODO: support non-Gaussian kernels
     # TODO: support CVing between multiple div funcs, values of K
     # TODO: support more SVM options
@@ -351,7 +223,6 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
     def __init__(self,
                  div_func='renyi:.9',
                  K=DEFAULT_K,
-                 mode='SVC',
                  tuning_folds=DEFAULT_TUNING_FOLDS,
                  n_proc=None,
                  C_vals=DEFAULT_C_VALS,
@@ -369,8 +240,6 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
                  fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
                  symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
                  save_bags=True):
-        assert mode in ('SVC', 'NuSVR')
-        self.mode = mode
         self.div_func = div_func
         self.K = K
         self.tuning_folds = tuning_folds
@@ -397,11 +266,19 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
 
     @property
     def classifier(self):
-        return self.mode == 'SVC'
+        raise NotImplementedError
 
     @property
     def regressor(self):
-        return self.mode == 'NuSVR'
+        raise NotImplementedError
+
+    @property
+    def tuning_loss(self, true, pred):
+        raise NotImplementedError
+
+    @property
+    def _show_tuning_choices(self):
+        raise NotImplementedError
 
     @property
     def status_fn(self):
@@ -476,30 +353,9 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
 
         # tune params
         self.status_fn('Tuning SVM parameters...')
-        tuned_params = tune_params(
+        self._tune_params(
                 divs=np.ascontiguousarray(divs[np.ix_(train_idx, train_idx)]),
-                mode=self.mode,
-                labels=train_y,
-                num_folds=self.tuning_folds,
-                n_proc=self.n_proc,
-                C_vals=self.C_vals,
-                sigma_vals=self.sigma_vals, scale_sigma=self.scale_sigma,
-                svr_nu_vals=self.svr_nu_vals,
-                weight_classes=self.weight_classes,
-                cache_size=self.tuning_cache_size,
-                svm_tol=self.tuning_svm_tol,
-                svm_max_iter=self.tuning_svm_max_iter,
-                svm_shrinking=self.svm_shrinking,
-                status_fn=self.status_fn,
-                progressbar=self.progressbar)
-        if self.mode == 'SVC':
-            self.sigma_, self.C_ = tuned_params
-            self.status_fn('Chose sigma {}, C {}'.format(*tuned_params))
-        elif self.mode == 'NuSVR':
-            self.sigma_, self.C_, self.svr_nu_ = tuned_params
-            self.status_fn('Chose sigma {}, C {}, nu {}'.format(*tuned_params))
-        else:
-            raise ValueError
+                labels=train_y)
 
         # project the final Gram matrix
         self.status_fn('Doing final projection')
@@ -508,20 +364,8 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
 
         # train the selected SVM
         self.status_fn('Training final SVM')
-        params = {
-            'cache_size': self.cache_size,
-            'tol': self.svm_tol,
-            'kernel': 'precomputed',
-            'max_iter': self.svm_max_iter,
-            'shrinking': self.svm_shrinking,
-        }
-        if self.mode == 'SVC':
-            params['class_weight'] = 'auto' if self.weight_classes else None
-            clf = svm.SVC(C=self.C_, **params)
-        elif self.mode == 'NuSVR':
-            clf = svm.NuSVR(C=self.C_, nu=self.svr_nu_, **params)
-        else:
-            raise ValueError
+        params = self._svm_params(tuning=False)
+        clf = self.svm_class(**params)
         clf.fit(train_km, train_y)
         self.svm_ = clf
 
@@ -619,116 +463,316 @@ class SupportDistributionMachine(sklearn.base.BaseEstimator):
                     delattr(self, attr_name)
         return preds
 
+    ############################################################################
+    ### Parameter tuning
+    def _param_grid_dict(self):
+        return {
+            'sigma': np.sort(self.sigma_vals),
+            'C': np.sort(self.C_vals),
+        }
 
-################################################################################
-### Cross-validation helper
+    def _set_tuning(self, d):
+        for k, v in iteritems(d):
+            setattr(self, k + '_', v)
 
-def crossvalidate(bags, labels,
-        num_folds=10, stratified_cv=False,
-        mode='SVC',
-        div_func='renyi:.9',
-        K=DEFAULT_K,
-        tuning_folds=DEFAULT_TUNING_FOLDS,
-        project_all=True,
-        n_proc=None,
-        C_vals=DEFAULT_C_VALS,
-        sigma_vals=DEFAULT_SIGMA_VALS, scale_sigma=True,
-        svr_nu_vals=DEFAULT_SVR_NU_VALS,
-        weight_classes=False,
-        cache_size=DEFAULT_SVM_CACHE, tuning_cache_size=DEFAULT_SVM_CACHE,
-        svm_tol=DEFAULT_SVM_TOL, tuning_svm_tol=DEFAULT_SVM_TOL,
-        svm_max_iter=DEFAULT_SVM_ITER,
-        tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
-        svm_shrinking=DEFAULT_SVM_SHRINKING,
-        status_fn=True,
-        progressbar=None,
-        fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
-        symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
-        divs=None,
-        divs_cache=None, names=None, cats=None):
+    def _svm_params(self, tuning=False):
+        d = {
+            'cache_size': self.tuning_cache_size if tuning else self.cache_size,
+            'kernel': 'precomputed',
+            'tol': self.tuning_svm_tol if tuning else self.svm_tol,
+            'max_iter': self.tuning_svm_max_iter if tuning else self.svm_max_iter,
+            'shrinking': self.svm_shrinking,
+            # 'verbose': False,
+        }
+        if not tuning:
+            d['C'] = self.C_
+        return d
 
-    # TODO: allow specifying what the folds should be
-    # TODO: optionally return params for each fold, what the folds were, ...
+    def _tune_params(self, divs, labels):
+        # check input shapes
+        num_folds = self.tuning_folds
+        num_bags = divs.shape[0]
+        if not (divs.ndim == 2 and divs.shape[1] == num_bags):
+            msg = "divs is {}, should be ({1},{1})".format(divs.shape, num_bags)
+            raise ValueError("divs is wrong shape")
+        if labels.shape != (num_bags,):
+            msg = "labels is {}, should be ({},)".format(labels.shape, num_bags)
+            raise ValueError(msg)
 
-    args = locals()
-    opts = dict((v, args[v]) for v in
-        ['mode', 'div_func', 'K', 'tuning_folds', 'n_proc',
-         'C_vals', 'sigma_vals', 'scale_sigma', 'svr_nu_vals', 'weight_classes',
-         'cache_size', 'tuning_cache_size', 'svm_tol', 'tuning_svm_tol',
-         'svm_max_iter', 'tuning_svm_max_iter', 'svm_shrinking',
-         'status_fn', 'progressbar',
-         'fix_mode', 'tail', 'min_dist'])
+        # figure out the hypergrid of parameter options
+        param_d = self._param_grid_dict()
+        if self.scale_sigma:
+            param_d['sigma'] = param_d['sigma'] * np.median(divs[divs > 0])
+            # make sure not to modify self.sigma_vals...
+        folds = ForkedData(
+                    list(KFold(n=num_bags, n_folds=num_folds, shuffle=True)))
+        param_d['fold_idx'] = np.arange(num_folds)
+        param_names, param_lens = zip(*sorted(
+                (name, len(vals)) for name, vals in iteritems(param_d)))
+        param_grid = ParameterGrid(param_d)
 
-    status = get_status_fn(status_fn)
+        # do we have multiple options to try?
+        num_pts = reduce(mul, param_lens)
+        if num_pts == 0:
+            raise ValueError("no parameters in tuning grid")
+        elif num_pts == num_folds:  # only one param set, no tuning necessary
+            self._set_tuning(next(param_grid))
+            return
 
-    num_bags = len(bags)
-    dim = bags[0].shape[1]
-    assert all(bag.ndim == 2 and bag.shape[1] == dim and bag.shape[0] > 0
-               for bag in bags)
+        # get kernel matrices for the sigma vals we're trying
+        # TODO: could be more careful about making copies here
+        sigma_kms = {}
+        self.status_fn('Projecting...')
+        for sigma in param_d['sigma']:
+            #status_fn('Projecting: sigma = {}'.format(sigma))
+            sigma_kms[sigma] = ForkedData(make_km(divs, sigma))
 
-    classifier = mode == 'SVC'
+        labels_d = ForkedData(labels)
 
-    labels = np.squeeze(labels)
-    assert labels.shape == (num_bags,)
-    if classifier:
-        assert is_categorical_type(labels)
-        assert np.all(labels >= 0)
-    else:
-        assert np.all(np.isfinite(labels))
+        ### try each param combination and see how they do
+        self.status_fn('Cross-validating parameter sets...')
 
-    if divs is None:
-        status('Getting divergences...')
-        divs = get_divs_cache(bags, div_func=div_func, K=K,
-                cache_filename=divs_cache, n_proc=n_proc,
-                fix_mode=fix_mode, tail=tail, min_dist=min_dist,
-                names=names, cats=cats,
-                status_fn=status_fn, progressbar=progressbar)
-    else:
-        #status_fn('Using passed-in divergences...')
-        assert divs.shape == (num_bags, num_bags)
+        # make the hypergrid and fill in tuning loss
+        scores = np.empty(tuple(param_lens))
+        scores.fill(np.nan)
 
-    if classifier:
-        preds = -np.ones(num_bags, dtype=int)
-    else:
-        preds = np.empty(num_bags)
-        preds.fill(np.nan)
+        if self.progressbar:
+            pbar, tick_pbar = progressbar_and_updater(maxval=scores.size)
 
-    if stratified_cv:
-        cv_folds = StratifiedKFold(labels, n_folds=num_folds)
-    else:
-        cv_folds = KFold(n=num_bags, n_folds=num_folds, shuffle=True)
+        # filter convergence warnings, count them up instead
+        warnings.filterwarnings('ignore', category=ConvergenceWarning)
+        ignore_conv = warnings.filters[0]
+        conv_warning_counter = itertools.count()
 
-    for i, (train, test) in enumerate(cv_folds, 1):
-        status('')
-        status('Starting fold {} / {}'.format(i, num_folds))
+        # function that gets loss for a given set of params
+        try_params = partial(_try_params, self.__class__,
+                             sigma_kms=sigma_kms, labels=labels_d, folds=folds,
+                             svm_params=self._svm_params(tuning=True))
 
-        both = np.hstack((train, test))
-        train_bags = itemgetter(*train)(bags)
-        test_bags = itemgetter(*test)(bags)
+        # callback to save the resulting score
+        def assign_score(params_val_and_status):
+            params, val, status = params_val_and_status
+            indices = tuple(param_d[k].searchsorted(params[k])
+                            for k in param_names)
+            scores[indices] = val
+            if status:
+                next(conv_warning_counter)
+            if self.progressbar:
+                tick_pbar()
 
-        if classifier:
-            status('Test distribution: {}'.format(dict(Counter(labels[test]))))
+        # actually do it
+        with get_pool(self.n_proc) as pool:
+            for job in param_grid:
+                pool.apply_async(try_params, [job], callback=assign_score)
 
-        clf = SupportDistributionMachine(**opts)
-        if project_all:
-            preds[test] = clf.transduct(train_bags, labels[train], test_bags,
-                                        divs=divs[np.ix_(both, both)])
+        if self.progressbar:
+            pbar.finish()
+
+        warnings.filters.remove(ignore_conv)
+        self.status_fn('{} SVMs terminated early, after {:,} steps'.format(
+            next(conv_warning_counter), self.tuning_svm_max_iter))
+
+        # figure out which ones were best
+        assert not np.any(np.isnan(scores))
+        fold_idx_idx = param_names.index('fold_idx')
+        nonfold_param_names = (
+                param_names[:fold_idx_idx] + param_names[fold_idx_idx+1:])
+
+        cv_means = scores.mean(axis=fold_idx_idx)
+        best_elts = cv_means == cv_means.min()
+        best_indices = random.choice(np.transpose(best_elts.nonzero()))
+        the_params = dict(
+                (name, param_d[name][idx])
+                for name, idx in izip(nonfold_param_names, best_indices))
+        self._set_tuning(the_params)
+
+    ############################################################################
+    ### Cross-validation helper
+    def crossvalidate(self, bags, labels,
+            num_folds=10, stratified_cv=False,
+            project_all=True,
+            divs=None, divs_cache=None, names=None, cats=None):
+        # TODO: allow specifying what the folds should be
+        # TODO: optionally return params for each fold, what the folds were, ...
+        status = self.status_fn
+
+        num_bags = len(bags)
+        dim = bags[0].shape[1]
+        if any(bag.ndim != 2 or bag.shape[1] != dim or bag.shape[0] == 0
+               for bag in bags):
+            msg = "all bags should be n_i x dim, with n_i > 0, consistent dim"
+            raise ValueError(msg)
+
+        labels = np.squeeze(labels)
+        assert labels.shape == (num_bags,)
+        if self.classifier:
+            assert is_categorical_type(labels)
+            assert np.all(labels >= 0)
         else:
-            clf.fit(train_bags, labels[train], divs=divs[np.ix_(train, train)])
-            preds[test] = clf.predict(test_bags)
+            assert np.all(np.isfinite(labels))
 
-        if classifier:
-            acc = np.mean(preds[test] == labels[test])
-            status('Fold accuracy: {:.1%}'.format(acc))
+        if divs is None:
+            status('Getting divergences...')
+            divs = get_divs_cache(bags,
+                    div_func=self.div_func, K=self.K,
+                    cache_filename=divs_cache, n_proc=self.n_proc,
+                    fix_mode=self.fix_mode, tail=self.tail,
+                    min_dist=self.min_dist,
+                    names=names, cats=cats,
+                    status_fn=self._status_fn, progressbar=self.progressbar)
         else:
-            rmse = np.sqrt(np.mean((preds[test] - labels[test]) ** 2))
-            status('Fold RMSE: {}'.format(rmse))
+            #status_fn('Using passed-in divergences...')
+            assert divs.shape == (num_bags, num_bags)
 
-    if classifier:
-        return np.mean(preds == labels), preds
-    else:
-        return np.sqrt(np.mean((preds - labels) ** 2)), preds
+        if self.classifier:
+            preds = -np.ones(num_bags, dtype=int)
+        else:
+            preds = np.empty(num_bags)
+            preds.fill(np.nan)
 
+        if stratified_cv:
+            cv_folds = StratifiedKFold(labels, n_folds=num_folds)
+        else:
+            cv_folds = KFold(n=num_bags, n_folds=num_folds, shuffle=True)
+
+        for i, (train, test) in enumerate(cv_folds, 1):
+            status('')
+            status('Starting fold {} / {}'.format(i, num_folds))
+
+            both = np.hstack((train, test))
+            train_bags = itemgetter(*train)(bags)
+            test_bags = itemgetter(*test)(bags)
+
+            if self.classifier:
+                status('Test distribution: {}'.format(dict(Counter(labels[test]))))
+
+            if project_all:
+                preds[test] = self.transduct(
+                        train_bags, labels[train], test_bags,
+                        divs=divs[np.ix_(both, both)])
+            else:
+                self.fit(train_bags, labels[train],
+                         divs=divs[np.ix_(train, train)])
+                preds[test] = self.predict(test_bags)
+
+            score = self.eval_score(labels[test], preds[test])
+            status('Fold {score_name}: {score:{score_fmt}}'.format(score=score,
+                        score_name=self.score_name, score_fmt=self.score_fmt))
+
+        return self.eval_score(labels, preds), preds
+
+
+class SDC(BaseSDM):
+    classifier = True
+    regressor = False
+    svm_class = svm.SVC
+    tuning_loss = staticmethod(zero_one_loss)
+    eval_score = staticmethod(accuracy_score)
+    score_name = 'accuracy'
+    score_fmt = '.1%'
+
+    def __init__(self,
+                 div_func='renyi:.9',
+                 K=DEFAULT_K,
+                 tuning_folds=DEFAULT_TUNING_FOLDS,
+                 n_proc=None,
+                 C_vals=DEFAULT_C_VALS,
+                 sigma_vals=DEFAULT_SIGMA_VALS, scale_sigma=True,
+                 weight_classes=False,
+                 cache_size=DEFAULT_SVM_CACHE,
+                 tuning_cache_size=DEFAULT_SVM_CACHE,
+                 svm_tol=DEFAULT_SVM_TOL,
+                 tuning_svm_tol=DEFAULT_SVM_TOL,
+                 svm_max_iter=DEFAULT_SVM_ITER,
+                 tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
+                 svm_shrinking=DEFAULT_SVM_SHRINKING,
+                 status_fn=None, progressbar=None,
+                 fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
+                 symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
+                 save_bags=True):
+        super(SDC, self).__init__(
+            div_func=div_func, K=K, tuning_folds=tuning_folds, n_proc=n_proc,
+            C_vals=C_vals, sigma_vals=sigma_vals, scale_sigma=scale_sigma,
+            cache_size=cache_size, tuning_cache_size=tuning_cache_size,
+            svm_tol=svm_tol, tuning_svm_tol=tuning_svm_tol,
+            svm_shrinking=svm_shrinking,
+            status_fn=status_fn, progressbar=progressbar,
+            fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+            symmetrize_divs=symmetrize_divs, save_bags=save_bags)
+        self.weight_classes = weight_classes
+
+    def _svm_params(self, tuning=False):
+        d = super(SDC, self)._svm_params(tuning=tuning)
+        d['class_weight'] = 'auto' if self.weight_classes else None
+        return d
+
+    def _show_tuning_choices(self):
+        self.status_fn('Chose sigma {o.sigma_}, C {o.C_}, nu {o.svr_nu_}'
+                       .format(o=self))
+
+
+class NuSDR(BaseSDM):
+    classifier = False
+    regressor = True
+    svm_class = svm.NuSVR
+    tuning_loss = staticmethod(mean_squared_error)
+    eval_score = staticmethod(rmse)
+    score_name = 'MSE'
+    score_fmt = ''
+
+    def __init__(self,
+                 div_func='renyi:.9',
+                 K=DEFAULT_K,
+                 tuning_folds=DEFAULT_TUNING_FOLDS,
+                 n_proc=None,
+                 C_vals=DEFAULT_C_VALS,
+                 sigma_vals=DEFAULT_SIGMA_VALS, scale_sigma=True,
+                 svr_nu_vals=DEFAULT_SVR_NU_VALS,
+                 cache_size=DEFAULT_SVM_CACHE,
+                 tuning_cache_size=DEFAULT_SVM_CACHE,
+                 svm_tol=DEFAULT_SVM_TOL,
+                 tuning_svm_tol=DEFAULT_SVM_TOL,
+                 svm_max_iter=DEFAULT_SVM_ITER,
+                 tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
+                 svm_shrinking=DEFAULT_SVM_SHRINKING,
+                 status_fn=None, progressbar=None,
+                 fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
+                 symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
+                 save_bags=True):
+        super(NuSDR, self).__init__(
+            div_func=div_func, K=K, tuning_folds=tuning_folds, n_proc=n_proc,
+            C_vals=C_vals, sigma_vals=sigma_vals, scale_sigma=scale_sigma,
+            cache_size=cache_size, tuning_cache_size=tuning_cache_size,
+            svm_tol=svm_tol, tuning_svm_tol=tuning_svm_tol,
+            svm_shrinking=svm_shrinking,
+            status_fn=status_fn, progressbar=progressbar,
+            fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+            symmetrize_divs=symmetrize_divs, save_bags=save_bags)
+        self.svr_nu_vals = svr_nu_vals
+
+    def _param_grid_dict(self):
+        d = super(NuSDR, self)._param_grid_dict()
+        d['nu'] = np.sort(self.svr_nu_vals)
+        return d
+
+    def _svm_params(self, tuning=False):
+        d = super(NuSDR, self)._svm_params(tuning=tuning)
+        if not tuning:
+            d['nu'] = self.svr_nu_
+        return d
+
+    def _set_tuning(self, d):
+        self.svr_nu_ = d.pop('nu')
+        super(NuSDR, self)._set_tuning(d)
+
+    def _show_tuning_choices(self):
+        self.status_fn('Chose sigma {o.sigma_}, C {o.C_}'.format(o=self))
+
+
+sdm_for_mode = {
+    'SVC': SDC,
+    'NuSVR': NuSDR,
+}
 
 ################################################################################
 ### Command-line interface
@@ -954,28 +998,30 @@ def parse_args():
 
 
 def opts_dict(args):
-    return dict(
-        mode=args.svm_mode,
-        div_func=args.div_func,
-        K=args.K,
-        tuning_folds=args.tuning_folds,
-        n_proc=args.n_proc,
-        C_vals=args.c_vals,
-        sigma_vals=args.sigma_vals, scale_sigma=args.scale_sigma,
-        svr_nu_vals=args.svr_nu_vals,
-        weight_classes=args.weight_classes,
-        cache_size=args.cache_size,
-        tuning_cache_size=args.tuning_cache_size,
-        svm_tol=args.svm_tol,
-        tuning_svm_tol=args.tuning_svm_tol,
-        svm_max_iter=args.svm_max_iter,
-        tuning_svm_max_iter=args.tuning_svm_max_iter,
-        svm_shrinking=args.svm_shrinking,
-        tail=args.trim_tails,
-        fix_mode=args.trim_mode,
-        min_dist=args.min_dist,
-        symmetrize_divs=args.symmetrize_divs,
-    )
+    d = {
+        'div_func': args.div_func,
+        'K': args.K,
+        'tuning_folds': args.tuning_folds,
+        'n_proc': args.n_proc,
+        'C_vals': args.c_vals,
+        'sigma_vals': args.sigma_vals, 'scale_sigma': args.scale_sigma,
+        'cache_size': args.cache_size,
+        'tuning_cache_size': args.tuning_cache_size,
+        'svm_tol': args.svm_tol,
+        'tuning_svm_tol': args.tuning_svm_tol,
+        'svm_max_iter': args.svm_max_iter,
+        'tuning_svm_max_iter': args.tuning_svm_max_iter,
+        'svm_shrinking': args.svm_shrinking,
+        'tail': args.trim_tails,
+        'fix_mode': args.trim_mode,
+        'min_dist': args.min_dist,
+        'symmetrize_divs': args.symmetrize_divs,
+    }
+    if args.svm_mode == 'SVC':
+        d['weight_classes'] = args.weight_classes
+    elif args.svm_mode == 'NuSVR':
+        d['svr_nu_vals'] = args.svr_nu_vals
+    return d
 
 
 def do_predict(args):
@@ -993,7 +1039,7 @@ def do_predict(args):
     assert np.all(train_labels == np.round(train_labels))
     train_labels = train_labels.astype(int)
 
-    clf = SupportDistributionMachine(status_fn=True, **opts_dict(args))
+    clf = SDC(status_fn=True, **opts_dict(args))
     if args.mode == 'transduct':
         if args.div_cache_file:
             msg = ("Can't currently use divergence cache when transducting and "
@@ -1035,6 +1081,7 @@ def do_cv(args):
                 labels = np.squeeze(f[args.labels_name][...])
             else:
                 labels = cats
+            names = None
     else:
         assert args.input_format == 'python'
 
@@ -1057,7 +1104,7 @@ def do_cv(args):
 
         del feats
 
-    label_encoder = None
+    label_class_names = None
     if args.svm_mode == 'SVC' and not is_categorical_type(labels):
         if labels.dtype.kind == 'f' and np.all(labels == np.round(labels)):
             labels = labels.astype(int)
@@ -1065,23 +1112,22 @@ def do_cv(args):
             label_names = labels
             label_encoder = LabelEncoder()
             labels = label_encoder.fit_transform(label_names)
+            label_class_names = label_encoder.classes_
 
     if args.n_points:
         bags = subset_data(bags, args.n_points)
 
-    opts = opts_dict(args)
-    opts['cats'] = cats
-    if args.input_format == 'python':
-        opts['names'] = names
-    acc, preds = crossvalidate(bags, labels,
+    clf = sdm_for_mode[args.svm_mode](status_fn=True, **opts_dict(args))
+    score, preds = clf.crossvalidate(bags, labels,
         num_folds=args.cv_folds, stratified_cv=args.stratified_cv,
-        divs_cache=args.div_cache_file, **opts)
+        project_all=args.mode == 'transduct',
+        divs_cache=args.div_cache_file, cats=cats, names=names)
 
     status_fn('')
     if args.svm_mode == 'SVC':
-        status_fn('Accuracy: {:.1%}'.format(acc))
+        status_fn('Accuracy: {:.1%}'.format(score))
     elif args.svm_mode == 'NuSVR':
-        status_fn('RMSE: {}'.format(acc))
+        status_fn('RMSE: {}'.format(score))
 
     out = {
         'div_func': args.div_func,
@@ -1096,9 +1142,9 @@ def do_cv(args):
     if args.svm_mode == 'SVC':
         out['acc'] = acc
         if label_encoder is not None:
-            out['label_names'] = label_encoder.classes_
+            out['label_names'] = label_class_names
     elif args.svm_mode == 'NuSVR':
-        out['rmse'] = acc
+        out['rmse'] = score
         out['svr_nu_vals'] = args.svr_nu_vals
     status_fn('Saving output to {}'.format(args.output_file))
     scipy.io.savemat(args.output_file, out, oned_as='column')

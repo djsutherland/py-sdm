@@ -15,4 +15,4 @@ from . import np_divs
 from .np_divs import estimate_divs
 
 from . import sdm
-from .sdm import SupportDistributionMachine
+from .sdm import SDC, NuSDR
