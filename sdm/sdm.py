@@ -201,7 +201,8 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
 ### Main dealio
 
 
-def _try_params(cls, tuning_params, sigma_kms, labels, folds, svm_params):
+def _try_params(cls, tuning_params, sigma_kms, labels, folds, svm_params,
+                sample_weight=None):
     params = tuning_params.copy()
 
     train_idx, test_idx = folds.value[params.pop('fold_idx')]
@@ -210,7 +211,11 @@ def _try_params(cls, tuning_params, sigma_kms, labels, folds, svm_params):
 
     params.update(svm_params)
     clf = cls.svm_class(**params)
-    clf.fit(train_km, labels.value[train_idx])
+
+    opts = {}
+    if sample_weight is not None and sample_weight.value is not None:
+        opts['sample_weight'] = sample_weight.value[train_idx]
+    clf.fit(train_km, labels.value[train_idx], **opts)
 
     preds = clf.predict(test_km)
     assert not np.any(np.isnan(preds))
@@ -295,8 +300,8 @@ class BaseSDM(sklearn.base.BaseEstimator):
     def progressbar(self, value):
         self._progressbar = value
 
-    def fit(self, X, y, divs=None, divs_cache=None, names=None, cats=None,
-            ret_km=False):
+    def fit(self, X, y, sample_weight=None,
+            divs=None, divs_cache=None, names=None, cats=None, ret_km=False):
         '''
         X: a list of row-instance data matrices, with common dimensionality
 
@@ -325,10 +330,17 @@ class BaseSDM(sklearn.base.BaseEstimator):
         else:
             train_idx = ~np.isnan(y)
 
+        if sample_weight is None:
+            train_sample_weight = None
+        else:
+            sample_weight = np.asarray(sample_weight)
+            train_sample_weight = sample_weight[train_idx]
+
         train_y = y[train_idx]
         assert train_y.size >= 2
         if not self.oneclass:
             assert not np.all(train_y == train_y[0])
+
         if self.save_bags:
             self.train_bags_ = itemgetter(*train_idx.nonzero()[0])(X)
 
@@ -352,7 +364,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
         self.status_fn('Tuning SVM parameters...')
         self._tune_params(
                 divs=np.ascontiguousarray(divs[np.ix_(train_idx, train_idx)]),
-                labels=train_y)
+                labels=train_y, sample_weight=train_sample_weight)
 
         # project the final Gram matrix
         self.status_fn('Doing final projection')
@@ -363,7 +375,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
         self.status_fn('Training final SVM')
         params = self._svm_params(tuning=False)
         clf = self.svm_class(**params)
-        clf.fit(train_km, train_y)
+        clf.fit(train_km, train_y, sample_weight=sample_weight)
         self.svm_ = clf
 
         if ret_km:
@@ -493,7 +505,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
         }
         return d
 
-    def _tune_params(self, divs, labels):
+    def _tune_params(self, divs, labels, sample_weight=None):
         # check input shapes
         num_folds = self.tuning_folds
         num_bags = divs.shape[0]
@@ -502,6 +514,10 @@ class BaseSDM(sklearn.base.BaseEstimator):
             raise ValueError("divs is wrong shape")
         if labels.shape != (num_bags,):
             msg = "labels is {}, should be ({},)".format(labels.shape, num_bags)
+            raise ValueError(msg)
+        if sample_weight is not None and sample_weight.shape != (num_bags,):
+            msg = "sample_weight is {}, should be ({},)".format(
+                    sample_weight.shape, num_bags)
             raise ValueError(msg)
 
         # figure out the hypergrid of parameter options
@@ -533,6 +549,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
             sigma_kms[sigma] = ForkedData(make_km(divs, sigma))
 
         labels_d = ForkedData(labels)
+        sample_weight_d = ForkedData(sample_weight)
 
         ### try each param combination and see how they do
         self.status_fn('Cross-validating parameter sets...')
@@ -552,7 +569,8 @@ class BaseSDM(sklearn.base.BaseEstimator):
         # function that gets loss for a given set of params
         try_params = partial(_try_params, self.__class__,
                              sigma_kms=sigma_kms, labels=labels_d, folds=folds,
-                             svm_params=self._svm_params(tuning=True))
+                             svm_params=self._svm_params(tuning=True),
+                             sample_weight=sample_weight_d)
 
         # callback to save the resulting score
         def assign_score(params_val_and_status):
@@ -858,7 +876,7 @@ class NuSDR(BaseSDM):
     svm_class = svm.NuSVR
     tuning_loss = staticmethod(mean_squared_error)
     eval_score = staticmethod(rmse)
-    score_name = 'MSE'
+    score_name = 'RMSE'
     score_fmt = ''
 
     def __init__(self,
@@ -956,11 +974,11 @@ class OneClassSDM(BaseSDM):
             d['nu'] = self.nu_
         return d
 
-    def fit(self, X, weights=None, ret_km=False,
+    def fit(self, X, sample_weight=None, ret_km=False,
             divs=None, divs_cache=None, names=None, cats=None):
-        if weights is None:
-            weights = np.ones(len(X))
-        return super(OneClassSDM, self).fit(X, weights, ret_km=ret_km,
+        y = np.zeros(len(X))  # fake labels so superclass doesn't flip out
+        return super(OneClassSDM, self).fit(
+                X, y, sample_weight=sample_weight, ret_km=ret_km,
                 divs=divs, divs_cache=divs_cache, names=names, cats=cats)
 
 sdm_for_mode = {
@@ -1334,7 +1352,6 @@ def do_cv(args):
             raise ValueError("must provide a label name when regressing")
 
         del feats
-
 
     label_class_names = None
     if classifier and not is_categorical_type(labels):
