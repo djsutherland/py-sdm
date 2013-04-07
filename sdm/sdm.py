@@ -225,7 +225,6 @@ class BaseSDM(sklearn.base.BaseEstimator):
                  K=DEFAULT_K,
                  tuning_folds=DEFAULT_TUNING_FOLDS,
                  n_proc=None,
-                 C_vals=DEFAULT_C_VALS,
                  sigma_vals=DEFAULT_SIGMA_VALS, scale_sigma=True,
                  svr_nu_vals=DEFAULT_SVR_NU_VALS,
                  weight_classes=False,
@@ -244,7 +243,6 @@ class BaseSDM(sklearn.base.BaseEstimator):
         self.K = K
         self.tuning_folds = tuning_folds
         self.n_proc = n_proc
-        self.C_vals = C_vals
         self.sigma_vals = sigma_vals
         self.scale_sigma = scale_sigma
         self.svr_nu_vals = svr_nu_vals
@@ -569,8 +567,13 @@ class BaseSDM(sklearn.base.BaseEstimator):
             pbar.finish()
 
         warnings.filters.remove(ignore_conv)
-        self.status_fn('{} SVMs terminated early, after {:,} steps'.format(
-            next(conv_warning_counter), self.tuning_svm_max_iter))
+        n_conv = next(conv_warning_counter)
+        if n_conv == 0:
+            self.status_fn('All SVMs finished within {:,} steps'.format(
+                self.tuning_svm_max_iter))
+        else:
+            self.status_fn('{} SVMs terminated early, after {:,} steps'.format(
+                next(conv_warning_counter), self.tuning_svm_max_iter))
 
         # figure out which ones were best
         assert not np.any(np.isnan(scores))
@@ -581,9 +584,12 @@ class BaseSDM(sklearn.base.BaseEstimator):
         cv_means = scores.mean(axis=fold_idx_idx)
         best_elts = cv_means == cv_means.min()
         best_indices = random.choice(np.transpose(best_elts.nonzero()))
+        assert len(nonfold_param_names) == len(best_indices)
         the_params = dict(
                 (name, param_d[name][idx])
                 for name, idx in izip(nonfold_param_names, best_indices))
+        self.status_fn("Chose params {}".format(', '.join(
+                '{}={}'.format(k, v) for k, v in iteritems(the_params))))
         self._set_tuning(the_params)
 
     ############################################################################
@@ -692,14 +698,20 @@ class SDC(BaseSDM):
                  save_bags=True):
         super(SDC, self).__init__(
             div_func=div_func, K=K, tuning_folds=tuning_folds, n_proc=n_proc,
-            C_vals=C_vals, sigma_vals=sigma_vals, scale_sigma=scale_sigma,
+            sigma_vals=sigma_vals, scale_sigma=scale_sigma,
             cache_size=cache_size, tuning_cache_size=tuning_cache_size,
             svm_tol=svm_tol, tuning_svm_tol=tuning_svm_tol,
             svm_shrinking=svm_shrinking,
             status_fn=status_fn, progressbar=progressbar,
             fix_mode=fix_mode, tail=tail, min_dist=min_dist,
             symmetrize_divs=symmetrize_divs, save_bags=save_bags)
+        self.C_vals = C_vals
         self.weight_classes = weight_classes
+
+    def _param_grid_dict(self):
+        d = super(SDC, self)._param_grid_dict()
+        d['C'] = np.sort(self.C_vals)
+        return d
 
     def _svm_params(self, tuning=False):
         d = super(SDC, self)._svm_params(tuning=tuning)
@@ -741,17 +753,19 @@ class NuSDR(BaseSDM):
                  save_bags=True):
         super(NuSDR, self).__init__(
             div_func=div_func, K=K, tuning_folds=tuning_folds, n_proc=n_proc,
-            C_vals=C_vals, sigma_vals=sigma_vals, scale_sigma=scale_sigma,
+            sigma_vals=sigma_vals, scale_sigma=scale_sigma,
             cache_size=cache_size, tuning_cache_size=tuning_cache_size,
             svm_tol=svm_tol, tuning_svm_tol=tuning_svm_tol,
             svm_shrinking=svm_shrinking,
             status_fn=status_fn, progressbar=progressbar,
             fix_mode=fix_mode, tail=tail, min_dist=min_dist,
             symmetrize_divs=symmetrize_divs, save_bags=save_bags)
+        self.C_vals = C_vals
         self.svr_nu_vals = svr_nu_vals
 
     def _param_grid_dict(self):
         d = super(NuSDR, self)._param_grid_dict()
+        d['C'] = np.sort(self.C_vals)
         d['nu'] = np.sort(self.svr_nu_vals)
         return d
 
@@ -1114,6 +1128,8 @@ def do_cv(args):
             labels = label_encoder.fit_transform(label_names)
             label_class_names = label_encoder.classes_
 
+    status_fn('Loaded {} bags.'.format(len(bags)))
+
     if args.n_points:
         bags = subset_data(bags, args.n_points)
 
@@ -1140,7 +1156,7 @@ def do_cv(args):
     }
     if args.svm_mode == 'SVC':
         out['acc'] = score
-        if label_class_names:
+        if label_class_names is not None:
             out['label_names'] = label_class_names
     elif args.svm_mode == 'NuSVR':
         out['rmse'] = score
