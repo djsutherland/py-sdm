@@ -15,4 +15,4 @@ from . import np_divs
 from .np_divs import estimate_divs
 
 from . import sdm
-from .sdm import SDC, NuSDR
+from .sdm import SDC, NuSDC, SDR, NuSDR, OneClassSDM
