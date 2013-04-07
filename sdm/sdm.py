@@ -49,8 +49,10 @@ DEFAULT_SVM_ITER = 10 ** 6
 DEFAULT_SVM_ITER_TUNING = 1000
 DEFAULT_SVM_SHRINKING = True
 
-DEFAULT_C_VALS = tuple(2.0 ** np.arange(-9, 19, 3))
 DEFAULT_SIGMA_VALS = tuple(2.0 ** np.arange(-4, 11, 2))
+DEFAULT_C_VALS = tuple(2.0 ** np.arange(-9, 19, 3))
+DEFAULT_NU_VALS = (0.1, 0.2, 0.3, 0.5, 0.7)
+DEFAULT_SVR_EPSILON_VALS = tuple(10.0 ** np.arange(-3, 5))
 DEFAULT_SVR_NU_VALS = (0.2, 0.3, 0.5, 0.7)
 DEFAULT_K = 3
 DEFAULT_TUNING_FOLDS = 3
@@ -275,10 +277,6 @@ class BaseSDM(sklearn.base.BaseEstimator):
         raise NotImplementedError
 
     @property
-    def _show_tuning_choices(self):
-        raise NotImplementedError
-
-    @property
     def status_fn(self):
         return get_status_fn(self._status_fn)
 
@@ -466,7 +464,6 @@ class BaseSDM(sklearn.base.BaseEstimator):
     def _param_grid_dict(self):
         return {
             'sigma': np.sort(self.sigma_vals),
-            'C': np.sort(self.C_vals),
         }
 
     def _set_tuning(self, d):
@@ -482,8 +479,6 @@ class BaseSDM(sklearn.base.BaseEstimator):
             'shrinking': self.svm_shrinking,
             # 'verbose': False,
         }
-        if not tuning:
-            d['C'] = self.C_
         return d
 
     def _tune_params(self, divs, labels):
@@ -716,11 +711,117 @@ class SDC(BaseSDM):
     def _svm_params(self, tuning=False):
         d = super(SDC, self)._svm_params(tuning=tuning)
         d['class_weight'] = 'auto' if self.weight_classes else None
+        if not tuning:
+            d['C'] = self.C_
         return d
 
-    def _show_tuning_choices(self):
-        self.status_fn('Chose sigma {o.sigma_}, C {o.C_}, nu {o.svr_nu_}'
-                       .format(o=self))
+
+class NuSDC(BaseSDM):
+    classifier = True
+    regressor = False
+    svm_class = svm.NuSVC
+    tuning_loss = staticmethod(zero_one_loss)
+    eval_score = staticmethod(accuracy_score)
+    score_name = 'accuracy'
+    score_fmt = '.1%'
+
+    def __init__(self,
+                 div_func='renyi:.9',
+                 K=DEFAULT_K,
+                 tuning_folds=DEFAULT_TUNING_FOLDS,
+                 n_proc=None,
+                 nu_vals=DEFAULT_NU_VALS,
+                 sigma_vals=DEFAULT_SIGMA_VALS, scale_sigma=True,
+                 cache_size=DEFAULT_SVM_CACHE,
+                 tuning_cache_size=DEFAULT_SVM_CACHE,
+                 svm_tol=DEFAULT_SVM_TOL,
+                 tuning_svm_tol=DEFAULT_SVM_TOL,
+                 svm_max_iter=DEFAULT_SVM_ITER,
+                 tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
+                 svm_shrinking=DEFAULT_SVM_SHRINKING,
+                 status_fn=None, progressbar=None,
+                 fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
+                 symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
+                 save_bags=True):
+        super(NuSDC, self).__init__(
+            div_func=div_func, K=K, tuning_folds=tuning_folds, n_proc=n_proc,
+            sigma_vals=sigma_vals, scale_sigma=scale_sigma,
+            cache_size=cache_size, tuning_cache_size=tuning_cache_size,
+            svm_tol=svm_tol, tuning_svm_tol=tuning_svm_tol,
+            svm_shrinking=svm_shrinking,
+            status_fn=status_fn, progressbar=progressbar,
+            fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+            symmetrize_divs=symmetrize_divs, save_bags=save_bags)
+        self.nu_vals = nu_vals
+
+    def _param_grid_dict(self):
+        d = super(NuSDC, self)._param_grid_dict()
+        d['nu'] = np.sort(self.nu_vals)
+        return d
+
+    def _svm_params(self, tuning=False):
+        d = super(NuSDC, self)._svm_params(tuning=tuning)
+        if not tuning:
+            d['nu'] = self.nu_
+        return d
+
+
+class SDR(BaseSDM):
+    classifier = False
+    regressor = True
+    svm_class = svm.SVR
+    tuning_loss = staticmethod(mean_squared_error)
+    eval_score = staticmethod(rmse)
+    score_name = 'RMSE'
+    score_fmt = ''
+
+    def __init__(self,
+                 div_func='renyi:.9',
+                 K=DEFAULT_K,
+                 tuning_folds=DEFAULT_TUNING_FOLDS,
+                 n_proc=None,
+                 C_vals=DEFAULT_C_VALS,
+                 sigma_vals=DEFAULT_SIGMA_VALS, scale_sigma=True,
+                 svr_epsilon_vals=DEFAULT_SVR_EPSILON_VALS,
+                 cache_size=DEFAULT_SVM_CACHE,
+                 tuning_cache_size=DEFAULT_SVM_CACHE,
+                 svm_tol=DEFAULT_SVM_TOL,
+                 tuning_svm_tol=DEFAULT_SVM_TOL,
+                 svm_max_iter=DEFAULT_SVM_ITER,
+                 tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
+                 svm_shrinking=DEFAULT_SVM_SHRINKING,
+                 status_fn=None, progressbar=None,
+                 fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
+                 symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
+                 save_bags=True):
+        super(SDR, self).__init__(
+            div_func=div_func, K=K, tuning_folds=tuning_folds, n_proc=n_proc,
+            sigma_vals=sigma_vals, scale_sigma=scale_sigma,
+            cache_size=cache_size, tuning_cache_size=tuning_cache_size,
+            svm_tol=svm_tol, tuning_svm_tol=tuning_svm_tol,
+            svm_shrinking=svm_shrinking,
+            status_fn=status_fn, progressbar=progressbar,
+            fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+            symmetrize_divs=symmetrize_divs, save_bags=save_bags)
+        self.C_vals = C_vals
+        self.svr_epsilon_vals = svr_epsilon_vals
+
+    def _param_grid_dict(self):
+        d = super(SDR, self)._param_grid_dict()
+        d['C'] = np.sort(self.C_vals)
+        d['epsilon'] = np.sort(self.svr_epsilon_vals)
+        return d
+
+    def _svm_params(self, tuning=False):
+        d = super(SDR, self)._svm_params(tuning=tuning)
+        if not tuning:
+            d['C'] = self.C_
+            d['epsilon'] = self.svr_epsilon_
+        return d
+
+    def _set_tuning(self, d):
+        self.svr_epsilon_ = d.pop('epsilon')
+        super(SDR, self)._set_tuning(d)
 
 
 class NuSDR(BaseSDM):
@@ -772,6 +873,7 @@ class NuSDR(BaseSDM):
     def _svm_params(self, tuning=False):
         d = super(NuSDR, self)._svm_params(tuning=tuning)
         if not tuning:
+            d['C'] = self.C_
             d['nu'] = self.svr_nu_
         return d
 
@@ -779,12 +881,11 @@ class NuSDR(BaseSDM):
         self.svr_nu_ = d.pop('nu')
         super(NuSDR, self)._set_tuning(d)
 
-    def _show_tuning_choices(self):
-        self.status_fn('Chose sigma {o.sigma_}, C {o.C_}'.format(o=self))
-
 
 sdm_for_mode = {
     'SVC': SDC,
+    'NuSVC': NuSDC,
+    'SVR': SDR,
     'NuSVR': NuSDR,
 }
 
@@ -840,10 +941,22 @@ def parse_args():
         m.set_defaults(svm_mode='SVC')
         m.add_argument('--svc',
             action='store_const', dest='svm_mode', const='SVC',
-            help="Use the standard support vector classifier (default).")
+            help="Use the standard support vector classifier (default), "
+                 "whose parameter is a slack penalty weight C.")
+        m.add_argument('--nu-svc',
+            action='store_const', dest='svm_mode', const='NuSVC',
+            help="Use a nu support vector classifier, whose parameter is "
+                 "a lower bound on the fraction of support vectors nu.")
+        m.add_argument('--svr',
+            action='store_const', dest='svm_mode', const='SVR',
+            help="Use a support vector regressor, whose parameters are "
+                 "a slack penalty weight C and the width of the regression "
+                 "tube epsilon.")
         m.add_argument('--nu-svr',
             action='store_const', dest='svm_mode', const='NuSVR',
-            help="Use a NuSVR support vector regressor.")
+            help="Use a nu support vector regressor, whose parameters are "
+                 "a slack penalty weight C and a lower bound on the fraction "
+                 "of support vectors nu.")
 
         algo.add_argument('--div-func', '-d', default='renyi:.9',
             type=normalize_div_name,
@@ -896,15 +1009,23 @@ def parse_args():
             help="Reweight SVM loss to equalize classes (default: don't). "
                  "Only applies to classification."))
 
-        algo.add_argument('--c-vals', '-C', type=positive_float, nargs='+',
-            default=DEFAULT_C_VALS, metavar='C',
-            help="Values to try for tuning SVM regularization strength " + _def)
         algo.add_argument('--sigma-vals', '-S', type=positive_float, nargs='+',
             default=DEFAULT_SIGMA_VALS, metavar='SIGMA',
             help="Values to try for tuning kernel bandwidth sigma " + _def)
         algo._add_action(ActionNoYes('scale-sigma', default=True,
             help="Scale --sigma-vals by the median nonzero divergence; "
                  "does by default."))
+        algo.add_argument('--c-vals', '-C', type=positive_float, nargs='+',
+            default=DEFAULT_C_VALS, metavar='C',
+            help="Values to try for tuning SVM regularization strength " + _def)
+        algo.add_argument('--nu-vals', type=portion, nargs='+',
+            default=DEFAULT_NU_VALS, metavar='NU',
+            help="Values to try for tuning the nu of NuSVC, a lower bound on "
+                 "the fraction of support vectors " + _def)
+        algo.add_argument('--svr-epsilon-vals', type=positive_float, nargs='+',
+            default=DEFAULT_SVR_EPSILON_VALS, metavar='EPSILON',
+            help="Values to try for tuning the epsilon of SVR, the amount "
+                 "within which we count a regression as good enough " + _def)
         algo.add_argument('--svr-nu-vals', type=portion, nargs='+',
             default=DEFAULT_SVR_NU_VALS, metavar='NU',
             help="Values to try for tuning the nu of NuSVR, a lower bound on "
@@ -1005,8 +1126,11 @@ def parse_args():
         }
         args.output_file = args.input_file + suffixes[args.subcommand]
 
-    args.c_vals = np.sort(args.c_vals)
     args.sigma_vals = np.sort(args.sigma_vals)
+    args.c_vals = np.sort(args.c_vals)
+    args.nu_vals = np.sort(args.nu_vals)
+    args.svr_nu_vals = np.sort(args.svr_nu_vals)
+    args.svr_epsilon_vals = np.sort(args.svr_epsilon_vals)
 
     return args
 
@@ -1017,7 +1141,6 @@ def opts_dict(args):
         'K': args.K,
         'tuning_folds': args.tuning_folds,
         'n_proc': args.n_proc,
-        'C_vals': args.c_vals,
         'sigma_vals': args.sigma_vals, 'scale_sigma': args.scale_sigma,
         'cache_size': args.cache_size,
         'tuning_cache_size': args.tuning_cache_size,
@@ -1031,10 +1154,20 @@ def opts_dict(args):
         'min_dist': args.min_dist,
         'symmetrize_divs': args.symmetrize_divs,
     }
+    # TODO: switch to subparsers based on svm type to only accept the right args
     if args.svm_mode == 'SVC':
+        d['C_vals'] = args.c_vals
         d['weight_classes'] = args.weight_classes
+    elif args.svm_mode == 'NuSVC':
+        d['nu_vals'] = args.nu_vals
+    elif args.svm_mode == 'SVR':
+        d['C_vals'] = args.c_vals
+        d['svr_epsilon_vals'] = args.svr_epsilon_vals
     elif args.svm_mode == 'NuSVR':
+        d['C_vals'] = args.c_vals
         d['svr_nu_vals'] = args.svr_nu_vals
+    else:
+        raise ValueError("can't handle svm_mode {!r}".format(args.svm_mode))
     return d
 
 
@@ -1086,6 +1219,8 @@ def do_predict(args):
 def do_cv(args):
     status_fn = get_status_fn(True)
 
+    classifier = args.svm_mode in ('SVC', 'NuSVC')
+
     status_fn('Reading inputs...')
     if args.input_format == 'matlab':
         with h5py.File(args.input_file, 'r') as f:
@@ -1111,15 +1246,16 @@ def do_cv(args):
 
         if args.labels_name:
             labels = np.array([ex[args.labels_name] for ex in feats.extras])
-        elif args.labels_name is None and args.svm_mode == 'SVC':
+        elif args.labels_name is None and classifier:
             labels = cats
         else:
             raise ValueError("must provide a label name when regressing")
 
         del feats
 
+
     label_class_names = None
-    if args.svm_mode == 'SVC' and not is_categorical_type(labels):
+    if classifier and not is_categorical_type(labels):
         if labels.dtype.kind == 'f' and np.all(labels == np.round(labels)):
             labels = labels.astype(int)
         else:
@@ -1128,7 +1264,12 @@ def do_cv(args):
             labels = label_encoder.fit_transform(label_names)
             label_class_names = label_encoder.classes_
 
-    status_fn('Loaded {} bags.'.format(len(bags)))
+    if classifier:
+        status_fn('Loaded {} bags with {} classes.'.format(
+                len(bags), len(set(labels))))
+    else:
+        status_fn('Loaded {} bags with labels from {:.2} to {:.2}.'.format(
+                len(bags), np.min(labels), np.max(labels)))
 
     if args.n_points:
         bags = subset_data(bags, args.n_points)
@@ -1140,27 +1281,22 @@ def do_cv(args):
         divs_cache=args.div_cache_file, cats=cats, names=names)
 
     status_fn('')
-    if args.svm_mode == 'SVC':
-        status_fn('Accuracy: {:.1%}'.format(score))
-    elif args.svm_mode == 'NuSVR':
-        status_fn('RMSE: {}'.format(score))
+    status_fn('{score_name}: {score:{score_fmt}}'.format(score=score,
+                score_name=clf.score_name[:1].upper() + clf.score_name[1:],
+                score_fmt=clf.score_fmt))
 
     out = {
         'div_func': args.div_func,
         'K': args.K,
-        'C_vals': args.c_vals,
-        'sigma_vals': args.sigma_vals,
         'scale_sigma': args.scale_sigma,
         'preds': preds,
         'svm_mode': args.svm_mode,
     }
-    if args.svm_mode == 'SVC':
-        out['acc'] = score
-        if label_class_names is not None:
-            out['label_names'] = label_class_names
-    elif args.svm_mode == 'NuSVR':
-        out['rmse'] = score
-        out['svr_nu_vals'] = args.svr_nu_vals
+    for k, v in iteritems(clf._param_grid_dict()):
+        out[k + '_vals'] = v
+    out[clf.score_name] = score
+    if label_class_names is not None:
+        out['label_names'] = label_class_names
     status_fn('Saving output to {}'.format(args.output_file))
     scipy.io.savemat(args.output_file, out, oned_as='column')
 
