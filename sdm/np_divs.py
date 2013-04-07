@@ -154,7 +154,7 @@ def default_min_dist(dim):
 
 def knn_search(x, y, K, min_dist=None, cores=1):
     '''
-    Calculates squared Euclidean distances to the first K closest elements of y
+    Calculates Euclidean distances to the first K closest elements of y
     for each x, which are row-instance data matrices.
 
     Returns a matrix whose (i,j)th element is the distance from the ith point
@@ -213,10 +213,10 @@ def l2(xx, xy, yy, yx, Ks, dim, tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT,
     M = yy.shape[0]
     c = np.pi ** (dim / 2) / gamma(dim / 2 + 1)
 
-    rs = []
+    rs = np.empty(len(Ks))
     for knd, K in enumerate(Ks):
-        rho_x, nu_x = get_col(xx, knd), get_col(xy, knd)
-        rho_y, nu_y = get_col(yy, knd), get_col(yx, knd)
+        rho_x, nu_x = get_col(xx, K - 1), get_col(xy, K - 1)
+        rho_y, nu_y = get_col(yy, K - 1), get_col(yx, K - 1)
 
         e_p2 = (K-1) / ((N-1)*c) / (rho_x ** dim)  # \int p^2
         e_pq = (K-1) / (  M * c) / ( nu_x ** dim)  # \int pq (p is proposal)
@@ -230,9 +230,8 @@ def l2(xx, xy, yy, yx, Ks, dim, tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT,
                    - fix(e_pq).mean()
                    - fix(e_qp).mean()
                    + fix(e_q2).mean())
-        rs.append(np.sqrt(max(0, total)))
-
-    return np.array(rs)
+        rs[knd] = np.sqrt(max(0, total))
+    return rs
 l2.is_symmetric = True
 l2.name = 'NP-L2'
 
@@ -258,7 +257,7 @@ def alpha_div(xx, xy, yy, yx, alphas, Ks, dim,
 
     rs = np.empty((len(alphas), len(Ks)))
     for knd, K in enumerate(Ks):
-        rho, nu = get_col(xx, knd), get_col(xy, knd)
+        rho, nu = get_col(xx, K - 1), get_col(xy, K - 1)
         ratios = fix(rho / nu)
 
         for ind, alpha in enumerate(alphas):
@@ -326,6 +325,133 @@ func_mapping = {
 
 
 ################################################################################
+### Jensen-Renyi divergences
+
+def renyi_entropy_knns(knns, dim, alphas, Ks,
+                       tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT):
+    '''
+    Estimates Renyi entropy using a special case of our estimator above
+    (with alpha=alpha-1, beta=0).
+
+    knns: an (n_samps x max(Ks)) matrix of nearest-neighbor distances
+    dim: the dimensionality of the underlying data
+    alphas: a sequence of alpha values to use
+    Ks: a sequence of K values to use
+    tail, fix_mode: used for get_divs.fix_terms
+
+    Returns a matrix of entropy estimates: rows correspond to alphas, columns
+    to Ks.
+
+    See also: renyi_entropy, to run on samples directly.
+    '''
+    alphas = np.asarray(alphas).reshape(-1, 1)
+    Ks = np.asarray(Ks).reshape(1, -1)
+
+    N, num_ks = knns.shape
+    if num_ks < np.max(Ks):
+        raise ValueError("renyi_entropy_knns: knns should be square")
+
+    # multiplicative constant:
+    #   c_d^{1-alpha} * gamma(K) / gamma(K - alpha + 1)
+    #   where c_d is volume of a d-dimensional ball, pi^{d/2} / gamma(d/2 + 1)
+    # so exp(
+    #         (1-alpha) * (d/2 * log(pi) - gammaln(d/2 + 1))
+    #         + gammaln(K) - gammaln(K - alpha + 1)
+    #    )
+    Bs = np.exp(
+        (1-alphas) * (dim/2 * np.log(np.pi) - gammaln(dim/2 + 1))
+        + gammaln(Ks)
+        - gammaln(Ks - alphas + 1)
+    ) / (N - 1)**(alphas - 1)
+
+    ms = np.empty((alphas.size, Ks.size))
+    ms.fill(np.nan)
+    for K_i, K in enumerate(Ks.flat):
+        rho_k = knns[:, K-1]
+        for alph_i, alpha in enumerate(alphas):
+            terms = rho_k ** (dim * (1 - alpha))
+            ms[alph_i, K_i] = fix_terms(terms, tail=tail, mode=fix_mode).mean()
+
+    return np.log(Bs * ms) / (1 - alphas)
+
+
+def renyi_entropy(samps, alphas, Ks, min_dist=None, cores=1, **kwargs):
+    '''
+    Estimates Renyi entropy using a special case of our estimator above
+    (with alpha=alpha-1, beta=0).
+
+    samps: an (n_samps x dimensionality) matrix of samples
+    alphas: a sequence of alpha values to use
+    Ks: a sequence of K values to use
+    min_dist: clamp for minimum distance, default min(1e-2, 1e-100 ** (1/dim))
+    cores: the number of cores to use in the FLANN search
+    tail, fix_mode: used for get_divs.fix_terms
+
+    Returns a matrix of entropy estimates: one row per alpha, col per K
+    '''
+    # throw away the smallest one, which is dist to self
+    knns, _ = knn_search(
+        samps, samps, K=np.max(Ks) + 1, min_dist=min_dist, cores=cores)
+    return renyi_entropy_knns(
+        knns=knns[:, 1:], dim=samps.shape[1], alphas=alphas, Ks=Ks, **kwargs)
+
+
+def jensen_renyi(xx, xy, yy, yx, alphas, Ks, dim,
+                 tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT,
+                 clamp=True, **opts):
+    r'''
+    Estimate the Jensen-Renyi divergence between distributions,
+        R_\alpha((p + q)/2) - 1/2 R_\alpha(p) - 1/2 R_\alpha(q)
+    where R_\alpha is the Renyi entropy:
+        1/(1 - \alpha) \log \int p^\alpha
+    which is estimated based on kNN distances.
+
+    Returns a matrix: each row corresponds to an alpha, each column to a K.
+    '''
+    if xy is None:  # identical bags
+        return np.zeros((len(alphas), len(Ks)))
+
+    max_K = xx.shape[1]
+    N = xx.shape[0]
+    M = yy.shape[0]
+    alphas = np.asarray(alphas)
+    entropy = functools.partial(renyi_entropy_knns,
+                                dim=dim, alphas=alphas, Ks=Ks,
+                                tail=tail, fix_mode=fix_mode)
+
+    # assuming N == M here
+    #
+    # when N != M, one option is to take min(N, M) from each
+    # TODO: need to either get all NNs from x to y to combine,
+    #       or redo the NN search within the mixture for this
+    #
+    # it'd also be possible to do some kind of negative binomial
+    # type combination, to form all(?) samples we can from these samples
+    # and maybe take an expectation over it or something
+    #
+    # TODO: can we do something with just these kNN distances?
+    if N != M:
+        raise ValueError("can't do jensen-renyi for nonequal sample sizes yet")
+    mixture_toself = np.empty((N + M, 2 * max_K))
+    mixture_toself[:N, :max_K] = xx
+    mixture_toself[:N, max_K:] = xy
+    mixture_toself[N:, :max_K] = yy
+    mixture_toself[N:, max_K:] = yx
+    mixture_toself.sort(axis=1)
+    mix_entropies = entropy(mixture_toself)
+
+    x_entropies = entropy(xx)
+    y_entropies = entropy(yy)
+
+    ests = mix_entropies - x_entropies / 2 - y_entropies / 2
+    return np.maximum(ests, 0) if clamp else ests
+jensen_renyi.is_symmetric = True
+jensen_renyi.name = 'NP-JR'
+
+func_mapping['jr'] = jensen_renyi
+
+
+################################################################################
 ### Parallelization helpers for computing estimators.
 
 def handle_divs(funcs, opts, xx, xy, yy, yx, rt=None):
@@ -370,9 +496,8 @@ def process_pair(funcs, opts, bags, xxs, row, col, symm=True):
         xx, yy = xxs[row], xxs[col]
 
         mK = max(opts['Ks'])
-        K_is = opts['Ks'] - 1  # col 0 is nearest
-        xy = tuple(r[:, K_is] for r in knn_search(xbag, ybag, mK))
-        yx = tuple(r[:, K_is] for r in knn_search(ybag, xbag, mK))
+        xy = knn_search(xbag, ybag, mK)
+        yx = knn_search(ybag, xbag, mK)
 
         r = handle(xx, xy, yy, yx)
         if symm:
@@ -489,13 +614,12 @@ def estimate_divs(bags,
     bag_data = ForkedData(bags)
 
     # do kNN searches within each bag
+    # need to throw away the closest neighbor, which will always be self
     knn_searcher = functools.partial(knn_search_forked,
             bag_data, K=max_K + 1, min_dist=min_dist)
     bag_is = lazy_range(num_bags)
     with get_pool(n_proc) as pool:
-        # here column 1 is the 1st-nearest-neighbor, since 0 is self
-        # (why we did max_K + 1 above)
-        xxs = [(xx[:, opts['Ks']], xxi[:, opts['Ks']]) for xx, xxi
+        xxs = [(xx[:, 1:], xxi[:, 1:]) for xx, xxi
                 in pool.starmap(knn_searcher, izip(bag_is, bag_is))]
 
     xxs_data = ForkedData(xxs)
