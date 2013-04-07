@@ -1388,6 +1388,7 @@ def do_cv(args):
         'K': args.K,
         'scale_sigma': args.scale_sigma,
         'preds': preds,
+        'labels': labels,
         'svm_mode': args.svm_mode,
     }
     for k, v in iteritems(clf._param_grid_dict()):
