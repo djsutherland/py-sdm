@@ -49,6 +49,7 @@ DEFAULT_SVM_ITER_TUNING = 1000
 DEFAULT_SVM_SHRINKING = True
 DEFAULT_SVM_PROBABILITY = False
 
+DEFAULT_DIV_FUNC = 'renyi:0.9'
 DEFAULT_SIGMA_VALS = tuple(2.0 ** np.arange(-4, 11, 2))
 DEFAULT_C_VALS = tuple(2.0 ** np.arange(-9, 19, 3))
 DEFAULT_NU_VALS = (0.1, 0.2, 0.3, 0.5, 0.7)
@@ -227,12 +228,11 @@ class BaseSDM(sklearn.base.BaseEstimator):
     # TODO: support more SVM options
     # TODO: change API to be nicer to just give divs/km w/o faking data
     def __init__(self,
-                 div_func='renyi:.9',
+                 div_func=DEFAULT_DIV_FUNC,
                  K=DEFAULT_K,
                  tuning_folds=DEFAULT_TUNING_FOLDS,
                  n_proc=None,
                  sigma_vals=DEFAULT_SIGMA_VALS, scale_sigma=True,
-                 svr_nu_vals=DEFAULT_SVR_NU_VALS,
                  weight_classes=False,
                  cache_size=DEFAULT_SVM_CACHE,
                  tuning_cache_size=DEFAULT_SVM_CACHE,
@@ -251,7 +251,6 @@ class BaseSDM(sklearn.base.BaseEstimator):
         self.n_proc = n_proc
         self.sigma_vals = sigma_vals
         self.scale_sigma = scale_sigma
-        self.svr_nu_vals = svr_nu_vals
         self.weight_classes = weight_classes
         self.cache_size = cache_size
         self.tuning_cache_size = tuning_cache_size
@@ -268,8 +267,9 @@ class BaseSDM(sklearn.base.BaseEstimator):
         self.symmetrize_divs = symmetrize_divs
         self.save_bags = save_bags
 
-    classifier = property(_not_implemented)
-    regressor = property(_not_implemented)
+    classifier = False
+    regressor = False
+    oneclass = False
     svm_class = property(_not_implemented)
     tuning_loss = staticmethod(_not_implemented)
     eval_score = staticmethod(_not_implemented)
@@ -327,7 +327,8 @@ class BaseSDM(sklearn.base.BaseEstimator):
 
         train_y = y[train_idx]
         assert train_y.size >= 2
-        assert not np.all(train_y == train_y[0])
+        if not self.oneclass:
+            assert not np.all(train_y == train_y[0])
         if self.save_bags:
             self.train_bags_ = itemgetter(*train_idx.nonzero()[0])(X)
 
@@ -520,7 +521,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
         if num_pts == 0:
             raise ValueError("no parameters in tuning grid")
         elif num_pts == num_folds:  # only one param set, no tuning necessary
-            self._set_tuning(next(param_grid))
+            self._set_tuning(next(iter(param_grid)))
             return
 
         # get kernel matrices for the sigma vals we're trying
@@ -676,7 +677,6 @@ class BaseSDM(sklearn.base.BaseEstimator):
 
 class SDC(BaseSDM):
     classifier = True
-    regressor = False
     svm_class = svm.SVC
     tuning_loss = staticmethod(zero_one_loss)
     eval_score = staticmethod(accuracy_score)
@@ -684,7 +684,7 @@ class SDC(BaseSDM):
     score_fmt = '.1%'
 
     def __init__(self,
-                 div_func='renyi:.9',
+                 div_func=DEFAULT_DIV_FUNC,
                  K=DEFAULT_K,
                  tuning_folds=DEFAULT_TUNING_FOLDS,
                  n_proc=None,
@@ -739,7 +739,6 @@ class SDC(BaseSDM):
 
 class NuSDC(BaseSDM):
     classifier = True
-    regressor = False
     svm_class = svm.NuSVC
     tuning_loss = staticmethod(zero_one_loss)
     eval_score = staticmethod(accuracy_score)
@@ -747,7 +746,7 @@ class NuSDC(BaseSDM):
     score_fmt = '.1%'
 
     def __init__(self,
-                 div_func='renyi:.9',
+                 div_func=DEFAULT_DIV_FUNC,
                  K=DEFAULT_K,
                  tuning_folds=DEFAULT_TUNING_FOLDS,
                  n_proc=None,
@@ -798,7 +797,6 @@ class NuSDC(BaseSDM):
 
 
 class SDR(BaseSDM):
-    classifier = False
     regressor = True
     svm_class = svm.SVR
     tuning_loss = staticmethod(mean_squared_error)
@@ -807,7 +805,7 @@ class SDR(BaseSDM):
     score_fmt = ''
 
     def __init__(self,
-                 div_func='renyi:.9',
+                 div_func=DEFAULT_DIV_FUNC,
                  K=DEFAULT_K,
                  tuning_folds=DEFAULT_TUNING_FOLDS,
                  n_proc=None,
@@ -856,7 +854,6 @@ class SDR(BaseSDM):
 
 
 class NuSDR(BaseSDM):
-    classifier = False
     regressor = True
     svm_class = svm.NuSVR
     tuning_loss = staticmethod(mean_squared_error)
@@ -865,7 +862,7 @@ class NuSDR(BaseSDM):
     score_fmt = ''
 
     def __init__(self,
-                 div_func='renyi:.9',
+                 div_func=DEFAULT_DIV_FUNC,
                  K=DEFAULT_K,
                  tuning_folds=DEFAULT_TUNING_FOLDS,
                  n_proc=None,
@@ -913,11 +910,65 @@ class NuSDR(BaseSDM):
         super(NuSDR, self)._set_tuning(d)
 
 
+class OneClassSDM(BaseSDM):
+    oneclass = True
+    svm_class = svm.OneClassSVM
+    # leaving tuning_loss, eval_score, score_name, score_fmt unimplemented
+    # TODO: add real tuning support for SDMs
+
+    def __init__(self,
+                 div_func=DEFAULT_DIV_FUNC,
+                 K=DEFAULT_K,
+                 tuning_folds=DEFAULT_TUNING_FOLDS,
+                 n_proc=None,
+                 nu=0.5,
+                 sigma=1, scale_sigma=True,
+                 cache_size=DEFAULT_SVM_CACHE,
+                 tuning_cache_size=DEFAULT_SVM_CACHE,
+                 svm_tol=DEFAULT_SVM_TOL,
+                 tuning_svm_tol=DEFAULT_SVM_TOL,
+                 svm_max_iter=DEFAULT_SVM_ITER,
+                 tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
+                 svm_shrinking=DEFAULT_SVM_SHRINKING,
+                 status_fn=None, progressbar=None,
+                 fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
+                 symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
+                 save_bags=True):
+        super(OneClassSDM, self).__init__(
+            div_func=div_func, K=K, tuning_folds=tuning_folds, n_proc=n_proc,
+            sigma_vals=np.array([sigma]), scale_sigma=scale_sigma,
+            cache_size=cache_size, tuning_cache_size=tuning_cache_size,
+            svm_tol=svm_tol, tuning_svm_tol=tuning_svm_tol,
+            svm_shrinking=svm_shrinking,
+            status_fn=status_fn, progressbar=progressbar,
+            fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+            symmetrize_divs=symmetrize_divs, save_bags=save_bags)
+        self.nu_vals = np.array([nu])
+
+    def _param_grid_dict(self):
+        d = super(OneClassSDM, self)._param_grid_dict()
+        d['nu'] = np.sort(self.nu_vals)
+        return d
+
+    def _svm_params(self, tuning=False):
+        d = super(OneClassSDM, self)._svm_params(tuning=tuning)
+        if not tuning:
+            d['nu'] = self.nu_
+        return d
+
+    def fit(self, X, weights=None, ret_km=False,
+            divs=None, divs_cache=None, names=None, cats=None):
+        if weights is None:
+            weights = np.ones(len(X))
+        return super(OneClassSDM, self).fit(X, weights, ret_km=ret_km,
+                divs=divs, divs_cache=divs_cache, names=names, cats=cats)
+
 sdm_for_mode = {
     'SVC': SDC,
     'NuSVC': NuSDC,
     'SVR': SDR,
     'NuSVR': NuSDR,
+    'OneClassSVM': OneClassSDM,
 }
 
 ################################################################################
@@ -989,7 +1040,7 @@ def parse_args():
                  "a slack penalty weight C and a lower bound on the fraction "
                  "of support vectors nu.")
 
-        algo.add_argument('--div-func', '-d', default='renyi:.9',
+        algo.add_argument('--div-func', '-d', default=DEFAULT_DIV_FUNC,
             type=normalize_div_name,
             help="The divergence function to use " + _def)
 
