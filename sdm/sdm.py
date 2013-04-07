@@ -41,13 +41,13 @@ from .np_divs import (estimate_divs,
                       check_h5_settings, add_to_h5_cache, normalize_div_name)
 
 # TODO: better logging
-# TODO: support getting decision values / probabilities
 
 DEFAULT_SVM_CACHE = 1000
 DEFAULT_SVM_TOL = 1e-3
 DEFAULT_SVM_ITER = 10 ** 6
 DEFAULT_SVM_ITER_TUNING = 1000
 DEFAULT_SVM_SHRINKING = True
+DEFAULT_SVM_PROBABILITY = False
 
 DEFAULT_SIGMA_VALS = tuple(2.0 ** np.arange(-4, 11, 2))
 DEFAULT_C_VALS = tuple(2.0 ** np.arange(-9, 19, 3))
@@ -217,6 +217,10 @@ def _try_params(cls, tuning_params, sigma_kms, labels, folds, svm_params):
     return tuning_params, loss, clf.fit_status_
 
 
+def _not_implemented(*args, **kwargs):
+    raise NotImplementedError
+
+
 class BaseSDM(sklearn.base.BaseEstimator):
     # TODO: support non-Gaussian kernels
     # TODO: support CVing between multiple div funcs, values of K
@@ -256,25 +260,21 @@ class BaseSDM(sklearn.base.BaseEstimator):
         self.svm_max_iter = svm_max_iter
         self.tuning_svm_max_iter = tuning_svm_max_iter
         self.svm_shrinking = svm_shrinking
-        self._status_fn = status_fn
-        self._progressbar = progressbar
+        self.status_fn = status_fn
+        self.progressbar = progressbar
         self.fix_mode = FIX_MODE_DEFAULT
         self.tail = tail
         self.min_dist = min_dist
         self.symmetrize_divs = symmetrize_divs
         self.save_bags = save_bags
 
-    @property
-    def classifier(self):
-        raise NotImplementedError
-
-    @property
-    def regressor(self):
-        raise NotImplementedError
-
-    @property
-    def tuning_loss(self, true, pred):
-        raise NotImplementedError
+    classifier = property(_not_implemented)
+    regressor = property(_not_implemented)
+    svm_class = property(_not_implemented)
+    tuning_loss = staticmethod(_not_implemented)
+    eval_score = staticmethod(_not_implemented)
+    score_name = property(_not_implemented)
+    score_fmt = property(_not_implemented)
 
     @property
     def status_fn(self):
@@ -368,38 +368,41 @@ class BaseSDM(sklearn.base.BaseEstimator):
         if ret_km:
             return full_km
 
-    def predict(self, data, divs=None, km=None):
+    def _prediction_km(self, data=None, divs=None, km=None):
+        # TODO: smarter projection options for inductive use
         if getattr(self, 'svm_', None) is None:
             raise ValueError("SDM: need to fit before you can predict!")
 
         if km is not None:
-            pass
-        elif divs is not None:
-            km = rbf_kernelize(divs, self.sigma_, destroy=False)
-        else:
-            if not self.save_bags:
-                raise ValueError("SDM that doesn't save_bags can't predict "
-                                 "without explicit divs")
+            return km
 
-            n_train = len(self.train_bags_)
-            n_test = len(data)
+        if divs is not None:
+            return rbf_kernelize(divs, self.sigma_, destroy=False)
 
-            self.status_fn('Getting test bag divergences...')
+        if not self.save_bags:
+            raise ValueError("SDM that doesn't save_bags can't predict "
+                             "without explicit divs")
 
-            mask = np.zeros((n_train + n_test, n_train + n_test), dtype=bool)
-            mask[:n_train, -n_test:] = True
-            mask[-n_test:, :n_train] = True
+        n_train = len(self.train_bags_)
+        n_test = len(data)
 
-            divs = np.squeeze(estimate_divs(
-                    self.train_bags_ + tuple(data), mask=mask,
-                    specs=[self.div_func], Ks=[self.K],
-                    n_proc=self.n_proc, min_dist=self.min_dist,
-                    fix_mode=self.fix_mode, tail=self.tail,
-                    status_fn=self.status_fn, progressbar=self.progressbar))
-            divs = (divs[-n_test:, :n_train] + divs[:n_train, -n_test].T) / 2
-            km = rbf_kernelize(divs, self.sigma_, destroy=True)
+        self.status_fn('Getting test bag divergences...')
 
-        # TODO: smarter projection options for inductive use
+        mask = np.zeros((n_train + n_test, n_train + n_test), dtype=bool)
+        mask[:n_train, -n_test:] = True
+        mask[-n_test:, :n_train] = True
+
+        divs = np.squeeze(estimate_divs(
+                self.train_bags_ + tuple(data), mask=mask,
+                specs=[self.div_func], Ks=[self.K],
+                n_proc=self.n_proc, min_dist=self.min_dist,
+                fix_mode=self.fix_mode, tail=self.tail,
+                status_fn=self.status_fn, progressbar=self.progressbar))
+        divs = (divs[-n_test:, :n_train] + divs[:n_train, -n_test].T) / 2
+        return rbf_kernelize(divs, self.sigma_, destroy=True)
+
+    def predict(self, data, divs=None, km=None):
+        km = self._prediction_km(data, divs=divs, km=km)
 
         preds = self.svm_.predict(km)
         if self.classifier:
@@ -407,6 +410,14 @@ class BaseSDM(sklearn.base.BaseEstimator):
             return preds.astype(int)
         else:
             return preds
+
+    def decision_function(self, data, divs=None, km=None):
+        km = self._prediction_km(data, divs=divs, km=km)
+        return self.svm_.decision_function(km)
+
+    def score(self, data, labels, divs=None, km=None):
+        preds = self.predict(data, divs=divs, km=km)
+        return self.eval_score(labels, preds)
 
     def transduct(self, train_bags, train_labels, test_bags, divs=None,
                   save_fit=False):
@@ -687,6 +698,7 @@ class SDC(BaseSDM):
                  svm_max_iter=DEFAULT_SVM_ITER,
                  tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
                  svm_shrinking=DEFAULT_SVM_SHRINKING,
+                 probability=DEFAULT_SVM_PROBABILITY,
                  status_fn=None, progressbar=None,
                  fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
                  symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
@@ -702,6 +714,7 @@ class SDC(BaseSDM):
             symmetrize_divs=symmetrize_divs, save_bags=save_bags)
         self.C_vals = C_vals
         self.weight_classes = weight_classes
+        self.probability = probability
 
     def _param_grid_dict(self):
         d = super(SDC, self)._param_grid_dict()
@@ -714,6 +727,14 @@ class SDC(BaseSDM):
         if not tuning:
             d['C'] = self.C_
         return d
+
+    def predict_proba(self, data, divs=None, km=None):
+        km = self._prediction_km(data, divs=divs, km=km)
+        return self.svm_.predict_proba(km)
+
+    def predict_log_proba(self, data, divs=None, km=None):
+        km = self._prediction_km(data, divs=divs, km=km)
+        return self.svm_.predict_log_proba(km)
 
 
 class NuSDC(BaseSDM):
@@ -739,6 +760,7 @@ class NuSDC(BaseSDM):
                  svm_max_iter=DEFAULT_SVM_ITER,
                  tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
                  svm_shrinking=DEFAULT_SVM_SHRINKING,
+                 probability=DEFAULT_SVM_PROBABILITY,
                  status_fn=None, progressbar=None,
                  fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
                  symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
@@ -753,6 +775,7 @@ class NuSDC(BaseSDM):
             fix_mode=fix_mode, tail=tail, min_dist=min_dist,
             symmetrize_divs=symmetrize_divs, save_bags=save_bags)
         self.nu_vals = nu_vals
+        self.probability = probability
 
     def _param_grid_dict(self):
         d = super(NuSDC, self)._param_grid_dict()
@@ -764,6 +787,14 @@ class NuSDC(BaseSDM):
         if not tuning:
             d['nu'] = self.nu_
         return d
+
+    def predict_proba(self, data, divs=None, km=None):
+        km = self._prediction_km(data, divs=divs, km=km)
+        return self.svm_.predict_proba(km)
+
+    def predict_log_proba(self, data, divs=None, km=None):
+        km = self._prediction_km(data, divs=divs, km=km)
+        return self.svm_.predict_log_proba(km)
 
 
 class SDR(BaseSDM):
