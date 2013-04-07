@@ -230,7 +230,6 @@ def _not_implemented(*args, **kwargs):
 class BaseSDM(sklearn.base.BaseEstimator):
     # TODO: support non-Gaussian kernels
     # TODO: support CVing between multiple div funcs, values of K
-    # TODO: support more SVM options
     # TODO: change API to be nicer to just give divs/km w/o faking data
     def __init__(self,
                  div_func=DEFAULT_DIV_FUNC,
