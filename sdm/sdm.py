@@ -683,7 +683,8 @@ class BaseSDM(sklearn.base.BaseEstimator):
             else:
                 self.fit(train_bags, labels[train],
                          divs=divs[np.ix_(train, train)])
-                preds[test] = self.predict(test_bags)
+                pred_divs = (divs[np.ix_(test, train)] + divs[np.ix_(train, test)].T) / 2
+                preds[test] = self.predict(test_bags, divs=pred_divs)
 
             score = self.eval_score(labels[test], preds[test])
             status('Fold {score_name}: {score:{score_fmt}}'.format(score=score,
