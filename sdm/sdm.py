@@ -618,9 +618,8 @@ class BaseSDM(sklearn.base.BaseEstimator):
 
     ############################################################################
     ### Cross-validation helper
-    def crossvalidate(self, bags, labels,
-            num_folds=10, stratified_cv=False,
-            project_all=True,
+    def crossvalidate(self, bags, labels, project_all=True,
+            num_folds=10, stratified_cv=False, folds=None, ret_folds=False,
             divs=None, divs_cache=None, names=None, cats=None):
         # TODO: allow specifying what the folds should be
         # TODO: optionally return params for each fold, what the folds were, ...
@@ -660,12 +659,13 @@ class BaseSDM(sklearn.base.BaseEstimator):
             preds = np.empty(num_bags)
             preds.fill(np.nan)
 
-        if stratified_cv:
-            cv_folds = StratifiedKFold(labels, n_folds=num_folds)
-        else:
-            cv_folds = KFold(n=num_bags, n_folds=num_folds, shuffle=True)
+        if folds is None:
+            if stratified_cv:
+                folds = StratifiedKFold(labels, n_folds=num_folds)
+            else:
+                folds = KFold(n=num_bags, n_folds=num_folds, shuffle=True)
 
-        for i, (train, test) in enumerate(cv_folds, 1):
+        for i, (train, test) in enumerate(folds, 1):
             status('')
             status('Starting fold {} / {}'.format(i, num_folds))
 
@@ -690,7 +690,8 @@ class BaseSDM(sklearn.base.BaseEstimator):
             status('Fold {score_name}: {score:{score_fmt}}'.format(score=score,
                         score_name=self.score_name, score_fmt=self.score_fmt))
 
-        return self.eval_score(labels, preds), preds
+        score = self.eval_score(labels, preds)
+        return (score, preds, folds) if ret_folds else (score, preds)
 
 
 class SDC(BaseSDM):
