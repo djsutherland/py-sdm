@@ -494,14 +494,20 @@ class BaseSDM(sklearn.base.BaseEstimator):
             setattr(self, k + '_', v)
 
     def _svm_params(self, tuning=False):
-        d = {
-            'cache_size': self.tuning_cache_size if tuning else self.cache_size,
-            'kernel': 'precomputed',
-            'tol': self.tuning_svm_tol if tuning else self.svm_tol,
-            'max_iter': self.tuning_svm_max_iter if tuning else self.svm_max_iter,
-            'shrinking': self.svm_shrinking,
-            # 'verbose': False,
-        }
+        if tuning:
+            d = {
+                'cache_size': self.tuning_cache_size,
+                'tol': self.tuning_svm_tol,
+                'max_iter': self.tuning_svm_max_iter,
+            }
+        else:
+            d = {
+                'cache_size': self.cache_size,
+                'tol': self.svm_tol,
+                'max_iter': self.svm_max_iter,
+            }
+        d['kernel'] = 'precomputed'
+        d['shrinking'] = self.svm_shrinking
         return d
 
     def _tune_params(self, divs, labels, sample_weight=None):
@@ -674,8 +680,10 @@ class BaseSDM(sklearn.base.BaseEstimator):
             test_bags = itemgetter(*test)(bags)
 
             if self.classifier:
-                status('Train distribution: {}'.format(dict(Counter(labels[train]))))
-                status('Test distribution: {}'.format(dict(Counter(labels[test]))))
+                status('Train distribution: {}'.format(
+                        dict(Counter(labels[train]))))
+                status('Test distribution: {}'.format(
+                        dict(Counter(labels[test]))))
 
             if project_all:
                 preds[test] = self.transduct(
@@ -684,7 +692,8 @@ class BaseSDM(sklearn.base.BaseEstimator):
             else:
                 self.fit(train_bags, labels[train],
                          divs=divs[np.ix_(train, train)])
-                pred_divs = (divs[np.ix_(test, train)] + divs[np.ix_(train, test)].T) / 2
+                pred_divs = (divs[np.ix_(test, train)] +
+                             divs[np.ix_(train, test)].T) / 2
                 preds[test] = self.predict(test_bags, divs=pred_divs)
 
             score = self.eval_score(labels[test], preds[test])
