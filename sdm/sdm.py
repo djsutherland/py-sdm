@@ -674,6 +674,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
             test_bags = itemgetter(*test)(bags)
 
             if self.classifier:
+                status('Train distribution: {}'.format(dict(Counter(labels[train]))))
                 status('Test distribution: {}'.format(dict(Counter(labels[test]))))
 
             if project_all:
@@ -727,6 +728,7 @@ class SDC(BaseSDM):
             sigma_vals=sigma_vals, scale_sigma=scale_sigma,
             cache_size=cache_size, tuning_cache_size=tuning_cache_size,
             svm_tol=svm_tol, tuning_svm_tol=tuning_svm_tol,
+            svm_max_iter=svm_max_iter, tuning_svm_max_iter=tuning_svm_max_iter,
             svm_shrinking=svm_shrinking,
             status_fn=status_fn, progressbar=progressbar,
             fix_mode=fix_mode, tail=tail, min_dist=min_dist,
@@ -788,6 +790,7 @@ class NuSDC(BaseSDM):
             sigma_vals=sigma_vals, scale_sigma=scale_sigma,
             cache_size=cache_size, tuning_cache_size=tuning_cache_size,
             svm_tol=svm_tol, tuning_svm_tol=tuning_svm_tol,
+            svm_max_iter=svm_max_iter, tuning_svm_max_iter=tuning_svm_max_iter,
             svm_shrinking=svm_shrinking,
             status_fn=status_fn, progressbar=progressbar,
             fix_mode=fix_mode, tail=tail, min_dist=min_dist,
@@ -847,6 +850,7 @@ class SDR(BaseSDM):
             sigma_vals=sigma_vals, scale_sigma=scale_sigma,
             cache_size=cache_size, tuning_cache_size=tuning_cache_size,
             svm_tol=svm_tol, tuning_svm_tol=tuning_svm_tol,
+            svm_max_iter=svm_max_iter, tuning_svm_max_iter=tuning_svm_max_iter,
             svm_shrinking=svm_shrinking,
             status_fn=status_fn, progressbar=progressbar,
             fix_mode=fix_mode, tail=tail, min_dist=min_dist,
@@ -904,6 +908,7 @@ class NuSDR(BaseSDM):
             sigma_vals=sigma_vals, scale_sigma=scale_sigma,
             cache_size=cache_size, tuning_cache_size=tuning_cache_size,
             svm_tol=svm_tol, tuning_svm_tol=tuning_svm_tol,
+            svm_max_iter=svm_max_iter, tuning_svm_max_iter=tuning_svm_max_iter,
             svm_shrinking=svm_shrinking,
             status_fn=status_fn, progressbar=progressbar,
             fix_mode=fix_mode, tail=tail, min_dist=min_dist,
@@ -958,6 +963,7 @@ class OneClassSDM(BaseSDM):
             sigma_vals=np.array([sigma]), scale_sigma=scale_sigma,
             cache_size=cache_size, tuning_cache_size=tuning_cache_size,
             svm_tol=svm_tol, tuning_svm_tol=tuning_svm_tol,
+            svm_max_iter=svm_max_iter, tuning_svm_max_iter=tuning_svm_max_iter,
             svm_shrinking=svm_shrinking,
             status_fn=status_fn, progressbar=progressbar,
             fix_mode=fix_mode, tail=tail, min_dist=min_dist,
