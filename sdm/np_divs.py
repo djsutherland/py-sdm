@@ -385,7 +385,7 @@ def renyi_entropy(samps, alphas, Ks, min_dist=None, cores=1, **kwargs):
     Ks: a sequence of K values to use
     min_dist: clamp for minimum distance, default min(1e-2, 1e-100 ** (1/dim))
     cores: the number of cores to use in the FLANN search
-    tail, fix_mode: used for get_divs.fix_terms
+    tail, fix_mode: used for fix_terms
 
     Returns a matrix of entropy estimates: one row per alpha, col per K
     '''
