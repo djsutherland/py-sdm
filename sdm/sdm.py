@@ -62,7 +62,7 @@ DEFAULT_SYMMETRIZE_DIVS = False
 def get_status_fn(val):
     if val is True:
         return partial(print, file=sys.stderr)
-    elif val is None:
+    elif val in (None, False):
         return lambda *args, **kwargs: None
     else:
         return val
@@ -629,6 +629,8 @@ class BaseSDM(sklearn.base.BaseEstimator):
             divs=None, divs_cache=None, names=None, cats=None):
         # TODO: allow specifying what the folds should be
         # TODO: optionally return params for each fold, what the folds were, ...
+        # TODO: set save_bags to false and restore, and don't save fit params,
+        #       like transduct()
         status = self.status_fn
 
         num_bags = len(bags)
@@ -641,6 +643,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
         labels = np.squeeze(labels)
         assert labels.shape == (num_bags,)
         if self.classifier:
+            # TODO: be nicer about this (support rounding)
             assert is_categorical_type(labels)
             assert np.all(labels >= 0)
         else:
