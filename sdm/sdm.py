@@ -1221,7 +1221,9 @@ def parse_args():
              "names (the default).")
 
     io.add_argument('--output-file', required=False,
-        help="Name of the output file; defaults to input_file.sdm_cv.mat.")
+        help="Name of the output file; defaults to input_file.sdm_cv.(mat|npz).")
+    io.add_argument('--output-format', choices=['npz', 'mat'], default='npz',
+        help="Format of the output file " + _def)
 
     io.add_argument('--div-cache-file',
         help="An HDF5 file that serves as a cache of divergences.")
@@ -1240,10 +1242,15 @@ def parse_args():
 
     if args.output_file is None:
         suffixes = {
-            'predict': '.sdm_preds.mat',
-            'cv': '.sdm_cv.mat',
+            'predict': '.sdm_preds.',
+            'cv': '.sdm_cv.',
         }
-        args.output_file = args.input_file + suffixes[args.subcommand]
+        formats = {
+            'mat': 'mat',
+            'npz': 'npz',
+        }
+        args.output_file = args.input_file + suffixes[args.subcommand] + \
+                           formats[args.output_format]
 
     args.sigma_vals = np.sort(args.sigma_vals)
     args.c_vals = np.sort(args.c_vals)
@@ -1417,7 +1424,10 @@ def do_cv(args):
     if label_class_names is not None:
         out['label_names'] = label_class_names
     status_fn('Saving output to {}'.format(args.output_file))
-    scipy.io.savemat(args.output_file, out, oned_as='column')
+    if args.output_format == 'mat':
+        scipy.io.savemat(args.output_file, out, oned_as='column')
+    else:
+        np.savez(args.output_file, **out)
 
 
 def main():
