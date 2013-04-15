@@ -33,7 +33,7 @@ from sklearn.utils import ConvergenceWarning
 from sklearn import svm  # NOTE: needs version 0.13+ for svm iter limits
 
 from .utils import (positive_int, positive_float, portion, is_integer_type,
-                    iteritems, izip)
+                    iteritems, iterkeys, izip)
 from .mp_utils import ForkedData, get_pool, progressbar_and_updater
 from .np_divs import (estimate_divs,
                       FIX_MODE_DEFAULT, FIX_TERM_MODES, TAIL_DEFAULT,
@@ -299,6 +299,11 @@ class BaseSDM(sklearn.base.BaseEstimator):
     def progressbar(self, value):
         self._progressbar = value
 
+    def clear_fit(self):
+        for attr_name in dir(self):
+            if attr_name.endswith('_') and not attr_name.startswith('_'):
+                delattr(self, attr_name)
+
     def fit(self, X, y, sample_weight=None,
             divs=None, divs_cache=None, names=None, cats=None, ret_km=False):
         '''
@@ -477,9 +482,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
 
         if not save_fit:
             self.save_bags = old_save_bags
-            for attr_name in dir(self):
-                if attr_name.endswith('_') and not attr_name.startswith('_'):
-                    delattr(self, attr_name)
+            self.clear_fit()
         return preds
 
     ############################################################################
@@ -492,6 +495,14 @@ class BaseSDM(sklearn.base.BaseEstimator):
     def _set_tuning(self, d):
         for k, v in iteritems(d):
             setattr(self, k + '_', v)
+
+    def _tuned_params(self):
+        return dict(
+            (name[:-1], getattr(self, name))
+            for name in dir(self)
+            if name.endswith('_') and not name.startswith('_')
+                and name != 'svm_'
+        )
 
     def _svm_params(self, tuning=False):
         if tuning:
@@ -625,12 +636,8 @@ class BaseSDM(sklearn.base.BaseEstimator):
     ############################################################################
     ### Cross-validation helper
     def crossvalidate(self, bags, labels, project_all=True,
-            num_folds=10, stratified_cv=False, folds=None, ret_folds=False,
+            num_folds=10, stratified_cv=False, folds=None, ret_fold_info=False,
             divs=None, divs_cache=None, names=None, cats=None):
-        # TODO: allow specifying what the folds should be
-        # TODO: optionally return params for each fold, what the folds were, ...
-        # TODO: set save_bags to false and restore, and don't save fit params,
-        #       like transduct()
         status = self.status_fn
 
         num_bags = len(bags)
@@ -674,6 +681,10 @@ class BaseSDM(sklearn.base.BaseEstimator):
             else:
                 folds = KFold(n=num_bags, n_folds=num_folds, shuffle=True)
 
+        old_save_bags = self.save_bags
+        self.save_bags = False  # avoid keeping copies around
+
+        params = []
         for i, (train, test) in enumerate(folds, 1):
             status('')
             status('Starting fold {} / {}'.format(i, num_folds))
@@ -691,7 +702,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
             if project_all:
                 preds[test] = self.transduct(
                         train_bags, labels[train], test_bags,
-                        divs=divs[np.ix_(both, both)])
+                        divs=divs[np.ix_(both, both)], save_fit=True)
             else:
                 self.fit(train_bags, labels[train],
                          divs=divs[np.ix_(train, train)])
@@ -703,8 +714,21 @@ class BaseSDM(sklearn.base.BaseEstimator):
             status('Fold {score_name}: {score:{score_fmt}}'.format(score=score,
                         score_name=self.score_name, score_fmt=self.score_fmt))
 
+            params.append(self._tuned_params())
+            self.clear_fit()
+
+        self.save_bags = old_save_bags
+
         score = self.eval_score(labels, preds)
-        return (score, preds, folds) if ret_folds else (score, preds)
+        if ret_fold_info:
+            keys = reduce(set.union, (set(iterkeys(x)) for x in params))
+            params_a = np.array(
+                [tuple(p.get(k, np.nan) for k in keys) for p in params],
+                dtype=[(k, np.float) for k in keys])
+            # TODO: allow for more general dtypes?
+            return score, preds, folds, params_a
+        else:
+            return score, preds
 
 
 class SDC(BaseSDM):
@@ -950,7 +974,7 @@ class OneClassSDM(BaseSDM):
     oneclass = True
     svm_class = svm.OneClassSVM
     # leaving tuning_loss, eval_score, score_name, score_fmt unimplemented
-    # TODO: add real tuning support for SDMs
+    # TODO: add real tuning support for one-class SDMs
 
     def __init__(self,
                  div_func=DEFAULT_DIV_FUNC,
@@ -1400,9 +1424,10 @@ def do_cv(args):
         bags = subset_data(bags, args.n_points)
 
     clf = sdm_for_mode[args.svm_mode](status_fn=True, **opts_dict(args))
-    score, preds = clf.crossvalidate(bags, labels,
+    score, preds, folds, params = clf.crossvalidate(bags, labels,
         num_folds=args.cv_folds, stratified_cv=args.stratified_cv,
         project_all=args.mode == 'transduct',
+        ret_fold_info=True,
         divs_cache=args.div_cache_file, cats=cats, names=names)
 
     status_fn('')
@@ -1417,6 +1442,8 @@ def do_cv(args):
         'preds': preds,
         'labels': labels,
         'svm_mode': args.svm_mode,
+        'folds': list(folds),
+        'params': params,
     }
     for k, v in iteritems(clf._param_grid_dict()):
         out[k + '_vals'] = v
