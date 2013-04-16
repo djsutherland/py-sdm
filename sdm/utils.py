@@ -114,3 +114,12 @@ def confirm_outfile(filename, dir=False):
         os.remove(filename)
     except Exception as e:
         sys.exit("{}: can't write to '{}'".format(e, filename))
+
+
+def get_status_fn(val):
+    if val is True:
+        return functools.partial(print, file=sys.stderr)
+    elif val in (None, False):
+        return lambda *args, **kwargs: None
+    else:
+        return val

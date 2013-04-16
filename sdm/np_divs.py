@@ -35,7 +35,7 @@ except ImportError:
 
 from .utils import (eps, col, get_col, izip, lazy_range, is_integer, raw_input,
                     str_types, bytes, portion, positive_int, confirm_outfile,
-                    iteritems, itervalues)
+                    iteritems, itervalues, get_status_fn)
 from .mp_utils import ForkedData, map_unordered_with_progressbar, get_pool
 
 ################################################################################
@@ -590,10 +590,7 @@ def estimate_divs(bags,
     funcs, opts['div_names'], opts['alphas'] = \
             process_func_specs(specs, opts['Ks'])
 
-    if status_fn is True:
-        status_fn = functools.partial(print, file=sys.stderr)
-    elif status_fn is None:
-        status_fn = lambda *args, **kwargs: None
+    status_fn = get_status_fn(status_fn)
 
     num_bags = len(bags)
     opts['dim'] = dim = bags[0].shape[1]
@@ -719,7 +716,7 @@ def main():
     import h5py
 
     args = parse_args()
-    status_fn = functools.partial(print, file=sys.stderr)
+    status_fn = get_status_fn(True)
 
     status_fn('Reading data...')
     if args.input_format == 'matlab':

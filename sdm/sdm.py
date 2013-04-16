@@ -33,7 +33,7 @@ from sklearn.utils import ConvergenceWarning
 from sklearn import svm  # NOTE: needs version 0.13+ for svm iter limits
 
 from .utils import (positive_int, positive_float, portion, is_integer_type,
-                    iteritems, iterkeys, izip)
+                    iteritems, iterkeys, izip, get_status_fn)
 from .mp_utils import ForkedData, get_pool, progressbar_and_updater
 from .np_divs import (estimate_divs,
                       FIX_MODE_DEFAULT, FIX_TERM_MODES, TAIL_DEFAULT,
@@ -58,14 +58,6 @@ DEFAULT_SVR_NU_VALS = (0.2, 0.3, 0.5, 0.7)
 DEFAULT_K = 3
 DEFAULT_TUNING_FOLDS = 3
 DEFAULT_SYMMETRIZE_DIVS = False
-
-def get_status_fn(val):
-    if val is True:
-        return partial(print, file=sys.stderr)
-    elif val in (None, False):
-        return lambda *args, **kwargs: None
-    else:
-        return val
 
 
 def is_categorical_type(ary):
