@@ -14,7 +14,6 @@ import itertools
 from operator import itemgetter, mul
 import os
 import random
-import sys
 import warnings
 
 import h5py
