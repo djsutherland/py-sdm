@@ -28,10 +28,10 @@ from scipy.special import gamma, gammaln
 
 try:
     from pyflann import FLANN
-    searcher = FLANN()
+    use_flann = True
 except ImportError:
     warnings.warn('Cannot find FLANN. KNN searches will be much slower.')
-    searcher = None
+    use_flann = False
 
 from .utils import (eps, col, get_col, izip, lazy_range, is_integer, raw_input,
                     str_types, bytes, portion, positive_int, confirm_outfile,
@@ -149,10 +149,16 @@ def l2_dist_sq(A, B):
     '''
     return -2 * np.dot(A, B.T) + col((A**2).sum(1)) + (B**2).sum(1)
 
+
 def default_min_dist(dim):
     return min(1e-2, 1e-100 ** (1.0 / dim))
 
-def knn_search(x, y, K, min_dist=None, cores=1):
+
+def pick_flann_algorithm(dim):
+    return 'linear' if dim > 5 else 'kdtree_single'
+
+
+def knn_search(x, y, K, min_dist=None, index=None, algorithm=None, **kwargs):
     '''
     Calculates Euclidean distances to the first K closest elements of y
     for each x, which are row-instance data matrices.
@@ -162,6 +168,13 @@ def knn_search(x, y, K, min_dist=None, cores=1):
 
     By default, clamps minimum distance to min(1e-2, 1e-100 ** (1/dim));
     setting min_dist to a number changes this value. Use 0 for no clamping.
+
+    If index is passed, uses a preconstructed flann index for the elements of y
+    (a FLANN() instance where build_index() has been run). Otherwise, constructs
+    an index here and then deletes it, using the passed algorithm. By default,
+    uses a single k-d tree for data with dimension 5 or lower, and brute-force
+    search in higher dimensions (which give exact results). Any other keyword
+    arguments are also passed to the FLANN() object.
     '''
     N, dim = x.shape
     M, dim2 = y.shape
@@ -170,9 +183,15 @@ def knn_search(x, y, K, min_dist=None, cores=1):
     if not is_integer(K) and K >= 1:
         raise TypeError("K must be a positive integer")
 
-    if searcher is not None:
-        algorithm = 'linear' if dim > 5 else 'kdtree_single'
-        idx, dist = searcher.nn(y, x, K, algorithm=algorithm, cores=cores)
+    if use_flann:
+        if algorithm is None:
+            algorithm = pick_flann_algorithm(dim)
+
+        if index is None:
+            index = FLANN(algorithm=algorithm, **kwargs)
+            params = index.build_index(y)
+
+        idx, dist = index.nn_index(x, K)
     else:
         D = l2_dist_sq(x, y)
         idx = np.argsort(D, 1)[:, :K]
@@ -189,9 +208,9 @@ def knn_search(x, y, K, min_dist=None, cores=1):
     return np.maximum(min_dist, dist), idx
 
 
-def knn_search_forked(bags, i, j, K, min_dist=None):
+def knn_search_forked(bags, indices, i, j, K, **kwargs):
     bags = bags.value
-    return knn_search(bags[i], bags[j], K, min_dist=min_dist)
+    return knn_search(bags[i], bags[j], K=K, index=indices.value[j], **kwargs)
 
 
 ################################################################################
@@ -375,7 +394,8 @@ def renyi_entropy_knns(knns, dim, alphas, Ks,
     return np.log(Bs * ms) / (1 - alphas)
 
 
-def renyi_entropy(samps, alphas, Ks, min_dist=None, cores=1, **kwargs):
+def renyi_entropy(samps, alphas, Ks,
+                  tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT, **kwargs):
     '''
     Estimates Renyi entropy using a special case of our estimator above
     (with alpha=alpha-1, beta=0).
@@ -383,17 +403,15 @@ def renyi_entropy(samps, alphas, Ks, min_dist=None, cores=1, **kwargs):
     samps: an (n_samps x dimensionality) matrix of samples
     alphas: a sequence of alpha values to use
     Ks: a sequence of K values to use
-    min_dist: clamp for minimum distance, default min(1e-2, 1e-100 ** (1/dim))
-    cores: the number of cores to use in the FLANN search
     tail, fix_mode: used for fix_terms
+    other kwargs: passed along to knn_search
 
     Returns a matrix of entropy estimates: one row per alpha, col per K
     '''
     # throw away the smallest one, which is dist to self
-    knns, _ = knn_search(
-        samps, samps, K=np.max(Ks) + 1, min_dist=min_dist, cores=cores)
-    return renyi_entropy_knns(
-        knns=knns[:, 1:], dim=samps.shape[1], alphas=alphas, Ks=Ks, **kwargs)
+    knns, _ = knn_search(samps, samps, K=np.max(Ks) + 1, **kwargs)
+    return renyi_entropy_knns(knns=knns[:, 1:], dim=samps.shape[1], Ks=Ks,
+                              alphas=alphas, tail=tail, fix_mode=fix_mode)
 
 
 def jensen_renyi(xx, xy, yy, yx, alphas, Ks, dim,
@@ -466,16 +484,18 @@ def handle_divs(funcs, opts, xx, xy, yy, yx, rt=None):
     yy: nearest-neighbor distances from y to y
     rt: the results from the symmetric call
     '''
+    if rt is None:
+        rt = itertools.repeat(None)
 
     return [
         symm_result if (f.is_symmetric and symm_result is not None)
         else np.asarray(f(xx[0], xy[0], yy[0], yx[0], **opts))
-        for f, symm_result in izip(funcs, rt or itertools.repeat(None))
+        for f, symm_result in izip(funcs, rt)
     ]
     # NOTE: if we add div funcs that need the index, pass those.
 
 
-def process_pair(funcs, opts, bags, xxs, row, col, symm=True):
+def process_pair(funcs, opts, bags, indices, xxs, row, col, symm=True):
     '''
     Does nearest-neighbor searches and computes the divergences between
     the row-th and col-th bags. xxs is a list of nearest-neighbor searches
@@ -484,6 +504,7 @@ def process_pair(funcs, opts, bags, xxs, row, col, symm=True):
     handle = functools.partial(handle_divs, funcs, opts)
 
     bags = bags.value
+    indices = indices.value
     xxs = xxs.value
 
     if row == col:
@@ -493,11 +514,12 @@ def process_pair(funcs, opts, bags, xxs, row, col, symm=True):
             rt = r
     else:
         xbag, ybag = bags[row], bags[col]
+        xindex, yindex = indices[row], indices[col]
         xx, yy = xxs[row], xxs[col]
 
         mK = max(opts['Ks'])
-        xy = knn_search(xbag, ybag, mK)
-        yx = knn_search(ybag, xbag, mK)
+        xy = knn_search(xbag, ybag, K=mK, index=yindex)
+        yx = knn_search(ybag, xbag, K=mK, index=xindex)
 
         r = handle(xx, xy, yy, yx)
         if symm:
@@ -559,7 +581,8 @@ def estimate_divs(bags,
                   fix_mode=FIX_MODE_DEFAULT,
                   min_dist=None,
                   status_fn=True, progressbar=None,
-                  return_opts=False):
+                  return_opts=False,
+                  **flann_args):
     '''
     Gets the divergences between bags.
         bags: a length n list of row-instance feature matrices
@@ -574,6 +597,7 @@ def estimate_divs(bags,
             None means don't print any; True prints to stderr
         progressbar: show a progress bar on stderr. default: (status_fn is True)
         return_opts: return a dictionary of options used as second value
+        other options: passed along to FLANN for nearest-neighbor searches
     Returns a matrix of size  n x n x num_div_funcs
     '''
     # TODO: document progressbar specs
@@ -581,6 +605,8 @@ def estimate_divs(bags,
 
     if progressbar is None:
         progressbar = status_fn is True
+
+    status_fn = get_status_fn(status_fn)
 
     opts = {}
     opts['Ks'] = np.sort(np.ravel(Ks))
@@ -590,12 +616,14 @@ def estimate_divs(bags,
     funcs, opts['div_names'], opts['alphas'] = \
             process_func_specs(specs, opts['Ks'])
 
-    status_fn = get_status_fn(status_fn)
-
     num_bags = len(bags)
     opts['dim'] = dim = bags[0].shape[1]
     assert all(bag.shape[1] == dim for bag in bags)
     max_K = opts['Ks'][-1]
+
+    if flann_args.get('algorithm', None) is None:
+        flann_args['algorithm'] = pick_flann_algorithm(dim)
+    opts.update(flann_args)
 
     if mask is not None:
         assert mask.dtype == np.dtype('bool')
@@ -610,10 +638,18 @@ def estimate_divs(bags,
     status_fn('Preparing...')
     bag_data = ForkedData(bags)
 
+    # build indices for each bag. unfortunately, we have to either do this all
+    # in the master process or save/load the indices in disk, since ForkedData
+    # has copy-on-write semantics and FLANN() objects aren't pickleable.
+    indices = [FLANN(**flann_args) for _ in bags]
+    for bag, index in izip(bags, indices):
+        index.build_index(bag)
+    index_data = ForkedData(indices)
+
     # do kNN searches within each bag
     # need to throw away the closest neighbor, which will always be self
     knn_searcher = functools.partial(knn_search_forked,
-            bag_data, K=max_K + 1, min_dist=min_dist)
+            bag_data, index_data, K=max_K + 1, min_dist=min_dist, **flann_args)
     bag_is = lazy_range(num_bags)
     with get_pool(n_proc) as pool:
         xxs = [(xx[:, 1:], xxi[:, 1:]) for xx, xxi
@@ -621,7 +657,8 @@ def estimate_divs(bags,
 
     xxs_data = ForkedData(xxs)
 
-    processor = functools.partial(process_pair, funcs, opts, bag_data, xxs_data)
+    processor = functools.partial(
+            process_pair, funcs, opts, bag_data, index_data, xxs_data)
     all_pairs = itertools.combinations_with_replacement(range(num_bags), 2)
     if mask is None:
         jobs = list(all_pairs)
@@ -633,9 +670,8 @@ def estimate_divs(bags,
             elif mask[j, i]:
                 jobs.append((j, i, False))
 
-    # TODO: instead of processor returning basically a crappy list-formatted
-    #       sparse spec of the matrix that gets pickled, just have it fill in
-    #       directly with ForkedData
+    # TODO: instead of keeping a crappy list-formatted sparse spec of the
+    #       matrix, just fill it in as we get it with a callback
     status_fn('Doing the real work...')
     with get_pool(n_proc) as pool:
         if progressbar:
