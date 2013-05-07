@@ -74,7 +74,7 @@ def patch_starmap(pool):
     pool.starmap = starmap
 
 
-def make_pool(n_proc):
+def make_pool(n_proc=None):
     "Makes a multiprocessing.Pool or a DummyPool depending on n_proc."
     pool = DummyPool() if n_proc == 1 else mp.Pool(n_proc)
     patch_starmap(pool)
@@ -82,7 +82,7 @@ def make_pool(n_proc):
 
 
 @contextmanager
-def get_pool(n_proc):
+def get_pool(n_proc=None):
     "A context manager that opens a pool and joins it on exit."
     pool = make_pool(n_proc)
     yield pool
@@ -110,8 +110,9 @@ class ForkedData(object):
           inherit the new global.
         - Master calls e.g. pool.map with data as an argument.
         - Child gets the real value through data.value, and uses it read-only.
+          Modifying it won't crash, but changes won't be propagated back to the
+          master or to other processes, since it's copy-on-write.
     '''
-    # TODO: does data really need to be used read-only? don't think so...
     # TODO: more flexible garbage collection options
     def __init__(self, val):
         g = globals()
