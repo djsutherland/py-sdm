@@ -27,7 +27,8 @@ def save_features(filename, features, **attrs):
     with h5py.File(filename) as f:
         for category, name, frames, descrs, extra in izip(*features):
             g = f.require_group(category).create_group(name)
-            g['frames'] = frames
+            if frames is not None:
+                g['frames'] = frames
             g['features'] = descrs
             if extra:
                 for k, v in iteritems(extra):
