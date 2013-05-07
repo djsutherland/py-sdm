@@ -156,6 +156,7 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
                    fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
                    n_proc=None, status_fn=True, progressbar=None):
     # TODO: support loading subsets of the file, or reordered, based on names
+    # TODO: support flann arguments
 
     status = get_status_fn(status_fn)
 

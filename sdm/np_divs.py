@@ -738,7 +738,10 @@ def parse_args():
              "are always at least this big. Default: the smaller of .01 and "
              "10 ^ (100 / dim).")
 
-    # TODO: FLANN nearest-neighbor algorithm selection
+    # TODO: nice thing for FLANN nearest-neighbor algorithm selection
+    import ast
+    parser.add_argument('--flann-args', type=ast.literal_eval, default={},
+        help="A dictionary of arguments to FLANN.")
 
     args = parser.parse_args()
     if args.output_file is None:
@@ -790,7 +793,8 @@ def main():
             n_proc=args.n_proc,
             tail=args.trim_tails, fix_mode=args.trim_mode,
             min_dist=args.min_dist,
-            return_opts=True)
+            return_opts=True,
+            **args.flann_args)
 
     status_fn("Outputting results to", args.output_file)
 
@@ -899,6 +903,7 @@ def reconcile_file_order(f, names=None, cats=None, write=False):
             f.attrs['cats'] = cats
 
 
+# TODO: track flann algorithms used here? or just whether they're exact?
 def check_h5_settings(f, n, dim, fix_mode, tail, min_dist=None,
                       names=None, cats=None, write=False):
     """
