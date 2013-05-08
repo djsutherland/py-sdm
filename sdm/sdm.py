@@ -291,6 +291,27 @@ class BaseSDM(sklearn.base.BaseEstimator):
     def progressbar(self, value):
         self._progressbar = value
 
+    def _div_args(self, for_cache=True):
+        d = {
+            'n_proc': self.n_proc,
+            'min_dist': self.min_dist,
+            'fix_mode': self.fix_mode,
+            'tail': self.tail,
+            'status_fn': self._status_fn,
+            'progressbar': self.progressbar,
+        }
+        if for_cache:
+            d.update({
+                'div_func': self.div_func,
+                'K': self.K,
+            })
+        else:
+            d.update({
+                'specs': [self.div_func],
+                'Ks': [self.K],
+            })
+        return d
+
     def clear_fit(self):
         for attr_name in dir(self):
             if attr_name.endswith('_') and not attr_name.startswith('_'):
@@ -343,12 +364,9 @@ class BaseSDM(sklearn.base.BaseEstimator):
         # get divergences
         if divs is None:
             self.status_fn('Getting divergences...')
-            divs = get_divs_cache(X, div_func=self.div_func, K=self.K,
-                    cache_filename=divs_cache,
-                    n_proc=self.n_proc, min_dist=self.min_dist,
-                    fix_mode=self.fix_mode, tail=self.tail,
-                    names=names, cats=cats,
-                    status_fn=self.status_fn, progressbar=self.progressbar)
+            divs = get_divs_cache(X, names=names, cats=cats,
+                                  cache_filename=divs_cache,
+                                  **self._div_args(for_cache=True))
         else:
             #self.status_fn('Using passed-in divergences...')
             assert divs.shape == (n_bags, n_bags)
@@ -403,10 +421,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
 
         divs = np.squeeze(estimate_divs(
                 self.train_bags_ + tuple(data), mask=mask,
-                specs=[self.div_func], Ks=[self.K],
-                n_proc=self.n_proc, min_dist=self.min_dist,
-                fix_mode=self.fix_mode, tail=self.tail,
-                status_fn=self.status_fn, progressbar=self.progressbar))
+                **self._div_args(for_cache=False)))
         divs = (divs[-n_test:, :n_train] + divs[:n_train, -n_test].T) / 2
         return rbf_kernelize(divs, self.sigma_, destroy=True)
 
