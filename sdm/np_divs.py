@@ -188,6 +188,8 @@ def knn_search(x, y, K, min_dist=None, index=None, algorithm=None, **kwargs):
             algorithm = pick_flann_algorithm(dim)
 
         if index is None:
+            if 'cores' not in kwargs:
+                kwargs['cores'] = 1
             index = FLANN(algorithm=algorithm, **kwargs)
             params = index.build_index(y)
 
@@ -641,6 +643,8 @@ def estimate_divs(bags,
     # build indices for each bag. unfortunately, we have to either do this all
     # in the master process or save/load the indices in disk, since ForkedData
     # has copy-on-write semantics and FLANN() objects aren't pickleable.
+    if 'cores' not in flann_args:
+        flann_args['cores'] = 1
     indices = [FLANN(**flann_args) for _ in bags]
     for bag, index in izip(bags, indices):
         index.build_index(bag)
