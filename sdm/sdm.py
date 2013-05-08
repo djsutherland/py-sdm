@@ -621,8 +621,9 @@ class BaseSDM(sklearn.base.BaseEstimator):
         the_params = dict(
                 (name, param_d[name][idx])
                 for name, idx in izip(nonfold_param_names, best_indices))
-        self.status_fn("Chose params {}".format(', '.join(
-                '{}={}'.format(k, v) for k, v in iteritems(the_params))))
+        self.status_fn("Chose params {}; score {}".format(
+            ', '.join('{}={}'.format(k, v) for k, v in iteritems(the_params)),
+            cv_means.min()))
         self._set_tuning(the_params)
 
     ############################################################################
