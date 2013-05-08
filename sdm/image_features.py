@@ -70,7 +70,7 @@ def read_features(filename, load_attrs=False, features_dtype=None,
     with h5py.File(filename, 'r') as f:
         bag_names = []
         for cat, cat_g in iteritems(f):
-            if cats is None or cat in cats:
+            if cat != '_meta' and (cats is None or cat in cats):
                 for fname in iterkeys(cat_g):
                     if pairs is None or (cat, fname) in pairs:
                         bag_names.append((cat, fname))
@@ -82,9 +82,6 @@ def read_features(filename, load_attrs=False, features_dtype=None,
             return bag_names
 
         for cat, fname in bag_names:
-            if cat == '_meta':
-                continue
-
             ret.categories.append(cat)
             ret.names.append(fname)
             extra = {}
