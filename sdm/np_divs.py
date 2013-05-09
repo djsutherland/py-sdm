@@ -257,6 +257,37 @@ l2.is_symmetric = True
 l2.name = 'NP-L2'
 
 
+def kl(xx, xy, yy, yx, Ks, dim,
+       tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT, **opts):
+    r'''
+    Estimate the KL divergence between distributions:
+        \int p(x) \log (p(x) / q(x))
+    using the kNN-based estimator (5) of
+        Qing Wang, Sanjeev R Kulkarni, and Sergio Verdu (2009).
+        Divergence Estimation for Multidimensional Densities Via
+        k-Nearest-Neighbor Distances.
+        IEEE Transactions on Information Theory.
+        http://www.ee.princeton.edu/~verdu/reprints/WanKulVer.May2009.pdf
+    which is:
+        d * 1/n \sum \log (nu_k(i) / rho_k(i)) + log(m / (n - 1))
+    '''
+    if xy is None:  # identical bags
+        return np.zeros(len(Ks))
+
+    fix = functools.partial(fix_terms, tail=tail, mode=fix_mode)
+
+    N = xx.shape[0]
+    M = yy.shape[0]
+    rs = np.empty(len(Ks))
+    for knd, K in enumerate(Ks):
+        rho, nu = get_col(xx, K - 1), get_col(xy, K - 1)
+        ratios = fix(rho / nu)
+        rs[knd] = dim * np.mean(np.log(ratios))
+    return rs + np.log(M / (N - 1))
+kl.is_symmetric = False
+kl.name = 'NP-KL'
+
+
 def alpha_div(xx, xy, yy, yx, alphas, Ks, dim,
               tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT, **opts):
     r'''
@@ -338,6 +369,7 @@ hellinger.name = 'NP-H'
 
 func_mapping = {
     'l2': l2,
+    'kl': kl,
     'alpha': alpha_div,
     'bc': bhattacharyya,
     'renyi': renyi,
@@ -723,7 +755,7 @@ def parse_args():
         help="The number of points to use per group; defaults to all.")
 
     parser.add_argument('--div-funcs', nargs='*',
-        default=['hellinger', 'l2', 'renyi:.5,.7,.9,.99'],
+        default=['hellinger', 'l2', 'renyi:.5,.7,.9,.99', 'kl'],
         help="The divergences to estimate. Default: %(default)s.")
 
     parser.add_argument('-K', nargs='*', type=positive_int,
