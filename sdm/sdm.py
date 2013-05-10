@@ -561,6 +561,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
             raise ValueError("no parameters in tuning grid")
         elif num_pts == num_folds:  # only one param set, no tuning necessary
             self._set_tuning(next(iter(param_grid)))
+            self.tune_evals_ = (None, [], {})
             return
 
         # get kernel matrices for the sigma vals we're trying
