@@ -508,7 +508,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
             (name[:-1], getattr(self, name))
             for name in dir(self)
             if name.endswith('_') and not name.startswith('_')
-                and name != 'svm_'
+                and name not in ('svm_', 'tune_evals_')
         )
 
     def _svm_params(self, tuning=False):
@@ -641,11 +641,18 @@ class BaseSDM(sklearn.base.BaseEstimator):
             cv_means[tuple(best_indices)]))
         self._set_tuning(the_params)
 
+        # TODO: save this in a nice format
+        del param_d['fold_idx']
+        self.tune_evals_ = (cv_means, nonfold_param_names, param_d)
+
+
     ############################################################################
     ### Cross-validation helper
     def crossvalidate(self, bags, labels, project_all=True,
-            num_folds=10, stratified_cv=False, folds=None, ret_fold_info=False,
+            num_folds=10, stratified_cv=False, folds=None,
+            ret_fold_info=False, ret_tune_info=False,
             divs=None, divs_cache=None, names=None, cats=None):
+        # TODO: nicer interface for ret_tune_info
         status = self.status_fn
 
         num_bags = len(bags)
@@ -693,6 +700,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
         self.save_bags = False  # avoid keeping copies around
 
         params = []
+        tune_info = []
         for i, (train, test) in enumerate(folds, 1):
             status('')
             status('Starting fold {} / {}'.format(i, num_folds))
@@ -723,20 +731,25 @@ class BaseSDM(sklearn.base.BaseEstimator):
                         score_name=self.score_name, score_fmt=self.score_fmt))
 
             params.append(self._tuned_params())
+            tune_info.append(self.tune_evals_)
             self.clear_fit()
 
         self.save_bags = old_save_bags
 
         score = self.eval_score(labels, preds)
+        ret = (score, preds)
         if ret_fold_info:
             keys = reduce(set.union, (set(iterkeys(x)) for x in params))
             params_a = np.array(
                 [tuple(p.get(k, np.nan) for k in keys) for p in params],
                 dtype=[(k, np.float) for k in keys])
             # TODO: allow for more general dtypes?
-            return score, preds, folds, params_a
-        else:
-            return score, preds
+
+            ret += (folds, params_a)
+            if ret_tune_info:
+                ret += (tune_info,)  # TODO: nicer format for tune_info
+        return ret
+        # TODO: nicer output arguments in general (namedtuple)
 
 
 class SDC(BaseSDM):
