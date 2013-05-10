@@ -1435,11 +1435,12 @@ def do_cv(args):
             label_class_names = label_encoder.classes_
 
     if classifier:
-        status_fn('Loaded {} bags with {} classes.'.format(
-                len(bags), len(set(labels))))
+        label_str = '{} classes'.format(len(set(labels)))
     else:
-        status_fn('Loaded {} bags with labels from {:.2} to {:.2}.'.format(
-                len(bags), np.min(labels), np.max(labels)))
+        label_str = 'labels from {:.2} to {:.2}'.format(
+                np.min(labels), np.max(labels))
+    status_fn('Loaded {} bags of dimension {} with {}.'.format(
+            len(bags), bags[0].shape[1], label_str))
 
     if args.n_points:
         bags = subset_data(bags, args.n_points)
