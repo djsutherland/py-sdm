@@ -38,6 +38,10 @@ else:
         return list(map(*args, **kwargs))
 
 
+def identity(x):
+    return x
+
+
 ### some little numpy utilities
 eps = np.spacing(1)
 

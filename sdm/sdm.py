@@ -32,7 +32,8 @@ from sklearn.utils import ConvergenceWarning
 from sklearn import svm  # NOTE: needs version 0.13+ for svm iter limits
 
 from .utils import (positive_int, positive_float, portion, is_integer_type,
-                    iteritems, iterkeys, izip, get_status_fn, lazy_range)
+                    iteritems, iterkeys, izip, identity, lazy_range,
+                    get_status_fn)
 from .mp_utils import ForkedData, get_pool, progressbar_and_updater
 from .np_divs import (estimate_divs,
                       FIX_MODE_DEFAULT, FIX_TERM_MODES, TAIL_DEFAULT,
@@ -58,6 +59,7 @@ DEFAULT_K = 3
 DEFAULT_TUNING_FOLDS = 3
 DEFAULT_SYMMETRIZE_DIVS = False
 DEFAULT_KM_METHOD = 'clip'
+DEFAULT_TRANSFORM_TEST = True
 
 
 def is_categorical_type(ary):
@@ -85,7 +87,16 @@ def symmetrize(mat, destroy=False):
     return mat
 
 
-def project_psd(mat, min_eig=0, destroy=False, negatives_likely=True):
+def _transformer(transform, test_matrix):
+    '''
+    Applies a given transformation matrix to the matrix of test vector
+    similarities (num_test x num_train).
+    '''
+    return np.dot(transform, test_matrix.T).T
+
+
+def project_psd(mat, min_eig=0, destroy=False, negatives_likely=True,
+                ret_test_transformer=False):
     '''
     Project a real symmetric matrix to PSD by discarding any negative
     eigenvalues from its spectrum. Passing min_eig > 0 lets you similarly make
@@ -95,24 +106,42 @@ def project_psd(mat, min_eig=0, destroy=False, negatives_likely=True):
 
     If destroy is True, invalidates the passed-in matrix.
 
-    If negatives_likely (default), optimizes memory usage for the case where we
-    expect there to be negative eigenvalues.
+    If negatives_likely (default), optimizes for the case where we expect there
+    to be negative eigenvalues.
+
+    If ret_test_transformer, also returns a function which takes a matrix of
+    test similarities (num_test x num_train) and returns a matrix to make
+    treatment consistent. Uses the method of
+       Chen, Y., Garcia, E. K., Gupta, M. R., Rahimi, A., & Cazzanti, L. (2009).
+       Similarity-based classification: Concepts and algorithms.
+       Journal of Machine Learning Research, 10, 747-776.
     '''
     mat = symmetrize(mat, destroy=destroy)
 
     # TODO: be smart and only get negative eigs?
     vals, vecs = scipy.linalg.eigh(mat, overwrite_a=negatives_likely)
-    if negatives_likely or vals[0] < min_eig:
+    vals = vals.reshape(-1, 1)
+
+    if ret_test_transformer:
+        clip = np.dot(vecs, (vals > 0) * vecs.T)
+        transform = partial(_transformer, clip)
+
+    if negatives_likely or vals[0, 0] < min_eig:
         del mat
         np.maximum(vals, min_eig, vals)  # update vals in-place
         mat = np.dot(vecs, vals.reshape(-1, 1) * vecs.T)
-        del vals, vecs
+        if not ret_test_transformer:
+            del vals, vecs
         mat = symmetrize(mat, destroy=True)  # should be symmetric, but do it
                                              # anyway for numerical reasons
+
+    if ret_test_transformer:
+        return mat, transform
     return mat
 
 
-def shift_psd(mat, min_eig=0, destroy=False, negatives_likely=True):
+def shift_psd(mat, min_eig=0, destroy=False, negatives_likely=True,
+              ret_test_transformer=False):
     '''
     Turn a real symmetric matrix to PSD by adding to its diagonal. Passing
     min_eig > 0 lets you make it positive-definite.
@@ -122,6 +151,11 @@ def shift_psd(mat, min_eig=0, destroy=False, negatives_likely=True):
     If destroy is True, modifies the passed-in matrix in-place.
 
     Ignores the negatives_likely argument (just there for consistency).
+
+    If ret_test_transformer, also returns a function which takes a matrix of
+    test similarities (num_test x num_train) and returns a matrix to make
+    treatment consistent. For the shift method, which only affects
+    self-similarities, this is just the identity function.
     '''
     mat = symmetrize(mat, destroy=destroy)
     lo, = scipy.linalg.eigvalsh(mat, eigvals=(0, 0))
@@ -129,42 +163,68 @@ def shift_psd(mat, min_eig=0, destroy=False, negatives_likely=True):
     if diff < 0:
         r = lazy_range(mat.shape[0])
         mat[r, r] += diff
+
+    if ret_test_transformer:
+        return mat, identity
     return mat
 
 
-def flip_psd(mat, destroy=False, negatives_likely=True):
+def flip_psd(mat, destroy=False, negatives_likely=True,
+             ret_test_transformer=False):
     '''
     Turn a real symmetric matrix into PSD by flipping the sign of any negative
     eigenvalues in its spectrum.
 
     If destroy is True, invalidates the passed-in matrix.
 
-    If negatives_likely (default), optimizes memory usage for the case where we
-    expect there to be negative eigenvalues.
+    If negatives_likely (default), optimizes for the case where we expect there
+    to be negative eigenvalues.
+
+    If ret_test_transformer, also returns a function which takes a matrix of
+    test similarities (num_test x num_train) and returns a matrix to make
+    treatment consistent. Uses the method of
+       Chen, Y., Garcia, E. K., Gupta, M. R., Rahimi, A., & Cazzanti, L. (2009).
+       Similarity-based classification: Concepts and algorithms.
+       Journal of Machine Learning Research, 10, 747-776.
     '''
     mat = symmetrize(mat, destroy=destroy)
 
     # TODO: be smart and only get negative eigs?
     vals, vecs = scipy.linalg.eigh(mat, overwrite_a=negatives_likely)
-    if negatives_likely or vals[0] < 0:
+    vals = vals.reshape(-1, 1)
+
+    if ret_test_transformer:
+        flip = np.dot(vecs, np.sign(vals) * vecs.T)
+        transform = partial(_transformer, flip)
+
+    if negatives_likely or vals[0, 0] < 0:
         del mat
         np.abs(vals, vals)  # update vals in-place
-        mat = np.dot(vecs, vals.reshape(-1, 1) * vecs.T)
+        mat = np.dot(vecs, vals * vecs.T)
         del vals, vecs
         mat = symmetrize(mat, destroy=True)  # should be symmetric, but do it
                                              # anyway for numerical reasons
+    if ret_test_transformer:
+        return mat, transform
     return mat
 
 
-def square_psd(mat, destroy=False):
+def square_psd(mat, destroy=False, ret_test_transformer=False):
     '''
-    Turns a real matrix into a symmetric psd one through S -> S S^T.
-
-    Equivalent to squaring the eigenvalues in a spectral decomposition.
+    Turns a real matrix into a symmetric psd one through S -> S S^T. Equivalent
+    to squaring the eigenvalues in a spectral decomposition, or to using the
+    similarities to test points as features in a linear classifier.
 
     Ignores the destroy and negatives_likely arguments (just there for
     consistency).
+
+    If ret_test_transformer, also returns a function which takes a matrix of
+    test similarities (num_test x num_train) and returns a matrix to make
+    treatment consistent.
     '''
+    if ret_test_transformer:
+        # TODO: do this like a linear operator, or using sims as features, or...
+        raise NotImplementedError("not sure how to transform test samples here")
     return np.dot(mat, mat.T)
 
 
@@ -195,7 +255,7 @@ def rbf_kernelize(divs, sigma, destroy=False):
 
 
 def make_km(divs, sigma, destroy=False, negatives_likely=True,
-            method=DEFAULT_KM_METHOD):
+            method=DEFAULT_KM_METHOD, ret_test_transformer=False):
     '''
     Passes a distance matrix through an RBF kernel of bandwidth sigma, and then
     ensures that it's PSD through `method` (see `psdizers`). Default: projects
@@ -206,8 +266,11 @@ def make_km(divs, sigma, destroy=False, negatives_likely=True,
     If negatives_likely (default), optimizes memory usage for the case where we
     expect there to be negative eigenvalues.
     '''
-    return psdizers[method](rbf_kernelize(divs, sigma, destroy=destroy),
-                            destroy=True, negatives_likely=negatives_likely)
+    return psdizers[method](
+        rbf_kernelize(divs, sigma, destroy=destroy),
+        destroy=True,
+        negatives_likely=negatives_likely,
+        ret_test_transformer=ret_test_transformer)
 
 
 def split_km(km, train_idx, test_idx):
@@ -288,6 +351,7 @@ def _not_implemented(*args, **kwargs):
 
 
 class BaseSDM(sklearn.base.BaseEstimator):
+    # TODO: support squaring or not squaring divs
     # TODO: support non-Gaussian kernels
     # TODO: support CVing between multiple div funcs, values of K
     # TODO: change API to be nicer to just give divs/km w/o faking data
@@ -309,6 +373,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
                  fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
                  symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
                  km_method=DEFAULT_KM_METHOD,
+                 transform_test=DEFAULT_TRANSFORM_TEST,
                  save_bags=True):
         self.div_func = div_func
         self.K = K
@@ -331,6 +396,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
         self.min_dist = min_dist
         self.symmetrize_divs = symmetrize_divs
         self.km_method = km_method
+        self.transform_test = transform_test
         self.save_bags = save_bags
 
     classifier = False
@@ -452,7 +518,11 @@ class BaseSDM(sklearn.base.BaseEstimator):
 
         # project the final Gram matrix
         self.status_fn('Doing final projection')
-        full_km = make_km(divs, self.sigma_, method=self.km_method)
+        fn = partial(make_km, divs, self.sigma_, method=self.km_method)
+        if self.transform_test:
+            full_km, self.test_transformer_ = fn(ret_test_transformer=True)
+        else:
+            full_km = fn()
         train_km = np.ascontiguousarray(full_km[np.ix_(train_idx, train_idx)])
 
         # train the selected SVM
@@ -474,26 +544,31 @@ class BaseSDM(sklearn.base.BaseEstimator):
             return km
 
         if divs is not None:
-            return rbf_kernelize(divs, self.sigma_, destroy=False)
+            destroy_divs = False
+        else:
+            if not self.save_bags:
+                raise ValueError("SDM that doesn't save_bags can't predict "
+                                 "without explicit divs")
 
-        if not self.save_bags:
-            raise ValueError("SDM that doesn't save_bags can't predict "
-                             "without explicit divs")
+            n_train = len(self.train_bags_)
+            n_test = len(data)
 
-        n_train = len(self.train_bags_)
-        n_test = len(data)
+            self.status_fn('Getting test bag divergences...')
 
-        self.status_fn('Getting test bag divergences...')
+            mask = np.zeros((n_train + n_test, n_train + n_test), dtype=bool)
+            mask[:n_train, -n_test:] = True
+            mask[-n_test:, :n_train] = True
 
-        mask = np.zeros((n_train + n_test, n_train + n_test), dtype=bool)
-        mask[:n_train, -n_test:] = True
-        mask[-n_test:, :n_train] = True
+            divs = np.squeeze(estimate_divs(
+                    self.train_bags_ + tuple(data), mask=mask,
+                    **self._div_args(for_cache=False)))
+            divs = (divs[-n_test:, :n_train] + divs[:n_train, -n_test].T) / 2
+            destroy_divs = True
 
-        divs = np.squeeze(estimate_divs(
-                self.train_bags_ + tuple(data), mask=mask,
-                **self._div_args(for_cache=False)))
-        divs = (divs[-n_test:, :n_train] + divs[:n_train, -n_test].T) / 2
-        return rbf_kernelize(divs, self.sigma_, destroy=True)
+        km = rbf_kernelize(divs, self.sigma_, destroy=destroy_divs)
+        if self.transform_test:
+            km = self.test_transformer_(km)
+        return km
 
     def predict(self, data, divs=None, km=None):
         km = self._prediction_km(data, divs=divs, km=km)
@@ -578,7 +653,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
             (name[:-1], getattr(self, name))
             for name in dir(self)
             if name.endswith('_') and not name.startswith('_')
-                and name not in ('svm_', 'tune_evals_')
+                and name not in ('svm_', 'test_transformer_', 'tune_evals_')
         )
 
     def _svm_params(self, tuning=False):
@@ -599,6 +674,10 @@ class BaseSDM(sklearn.base.BaseEstimator):
         return d
 
     def _tune_params(self, divs, labels, sample_weight=None):
+        # TODO: support tuning based on the same inductive technique we'll
+        #       predict with: github.com/dougalsutherland/py-sdm/issues/21
+        #       (this will probably make tuning a decent bit more expensive)
+
         # check input shapes
         num_folds = self.tuning_folds
         num_bags = divs.shape[0]
@@ -851,6 +930,7 @@ class SDC(BaseSDM):
                  fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
                  symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
                  km_method=DEFAULT_KM_METHOD,
+                 transform_test=DEFAULT_TRANSFORM_TEST,
                  save_bags=True):
         super(SDC, self).__init__(
             div_func=div_func, K=K, tuning_folds=tuning_folds, n_proc=n_proc,
@@ -861,7 +941,9 @@ class SDC(BaseSDM):
             svm_shrinking=svm_shrinking,
             status_fn=status_fn, progressbar=progressbar,
             fix_mode=fix_mode, tail=tail, min_dist=min_dist,
-            symmetrize_divs=symmetrize_divs, km_method=km_method,
+            symmetrize_divs=symmetrize_divs,
+            km_method=km_method,
+            transform_test=transform_test,
             save_bags=save_bags)
         self.C_vals = C_vals
         self.weight_classes = weight_classes
@@ -915,6 +997,7 @@ class NuSDC(BaseSDM):
                  fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
                  symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
                  km_method=DEFAULT_KM_METHOD,
+                 transform_test=DEFAULT_TRANSFORM_TEST,
                  save_bags=True):
         super(NuSDC, self).__init__(
             div_func=div_func, K=K, tuning_folds=tuning_folds, n_proc=n_proc,
@@ -925,7 +1008,9 @@ class NuSDC(BaseSDM):
             svm_shrinking=svm_shrinking,
             status_fn=status_fn, progressbar=progressbar,
             fix_mode=fix_mode, tail=tail, min_dist=min_dist,
-            symmetrize_divs=symmetrize_divs, km_method=km_method,
+            symmetrize_divs=symmetrize_divs,
+            km_method=km_method,
+            transform_test=transform_test,
             save_bags=save_bags)
         self.nu_vals = nu_vals
         self.probability = probability
@@ -977,6 +1062,7 @@ class SDR(BaseSDM):
                  fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
                  symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
                  km_method=DEFAULT_KM_METHOD,
+                 transform_test=DEFAULT_TRANSFORM_TEST,
                  save_bags=True):
         super(SDR, self).__init__(
             div_func=div_func, K=K, tuning_folds=tuning_folds, n_proc=n_proc,
@@ -987,7 +1073,9 @@ class SDR(BaseSDM):
             svm_shrinking=svm_shrinking,
             status_fn=status_fn, progressbar=progressbar,
             fix_mode=fix_mode, tail=tail, min_dist=min_dist,
-            symmetrize_divs=symmetrize_divs, km_method=km_method,
+            symmetrize_divs=symmetrize_divs,
+            km_method=km_method,
+            transform_test=transform_test,
             save_bags=save_bags)
         self.C_vals = C_vals
         self.svr_epsilon_vals = svr_epsilon_vals
@@ -1037,6 +1125,7 @@ class NuSDR(BaseSDM):
                  fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
                  symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
                  km_method=DEFAULT_KM_METHOD,
+                 transform_test=DEFAULT_TRANSFORM_TEST,
                  save_bags=True):
         super(NuSDR, self).__init__(
             div_func=div_func, K=K, tuning_folds=tuning_folds, n_proc=n_proc,
@@ -1047,7 +1136,9 @@ class NuSDR(BaseSDM):
             svm_shrinking=svm_shrinking,
             status_fn=status_fn, progressbar=progressbar,
             fix_mode=fix_mode, tail=tail, min_dist=min_dist,
-            symmetrize_divs=symmetrize_divs, km_method=km_method,
+            symmetrize_divs=symmetrize_divs,
+            km_method=km_method,
+            transform_test=transform_test,
             save_bags=save_bags)
         self.C_vals = C_vals
         self.svr_nu_vals = svr_nu_vals
@@ -1094,6 +1185,7 @@ class OneClassSDM(BaseSDM):
                  fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
                  symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
                  km_method=DEFAULT_KM_METHOD,
+                 transform_test=DEFAULT_TRANSFORM_TEST,
                  save_bags=True):
         super(OneClassSDM, self).__init__(
             div_func=div_func, K=K, tuning_folds=tuning_folds, n_proc=n_proc,
@@ -1104,7 +1196,9 @@ class OneClassSDM(BaseSDM):
             svm_shrinking=svm_shrinking,
             status_fn=status_fn, progressbar=progressbar,
             fix_mode=fix_mode, tail=tail, min_dist=min_dist,
-            symmetrize_divs=symmetrize_divs, km_method=km_method,
+            symmetrize_divs=symmetrize_divs,
+            km_method=km_method,
+            transform_test=transform_test,
             save_bags=save_bags)
         self.nu_vals = np.array([nu])
 
@@ -1177,6 +1271,13 @@ def parse_args():
         m.add_argument('--induct',
             action='store_const', dest='mode', const='induct',
             help="Operate inductively (only project training Gram matrix).")
+
+        algo._add_action(ActionNoYes('transform-test',
+            default=DEFAULT_TRANSFORM_TEST,
+            help="When operating inductively, transform the test similarities "
+                 "to treat them consistently with our transformations on the "
+                 "training data" +
+                 (" (the default)." if DEFAULT_TRANSFORM_TEST else ".")))
 
         m = algo.add_mutually_exclusive_group()
         m.set_defaults(km_method=DEFAULT_KM_METHOD)
@@ -1425,6 +1526,7 @@ def opts_dict(args):
         'min_dist': args.min_dist,
         'symmetrize_divs': args.symmetrize_divs,
         'km_method': args.km_method,
+        'transform_test': args.transform_test,
     }
     # TODO: switch to subparsers based on svm type to only accept the right args
     if args.svm_mode == 'SVC':
