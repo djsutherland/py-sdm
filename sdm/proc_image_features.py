@@ -6,86 +6,122 @@ import os
 import sys
 
 import numpy as np
+from sklearn.base import BaseEstimator, TransformerMixin
 
-from .utils import (izip, positive_int, portion, nonnegative_float, strict_map,
+from .features import Features, DEFAULT_VARFRAC
+from .utils import (izip, positive_int, portion, nonnegative_float,
                     confirm_outfile)
-from .image_features import (Features, features_attrs, save_features,
-                             read_features, read_features_perimage)
-
-# NOTE: all the references to "features" in this file mean a variable that is
-#       like Features.features; "features_tup" means an instance of Features
 
 _do_nothing = lambda *a, **k: None
 
-BLANK_HANDLERS = frozenset(['fill', 'drop', 'zero'])
+
+################################################################################
+### Handling blank descriptors
+
 DEFAULT_BLANK_HANDLER = 'fill'
 DEFAULT_BLANK_THRESH = 1000
+
+class FillBlanks(BaseEstimator, TransformerMixin):
+    '''
+    Fills in any almost-blank SIFT descriptors with a random one.
+
+    copy: if False, change the input in-place. By default, operates on a copy.
+
+    blank_thresh: the threshold for considering a descriptor to be blank.
+        Any descriptors whose sum is less than this threshold are replaced.
+    '''
+
+    def __init__(self, copy=True, blank_thresh=DEFAULT_BLANK_THRESH):
+        self.copy = copy
+        self.blank_thresh = blank_thresh
+
+    def fit(self, X, y=None):
+        "Does nothing, since this transform doesn't require fitting."
+        pass
+
+    def transform(self, X, y=None, copy=None):
+        copy = copy if copy is not None else self.copy
+        n_f, dim = X.shape
+        if copy:
+            X = X.copy()
+
+        mag = 3 * (2 * self.blank_thresh / dim)
+
+        blank_idx = np.sum(X, axis=1) < self.blank_thresh
+        X[blank_idx, :] = mag * np.random.rand(blank_idx.sum(), dim)
+        return X
+
+
+class ZeroBlanks(BaseEstimator, TransformerMixin):
+    '''
+    Zeroes out any almost-blank SIFT descriptors.
+
+    copy: if False, change the input in-place. By default, operates on a copy.
+
+    blank_thresh: the threshold for considering a descriptor to be blank.
+        Any descriptors whose sum is less than this threshold are replaced.
+    '''
+
+    def __init__(self, copy=True, blank_thresh=DEFAULT_BLANK_THRESH):
+        self.copy = copy
+        self.blank_thresh = blank_thresh
+
+    def fit(self, X, y=None):
+        "Does nothing, since this transform doesn't require fitting."
+        pass
+
+    def transform(self, X, y=None, copy=None):
+        copy = copy if copy is not None else self.copy
+        n_f, dim = X.shape
+        if copy:
+            X = X.copy()
+        X[np.sum(X, axis=1) < self.blank_thresh, :] = 0
+        return X
+
+
+BLANK_HANDLERS = {
+    'fill': FillBlanks,
+    'zero': ZeroBlanks,
+    'drop': None,
+}
+
 def handle_blanks(features, blank_thresh=DEFAULT_BLANK_THRESH,
-                            blank_handler=DEFAULT_BLANK_HANDLER):
-    '''Handles any descriptors that are blank, or nearly blank.'''
-    if blank_handler not in BLANK_HANDLERS:
+                            blank_handler=DEFAULT_BLANK_HANDLER,
+                            inplace=False):
+    '''Handles any SIFT descriptors that are blank, or nearly blank.'''
+
+    if blank_handler == 'drop':
+        # TODO handle this more efficiently
+        feats = [
+            f[np.sum(f, axis=1) >= blank_thresh, :] for f in features.features
+        ]
+
+        args = dict((k, features.data[k]) for k in f._extra_names)
+        args['categories'] = features.categories
+        args['names'] = features.names
+
+        if inplace:
+            features.__init__(feats, **args)
+            return
+        else:
+            return Features(feats, **args)
+
+    elif blank_handler not in BLANK_HANDLERS:
         msg = "unknown blank handler {!r}, expected one of {}".format(
             blank_handler, ", ".join(map(repr, BLANK_HANDLERS)))
         raise ValueError(msg)
 
-    feats = []
-    for feat in features:
-        n_f, dim = feat.shape
-        blank_idx = np.sum(feat, axis=1) < blank_thresh
+    handler = BLANK_HANDLERS[blank_handler](blank_thresh=blank_thresh)
+    r = features._apply_transform(handler, fit_first=True, inplace=inplace)
 
-        if blank_handler == 'fill':
-            mag = 3 * (2 * blank_thresh / dim)
-            feat = feat.copy()
-            feat[blank_idx, :] = mag * np.random.rand(blank_idx.sum(), dim)
-        elif blank_handler == 'drop':
-            feat = feat[np.logical_not(blank_idx), :]
-        elif blank_handler == 'zero':
-            feat = feat.copy()
-            feat[blank_idx, :] = 0
-
-        feats.append(feat)
-    return feats
+    if not inplace:
+        return r
 
 
-DEFAULT_VARFRAC = 0.7
-def pca_features(features, pca=None, k=None, varfrac=DEFAULT_VARFRAC,
-                 randomize=False, dtype=None, ret_pca=False):
-    '''
-    PCAs a set of features.
+################################################################################
+### Add spatial information
 
-    feats: a sequence of row-major feature matrices.
-
-    You can either pass a "pca" argument with .fit() and .transform() methods,
-    or some of the following to use one of scikit-learn's options:
-
-        k: a dimensionality to reduce to. Default: use varfrac instead.
-
-        varfrac: the fraction of variance to preserve. Overridden by k.
-            Default: 0.7. Can't be used for randomized or sparse PCA.
-
-        randomize: use a randomized PCA implementation. Default: no.
-
-        dtype: the dtype of the feature matrix to use.
-
-    ret_pca: return the PCA object along with transformed inputs. Default: no.
-    '''
-    # figure out what PCA instance we should use
-    if pca is None:
-        from sklearn.decomposition import PCA, RandomizedPCA
-        if k is None:
-            if randomize:
-                raise ValueError("can't randomize without a specific k")
-            pca = PCA(varfrac, copy=False)
-        else:
-            pca = (RandomizedPCA if randomize else PCA)(k, copy=False)
-    # copy=False is okay, because the arg to fit() is just the stacked copy
-
-    pca.fit(np.vstack(features))
-    transformed = strict_map(pca.transform, features)
-    return (transformed, pca) if ret_pca else transformed
-
-
-def add_spatial_info(features, frames, add_x=True, add_y=True):
+def add_spatial_info(features, add_x=True, add_y=True, inplace=False):
     if not add_x and not add_y:
         return features
 
@@ -95,63 +131,77 @@ def add_spatial_info(features, frames, add_x=True, add_y=True):
     if add_y:
         indices.append(1)
 
-    ret = []
+    all_spatial = []
     for feat, frame in izip(features, frames):
         spatial = frame[:, indices].astype(feat.dtype)
         spatial /= spatial.max(axis=0)
-        ret.append(np.hstack((feat, spatial)))
-    return ret
+        all_spatial.append(spatial)
+
+    new_feats = np.hstack((features._features, np.vstack(all_spatial)))
+    if inplace:
+        features._features = new_feats
+        features._refresh_features()
+    else:
+        return Features(
+            new_feats, n_pts=features._n_pts,
+            categories=features.categories, names=features.names,
+            **dict((k, features.data[k]) for k in features._extra_names))
 
 
-def normalize(features, scaler=None, ret_scaler=False):
-    from sklearn.preprocessing import StandardScaler
-    if scaler is None:
-        # TODO: get mean and variance without explicitly stacking...
-        scaler = StandardScaler(copy=False)
-        scaler.fit(np.vstack(features))
-    transformed = strict_map(scaler.transform, features)
-    return (transformed, scaler) if ret_scaler else transformed
+################################################################################
+### Wrapper for general processing
 
-
-def process_features(features_tup, verbose=False,
+def process_image_features(features, verbose=False, inplace=False,
         blank_thresh=DEFAULT_BLANK_THRESH, blank_handler=DEFAULT_BLANK_HANDLER,
-        do_pca=True, pca_k=None, pca_varfrac=DEFAULT_VARFRAC, pca_random=False,
-        pca=None,
+        do_pca=True, pca=None,
+            pca_k=None, pca_varfrac=DEFAULT_VARFRAC, pca_random=False,
+            pca_whiten=False,
         add_x=True, add_y=True,
         normalize_feats=True, scaler=None,
         ret_pca=False, ret_scaler=False):
+    # TODO: use sklearn.Pipeline instead?
     pr = partial(print, file=sys.stderr) if verbose else _do_nothing
-
-    features = features_tup.features
 
     if blank_handler not in (None, "none"):
         pr("Handling blanks...")
-        features = handle_blanks(features,
-            blank_thresh=blank_thresh, blank_handler=blank_handler)
+        ret = handle_blanks(features, blank_thresh=blank_thresh,
+                            blank_handler=blank_handler, inplace=inplace)
+        if not inplace:
+            features = ret
 
     if do_pca:
         pr("Running PCA...")
         old_dim = features[0].shape[1]
-        features, pca = pca_features(features, ret_pca=True,
-            k=pca_k, varfrac=pca_varfrac, randomize=pca_random, pca=pca)
+
+        ret = features.pca(
+            pca=pca, ret_pca=True, k=pca_k, varfrac=pca_varfrac,
+            randomize=pca_random, whiten=pca_whiten, inplace=inplace)
+        if inplace:
+            pca = ret
+        else:
+            features, pca = ret
+
         new_dim = features[0].shape[1]
         pr("Reduced dimensionality from {} to {}.".format(old_dim, new_dim))
 
     if add_x or add_y:
         pr("Adding spatial info...")
-        features = add_spatial_info(features, features_tup.frames, add_x, add_y)
+        ret = add_spatial_info(features, add_x, add_y, inplace=inplace)
+        if not inplace:
+            features = ret
 
     if normalize_feats:
         pr("Normalizing features...")
-        features, scaler = normalize(features, scaler=scaler, ret_scaler=True)
-
-    feats = Features(features=features,
-        **dict((k, getattr(features_tup, k))
-               for k in features_attrs if k != 'features'))
+        ret = features.standardize(scaler=scaler, ret_scaler=True,
+                                   inplace=inplace)
+        if inplace:
+            scaler = ret
+        else:
+            features, scaler = ret
 
     if not ret_pca and not ret_scaler:
-        return feats
-    ret = [feats]
+        return features
+    ret = [features]
     if ret_pca:
         ret.append(pca)
     if ret_scaler:

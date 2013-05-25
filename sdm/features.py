@@ -11,6 +11,9 @@ from .utils import izip, iterkeys, iteritems, is_integer_type
 _default_category = 'none'
 _do_nothing_sentinel = object()
 
+DEFAULT_VARFRAC = 0.7
+
+
 class Features(object):
     '''
     A wrapper class for storing bags of features. (A *bag* is a set of feature
@@ -157,8 +160,7 @@ class Features(object):
         dtype = self._get_dtype(categories, names, the_extras)
         self.data = data = np.empty(n_bags, dtype=dtype)
 
-        data['features'] = [bags[start:end] for start, end
-                            in izip(self._start_pts, self._end_pts)]
+        self._refresh_features()
         data['category'] = categories
         data['name'] = names
         for name, vals in iteritems(the_extras):
@@ -201,11 +203,14 @@ class Features(object):
         else:
             self.data = data
 
-        self.data['features'] = [
-            base[start:end]
-            for start, end in izip(self._start_pts, self._end_pts)
-        ]
+        self._refresh_features()
         return self
+
+    def _refresh_features(self):
+        fs = self._features
+        self.data['features'] = [
+            fs[start:end] for start, end in izip(self._start_pts, self._end_pts)
+        ]
 
     # TODO: add __copy__, __deepcopy__, __getstate__, __setstate__
 
@@ -271,6 +276,118 @@ class Features(object):
             return np.float, np.nan
         else:  # other types: no default, so switch to object type and use None
             return object, None
+
+    ############################################################################
+    ### Transforming the features
+
+    def _apply_transform(self, transformer, fit_first, inplace=False):
+        '''
+        Transforms the features using an sklearn-style transformer object that
+        should be fit to the full, stacked feature matrix. Assumes that the
+        transformer supports the "copy" attribute, and that it does not change
+        the number or order of points (though it may change their
+        dimensionality).
+
+        transformer: the transformer object
+        fit_first: whether to fit the transformer to the objects first
+
+        By default, returns a new Features instance.
+        If inplace is passed, modifies this instance; doesn't return anything.
+        '''
+        transformer.copy = not inplace
+        if fit_first:
+            transformed = transformer.fit_transform(self._features)
+        else:
+            transformed = transformer.transform(self._features)
+
+        if inplace:
+            self._features = transformed
+            self._refresh_features()
+        else:
+            return self.__class__(
+                transformed, n_pts=self._n_pts,
+                categories=self.categories, names=self.names,
+                **dict((k, self.data[k]) for k in self._extra_names))
+
+    def pca(self, pca=None, unfit_pca=None,
+            k=None, varfrac=DEFAULT_VARFRAC, randomize=False, whiten=False,
+            dtype=None,
+            ret_pca=False, inplace=False):
+        '''
+        Runs the features through principal components analysis to reduce their
+        dimensionality.
+
+        By default, returns a new Features instance.
+        If inplace is passed, modifies this instance; doesn't return anything.
+        If ret_pca is passed: returns the PCA object as well as whatever else
+                              it would have returned.
+
+        If `pca` is passed, uses that pre-fit PCA object to transform. This is
+        useful for transforming test objects consistently with training objects.
+
+        Otherwise, if `unfit_pca` is passed, that object's fit_transform()
+        method is called to fit the samples and transform them.
+
+        Otherwise, the following options specify which type of PCA to perform:
+            k: a dimensionality to reduce to. Default: use varfrac instead.
+
+            varfrac: the fraction of variance to preserve. Overridden by k.
+                Default: 0.7. Can't be used for randomized or sparse PCA.
+
+            randomize: use a randomized PCA implementation. Default: no.
+
+            whiten: whether to whiten the inputs, removing linear correlations
+                    across features
+
+            dtype: the dtype of the feature matrix to use.
+        '''
+        # figure out what PCA instance we should use
+        if pca is not None:
+            fit_first = False
+        elif unfit_pca is not None:
+            pca = unfit_pca
+            fit_first = True
+        else:
+            from sklearn.decomposition import PCA, RandomizedPCA
+            fit_first = True
+
+            if k is None:
+                if randomize:
+                    raise ValueError("can't randomize without a specific k")
+                pca = PCA(varfrac, whiten=whiten)
+            else:
+                pca = (RandomizedPCA if randomize else PCA)(k, whiten=whiten)
+
+        r = self._apply_transform(pca, fit_first=fit_first, inplace=inplace)
+        if ret_pca:
+            return pca if inplace else (r, pca)
+        else:
+            return None if inplace else r
+
+    def standardize(self, scaler=None, ret_scaler=False, inplace=False):
+        '''
+        Normalizes the features so that each dimension has zero mean and unit
+        variance.
+
+        By default, returns a new Features instance.
+        If inplace is passed, modifies this instance; doesn't return anything.
+        If ret_scaler is passed: returns the scaler object as well as whatever
+                                 else it would have returned.
+
+        If `scaler` is passed, uses that pre-fit scaler to transform. This is
+        useful for transforming test objects consistently with training objects.
+        '''
+        fit_first = False
+        if scaler is None:
+            from sklearn.preprocessing import StandardScaler
+            scaler = StandardScaler()
+            fit_first = True
+
+        r = self._apply_transform(scaler, fit_first=fit_first, inplace=inplace)
+        if ret_scaler:
+            return scaler if inplace else (r, scaler)
+        else:
+            return None if inplace else r
 
     ############################################################################
     ### Stuff relating to hdf5 feature files
