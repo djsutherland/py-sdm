@@ -9,6 +9,7 @@ import numpy as np
 from .utils import izip, iterkeys, iteritems, is_integer_type
 
 _default_category = 'none'
+_do_nothing_sentinel = object()
 
 class Features(object):
     '''
@@ -41,9 +42,14 @@ class Features(object):
         - any other keyword argument: interpreted as a label metadata for each
             object. Should be a list of scalars or strings, one per object.
 
-    The `data` attribute is a numpy structured array containing
+    The `data` attribute is a numpy structured array. Each element corresponds
+    to a bag. The datatype elements are 'features' (a reference to a bag of
+    features), 'category' (a string), 'name' (a string), as well as any extras.
     '''
     def __init__(self, bags, n_pts=None, categories=None, names=None, **extras):
+        if bags is _do_nothing_sentinel:
+            return  # special path for from_data
+
         # load the features
         if n_pts is not None:
             n_pts = np.squeeze(n_pts)
@@ -141,14 +147,14 @@ class Features(object):
                 raise ValueError("have {} bags but {} values for {}".format(
                     n_bags, len(vals), name))
             the_extras[name] = np.asarray(vals)
-        self._extra_names = set(the_extras)
+        self._extra_names = frozenset(the_extras)
 
         # do the vstacking, if necessary
         if still_stack:
             self._features = bags = np.vstack(new_bags)
 
         # make the structured array containing everything
-        self.dtype = dtype = self._get_dtype(categories, names, the_extras)
+        dtype = self._get_dtype(categories, names, the_extras)
         self.data = data = np.empty(n_bags, dtype=dtype)
 
         data['features'] = [bags[start:end] for start, end
@@ -157,6 +163,51 @@ class Features(object):
         data['name'] = names
         for name, vals in iteritems(the_extras):
             data[name] = vals
+
+    @classmethod
+    def from_data(cls, data, copy=False, deep=False):
+        '''
+        Constructs a Features instance from its .data attribute.
+
+        Copies the data if copy=True is passed. Note that this will copy the
+        features, but not any extras which are object references. Use deep=True
+        in that case.
+        '''
+        feats = data['features']
+        self = cls(_do_nothing_sentinel)
+
+        self._n_pts = np.array([f.shape[0] for f in feats])
+        self._end_pts = np.cumsum(self._n_pts)
+        self._start_pts = np.hstack(([0], self._end_pts[:-1]))
+
+        reg_names = frozenset(['category', 'features', 'name'])
+        self._extra_names = frozenset(data.dtype.names) - reg_names
+
+        base = feats[0].base
+        if any(f.base is not base for f in feats):
+            base = np.vstack(feats)
+        elif copy:
+            base = base.copy()
+        self._features = base
+
+        if copy:
+            if deep:
+                from copy import deepcopy
+
+            self.data = d = np.empty_like(data)
+            for n in d.dtype.names:
+                if n != 'features':
+                    d[n] = deepcopy(data[n]) if deep else data[n]
+        else:
+            self.data = data
+
+        self.data['features'] = [
+            base[start:end]
+            for start, end in izip(self._start_pts, self._end_pts)
+        ]
+        return self
+
+    # TODO: add __copy__, __deepcopy__, __getstate__, __setstate__
 
     def _get_dtype(self, categories, names, extras):
         dt = [
