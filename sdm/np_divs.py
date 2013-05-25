@@ -38,104 +38,6 @@ from .utils import (eps, col, get_col, izip, lazy_range, is_integer, raw_input,
                     iteritems, itervalues, get_status_fn)
 from .mp_utils import ForkedData, map_unordered_with_progressbar, get_pool
 
-################################################################################
-### Helpers for robust mean estimation
-# XXX: old code used _clip, but _trim seems better
-# TODO: figure out the "right" way to do this
-
-TAIL_DEFAULT = 0.01
-FIX_MODE_DEFAULT = 'trim'
-
-def fix_terms_trim(terms, tail=TAIL_DEFAULT):
-    '''
-    Trims the elements of an array, to use in a more robust mean estimate, by:
-        - removing any nan elements
-        - removing elements below the tail-th and above the (1-tail)th quantiles
-        - removing any remaining inf elements
-    '''
-    terms = terms[np.logical_not(np.isnan(terms))]
-    n = terms.size
-
-    if n >= 3:
-        terms = np.sort(terms)  # TODO: could do this with partial sorting
-        ends = int(round(n * tail))
-        terms = terms[ends:n-ends]
-
-    return terms[np.isfinite(terms)]
-
-def quantile(a, prob):
-    '''
-    Estimates the prob'th quantile of the values in a data array.
-
-    Uses the algorithm of matlab's quantile(), namely:
-        - Remove any nan values
-        - Take the sorted data as the (.5/n), (1.5/n), ..., (1-.5/n) quantiles.
-        - Use linear interpolation for values between (.5/n) and (1 - .5/n).
-        - Use the minimum or maximum for quantiles outside that range.
-
-    See also: scipy.stats.mstats.mquantiles
-    '''
-    a = np.asanyarray(a)
-    a = a[np.logical_not(np.isnan(a))].ravel()
-    n = a.size
-
-    if prob >= 1 - .5/n:
-        return a.max()
-    elif prob <= .5 / n:
-        return a.min()
-
-    # find the two bounds we're interpreting between:
-    # that is, find i such that (i+.5) / n <= prob <= (i+1.5)/n
-    t = n * prob - .5
-    i = int(np.floor(t))
-
-    # partial sort so that the ith element is at position i, with bigger ones
-    # to the right and smaller to the left
-    a = bn.partsort(a, i)
-
-    if i == t:  # did we luck out and get an integer index?
-        return a[i]
-    else:
-        # we'll linearly interpolate between this and the next index
-        smaller = a[i]
-        larger = a[i+1:].min()
-        if np.isinf(smaller):
-            return smaller  # avoid inf - inf
-        else:
-            return smaller + (larger - smaller) * (t - i)
-
-
-def fix_terms_clip(terms, tail=TAIL_DEFAULT):
-    '''
-    Takes a vector of elements and replaces any infinite or very-large elements
-    with the value of the highest non-very-large element, as well as throwing
-    away any nan values, possibly changing the order.
-
-    Used for estimating the mean of positive quantities.
-
-    "Very-large" is defined as the (1-tail)th quantile if tail > 0, otherwise
-    the largest non-inf element. Note that values of -inf are not altered.
-
-    Uses the matlab-style quantile() function, above, because that's what the
-    code this is trying to replicate did.
-    '''
-    terms = terms[np.logical_not(np.isnan(terms))]
-
-    find_noninf_max = True
-    if 0 < tail < 1:
-        cutoff = quantile(terms, 1 - tail)
-        find_noninf_max = not np.isfinite(cutoff)
-
-    if find_noninf_max:
-        cutoff = np.max(terms[np.isfinite(terms)])
-
-    terms[terms > cutoff] = cutoff
-    return terms
-
-FIX_TERM_MODES = {'trim': fix_terms_trim, 'clip': fix_terms_clip}
-def fix_terms(terms, tail=TAIL_DEFAULT, mode=FIX_MODE_DEFAULT):
-    return FIX_TERM_MODES[mode](terms, tail=tail)
-
 
 ################################################################################
 ### Nearest neighbor searches.
@@ -218,15 +120,12 @@ def knn_search_forked(bags, indices, i, j, K, **kwargs):
 ################################################################################
 ### Estimators of various divergences based on nearest-neighbor distances.
 
-def l2(xx, xy, yy, yx, Ks, dim, tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT,
-       **opts):
+def l2(xx, xy, yy, yx, Ks, dim, **opts):
     '''
     Estimate the L2 distance between two distributions, based on kNN distances.
 
     Returns a vector: one element for each K.
     '''
-    fix = functools.partial(fix_terms, tail=tail, mode=fix_mode)
-
     if xy is None:  # identical bags
         return np.zeros(len(Ks))
 
@@ -244,21 +143,14 @@ def l2(xx, xy, yy, yx, Ks, dim, tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT,
         e_qp = (K-1) / (  N * c) / ( nu_y ** dim)  # \int qp (q is proposal)
         e_q2 = (K-1) / ((M-1)*c) / (rho_y ** dim)  # \int q^2
 
-        if N == M:  # TODO: this should probably go away?
-            total = fix(e_p2 - e_pq - e_qp + e_q2).mean()
-        else:
-            total = (fix(e_p2).mean()
-                   - fix(e_pq).mean()
-                   - fix(e_qp).mean()
-                   + fix(e_q2).mean())
+        total = e_p2.mean() - e_pq.mean() - e_qp.mean() + e_q2.mean()
         rs[knd] = np.sqrt(max(0, total))
     return rs
 l2.is_symmetric = True
 l2.name = 'NP-L2'
 
 
-def kl(xx, xy, yy, yx, Ks, dim,
-       tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT, **opts):
+def kl(xx, xy, yy, yx, Ks, dim, **opts):
     r'''
     Estimate the KL divergence between distributions:
         \int p(x) \log (p(x) / q(x))
@@ -274,22 +166,18 @@ def kl(xx, xy, yy, yx, Ks, dim,
     if xy is None:  # identical bags
         return np.zeros(len(Ks))
 
-    fix = functools.partial(fix_terms, tail=tail, mode=fix_mode)
-
     N = xx.shape[0]
     M = yy.shape[0]
     rs = np.empty(len(Ks))
     for knd, K in enumerate(Ks):
         rho, nu = get_col(xx, K - 1), get_col(xy, K - 1)
-        ratios = fix(rho / nu)
-        rs[knd] = dim * np.mean(np.log(ratios))
+        rs[knd] = dim * np.mean(np.log(rho) - np.log(nu))
     return rs + np.log(M / (N - 1))
 kl.is_symmetric = False
 kl.name = 'NP-KL'
 
 
-def alpha_div(xx, xy, yy, yx, alphas, Ks, dim,
-              tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT, **opts):
+def alpha_div(xx, xy, yy, yx, alphas, Ks, dim, **opts):
     r'''
     Estimate the alpha divergence between distributions, based on kNN distances:
         \int p^\alpha q^(1-\alpha)
@@ -301,7 +189,6 @@ def alpha_div(xx, xy, yy, yx, alphas, Ks, dim,
         return np.ones((len(alphas), len(Ks)))
 
     alphas = np.asarray(alphas)
-    fix = functools.partial(fix_terms, tail=tail, mode=fix_mode)
 
     N = xx.shape[0]
     M = yy.shape[0]
@@ -310,7 +197,7 @@ def alpha_div(xx, xy, yy, yx, alphas, Ks, dim,
     rs = np.empty((len(alphas), len(Ks)))
     for knd, K in enumerate(Ks):
         rho, nu = get_col(xx, K - 1), get_col(xy, K - 1)
-        ratios = fix(rho / nu)
+        ratios = rho / nu
 
         for ind, alpha in enumerate(alphas):
             oalph = 1 - alpha
@@ -354,15 +241,13 @@ renyi.is_symmetric = False
 renyi.name = 'NP-R'
 
 
-def hellinger(xx, xy, yy, yx, Ks, dim,
-              tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT, **opts):
+def hellinger(xx, xy, yy, yx, Ks, dim, **opts):
     r'''
     Estimate the Hellinger distance between distributions, based on kNN
     distances:  \sqrt{1 - \int \sqrt{p q}}
     Returns a vector: one element for each K.
     '''
-    est = np.squeeze(alpha_div(xx, xy, yy, yx, alphas=[0.5], Ks=Ks, dim=dim,
-                               tail=tail, fix_mode=fix_mode))
+    est = np.squeeze(alpha_div(xx, xy, yy, yx, alphas=[0.5], Ks=Ks, dim=dim))
     return np.sqrt(np.maximum(0, 1 - est))
 hellinger.is_symmetric = False  # the metric is symmetric, but estimator is not
 hellinger.name = 'NP-H'
@@ -380,8 +265,7 @@ func_mapping = {
 ################################################################################
 ### Jensen-Renyi divergences
 
-def renyi_entropy_knns(knns, dim, alphas, Ks,
-                       tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT):
+def renyi_entropy_knns(knns, dim, alphas, Ks):
     '''
     Estimates Renyi entropy using a special case of our estimator above
     (with alpha=alpha-1, beta=0).
@@ -390,7 +274,6 @@ def renyi_entropy_knns(knns, dim, alphas, Ks,
     dim: the dimensionality of the underlying data
     alphas: a sequence of alpha values to use
     Ks: a sequence of K values to use
-    tail, fix_mode: used for get_divs.fix_terms
 
     Returns a matrix of entropy estimates: rows correspond to alphas, columns
     to Ks.
@@ -422,14 +305,12 @@ def renyi_entropy_knns(knns, dim, alphas, Ks,
     for K_i, K in enumerate(Ks.flat):
         rho_k = knns[:, K-1]
         for alph_i, alpha in enumerate(alphas):
-            terms = rho_k ** (dim * (1 - alpha))
-            ms[alph_i, K_i] = fix_terms(terms, tail=tail, mode=fix_mode).mean()
+            ms[alph_i, K_i] = np.mean(rho_k ** (dim * (1 - alpha)))
 
     return np.log(Bs * ms) / (1 - alphas)
 
 
-def renyi_entropy(samps, alphas, Ks,
-                  tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT, **kwargs):
+def renyi_entropy(samps, alphas, Ks, **kwargs):
     '''
     Estimates Renyi entropy using a special case of our estimator above
     (with alpha=alpha-1, beta=0).
@@ -437,20 +318,17 @@ def renyi_entropy(samps, alphas, Ks,
     samps: an (n_samps x dimensionality) matrix of samples
     alphas: a sequence of alpha values to use
     Ks: a sequence of K values to use
-    tail, fix_mode: used for fix_terms
     other kwargs: passed along to knn_search
 
     Returns a matrix of entropy estimates: one row per alpha, col per K
     '''
     # throw away the smallest one, which is dist to self
     knns, _ = knn_search(samps, samps, K=np.max(Ks) + 1, **kwargs)
-    return renyi_entropy_knns(knns=knns[:, 1:], dim=samps.shape[1], Ks=Ks,
-                              alphas=alphas, tail=tail, fix_mode=fix_mode)
+    return renyi_entropy_knns(knns=knns[:, 1:], dim=samps.shape[1],
+                              Ks=Ks, alphas=alphas)
 
 
-def jensen_renyi(xx, xy, yy, yx, alphas, Ks, dim,
-                 tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT,
-                 clamp=True, **opts):
+def jensen_renyi(xx, xy, yy, yx, alphas, Ks, dim, clamp=True, **opts):
     r'''
     Estimate the Jensen-Renyi divergence between distributions,
         R_\alpha((p + q)/2) - 1/2 R_\alpha(p) - 1/2 R_\alpha(q)
@@ -468,8 +346,7 @@ def jensen_renyi(xx, xy, yy, yx, alphas, Ks, dim,
     M = yy.shape[0]
     alphas = np.asarray(alphas)
     entropy = functools.partial(renyi_entropy_knns,
-                                dim=dim, alphas=alphas, Ks=Ks,
-                                tail=tail, fix_mode=fix_mode)
+                                dim=dim, alphas=alphas, Ks=Ks)
 
     # assuming N == M here
     #
@@ -611,8 +488,6 @@ def estimate_divs(bags,
                   specs=['renyi:.9'],
                   Ks=[3],
                   n_proc=None,
-                  tail=TAIL_DEFAULT,
-                  fix_mode=FIX_MODE_DEFAULT,
                   min_dist=None,
                   status_fn=True, progressbar=None,
                   return_opts=False,
@@ -624,8 +499,6 @@ def estimate_divs(bags,
         specs: a list of strings of divergence specs
         Ks: a K values
         n_proc: number of processes to use; None for # of cores
-        tail: an argument for fix_terms (above)
-        fix_mode: mode arg for fix_terms, above
         min_dist: a minimum distance to use in kNN searches
         status_fn: a function to print out status messages
             None means don't print any; True prints to stderr
@@ -644,8 +517,6 @@ def estimate_divs(bags,
 
     opts = {}
     opts['Ks'] = np.sort(np.ravel(Ks))
-    opts['tail'] = tail
-    opts['fix_mode'] = fix_mode
     opts['min_dist'] = min_dist
     funcs, opts['div_names'], opts['alphas'] = \
             process_func_specs(specs, opts['Ks'])
@@ -762,13 +633,6 @@ def parse_args():
         default=[1, 3, 5, 10],
         help="The numbers of nearest neighbors to calculate.")
 
-    parser.add_argument('--trim-tails', type=portion, default=TAIL_DEFAULT,
-        help="How much to trim off the ends of things we take the mean of; "
-             "default %(default)s.", metavar='PORTION')
-    parser.add_argument('--trim-mode',
-        choices=FIX_TERM_MODES, default=FIX_MODE_DEFAULT,
-        help="Whether to trim or clip ends; default %(default)s.")
-
     parser.add_argument('--min-dist', type=float, default=None,
         help="Protect against identical points by making sure kNN distances "
              "are always at least this big. Default: the smaller of .01 and "
@@ -827,7 +691,6 @@ def main():
     R, opts = estimate_divs(
             bags, specs=args.div_funcs, Ks=args.K,
             n_proc=args.n_proc,
-            tail=args.trim_tails, fix_mode=args.trim_mode,
             min_dist=args.min_dist,
             return_opts=True,
             **args.flann_args)
@@ -940,7 +803,7 @@ def reconcile_file_order(f, names=None, cats=None, write=False):
 
 
 # TODO: track flann algorithms used here? or just whether they're exact?
-def check_h5_settings(f, n, dim, fix_mode, tail, min_dist=None,
+def check_h5_settings(f, n, dim, min_dist=None,
                       names=None, cats=None, write=False):
     """
     Checks that the hdf5 div cache file has settings that agree with the
@@ -961,8 +824,6 @@ def check_h5_settings(f, n, dim, fix_mode, tail, min_dist=None,
             pass
 
     check('dim', dim)
-    check('fix_mode', fix_mode)
-    check('tail', tail)
     check('min_dist', default_min_dist(dim) if min_dist is None else min_dist)
 
     for x in ['names', 'cats']:
@@ -972,7 +833,7 @@ def check_h5_settings(f, n, dim, fix_mode, tail, min_dist=None,
         reconcile_file_order(f, names=names, cats=cats, write=write)
 
 
-def add_to_h5_cache(f, div_dict, dim, fix_mode, tail, min_dist,
+def add_to_h5_cache(f, div_dict, dim, min_dist,
                     names=None, cats=None):
     """
     Add some divergences to an hdf5 file of divergences.
@@ -987,7 +848,7 @@ def add_to_h5_cache(f, div_dict, dim, fix_mode, tail, min_dist,
     assert all(div.shape == (n, n) for div in itervalues(div_dict))
 
     check_h5_settings(f, n=n,
-                      dim=dim, fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+                      dim=dim, min_dist=min_dist,
                       names=names, cats=cats, write=True)
 
     for (div_func, K), divs in iteritems(div_dict):
@@ -1004,8 +865,7 @@ def add_to_h5_file(filename, opts):
             div_dict[name, K] = divs
 
         add_to_h5_cache(f, div_dict,
-                        dim=opts['dim'], fix_mode=opts['fix_mode'],
-                        tail=opts['tail'], min_dist=opts['min_dist'],
+                        dim=opts['dim'], min_dist=opts['min_dist'],
                         names=opts.get('names', None),
                         cats=opts.get('cats', None))
 
@@ -1020,7 +880,6 @@ def check_h5_file_agreement(filename, bags, args, names=None, cats=None,
 
         check_h5_settings(f, n=len(bags),
                           dim=bags[0].shape[1], min_dist=args.min_dist,
-                          fix_mode=args.trim_mode, tail=args.trim_tails,
                           names=names, cats=cats,
                           write=False)
 
