@@ -42,8 +42,9 @@ class Features(object):
         - names (optional): a name for each object. Should be unique per
             category but may have repeats across categories. Should not contain
             the '/' character. If not present, defaults to sequential integers.
-        - any other keyword argument: interpreted as a label metadata for each
-            object. Should be a list of scalars or strings, one per object.
+        - any other keyword argument: interpreted as metadata for each
+            object. Lists of scalars are converted to numpy arrays; anything
+            else is treated as a numpy object array.
 
     The `data` attribute is a numpy structured array. Each element corresponds
     to a bag. The datatype elements are 'features' (a reference to a bag of

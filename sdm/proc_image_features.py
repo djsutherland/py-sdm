@@ -72,7 +72,6 @@ class ZeroBlanks(BaseEstimator, TransformerMixin):
 
     def transform(self, X, y=None, copy=None):
         copy = copy if copy is not None else self.copy
-        n_f, dim = X.shape
         if copy:
             X = X.copy()
         X[np.sum(X, axis=1) < self.blank_thresh, :] = 0
@@ -90,6 +89,11 @@ def handle_blanks(features, blank_thresh=DEFAULT_BLANK_THRESH,
                             inplace=False):
     '''Handles any SIFT descriptors that are blank, or nearly blank.'''
 
+    if blank_handler not in BLANK_HANDLERS:
+        msg = "unknown blank handler {!r}, expected one of {}".format(
+            blank_handler, ", ".join(map(repr, BLANK_HANDLERS)))
+        raise ValueError(msg)
+
     if blank_handler == 'drop':
         # TODO handle this more efficiently
         feats = [
@@ -105,11 +109,6 @@ def handle_blanks(features, blank_thresh=DEFAULT_BLANK_THRESH,
             return
         else:
             return Features(feats, **args)
-
-    elif blank_handler not in BLANK_HANDLERS:
-        msg = "unknown blank handler {!r}, expected one of {}".format(
-            blank_handler, ", ".join(map(repr, BLANK_HANDLERS)))
-        raise ValueError(msg)
 
     handler = BLANK_HANDLERS[blank_handler](blank_thresh=blank_thresh)
     r = features._apply_transform(handler, fit_first=True, inplace=inplace)
@@ -256,6 +255,9 @@ def parse_args(args=None):
         help="The fraction of variance to maintain in the PCA" + _def)
     pca._add_action(ActionNoYes('pca-random', default=False,
         help="Whether to use a randomized PCA implementation; default don't."))
+    pca._add_action(ActionNoYes('pca-whiten', default=False,
+        help="Whether to do whitening in the PCA, removing linear correlations "
+             "between dimensions; default don't."))
 
     spa = parser.add_argument_group('Spatial information')
     spa._add_action(ActionNoYes('add-x', default=True,
@@ -288,11 +290,14 @@ def main():
     pr = partial(print, file=sys.stderr) if args.verbose else _do_nothing
 
     pr("Loading features from '{}'...".format(load_file))
-    f = read_features_perimage if os.path.isdir(load_file) else read_features
-    orig, attrs = f(load_file, load_attrs=True, features_dtype=np.float32)
+    args = {'load_attrs': True, 'features_dtype': np.float32}
+    if os.path.isdir(load_file):
+        orig, attrs = Features.load_from_perbag(load_file, **args)
+    else:
+        orig, attrs = Features.load_from_hdf5(load_file, **args)
 
-    new, pca, scaler = process_features(orig, ret_pca=True, ret_scaler=True,
-                                        **vars(args))
+    new, pca, scaler = process_image_features(
+        orig, ret_pca=True, ret_scaler=True, **vars(args))
 
     if pca is not None:
         attrs['pca_mean'] = pca.mean_
@@ -302,7 +307,7 @@ def main():
         attrs['scaler_std'] = scaler.std_
 
     pr("Saving features to '{}'...".format(save_file))
-    save_features(save_file, new, process_args=repr(vars(args)), **attrs)
+    new.save_as_hdf5(save_file, process_args=repr(vars(args)), **attrs)
 
 
 if __name__ == '__main__':
