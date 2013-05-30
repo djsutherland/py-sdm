@@ -162,7 +162,7 @@ def kl(Ks, num_q, dim, rhos, nus, clamp=True):
 
     Returns an array of shape (num_Ks,).
     '''
-    est = dim * np.mean(np.log(rhos) - np.log(nus), axis=0) + \
+    est = dim * np.mean(np.log(nus) - np.log(rhos), axis=0) + \
           np.log(num_q / (rhos.shape[0] - 1))
     if clamp:
         np.maximum(est, 0, out=est)
