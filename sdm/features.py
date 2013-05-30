@@ -6,12 +6,16 @@ import sys
 
 import numpy as np
 
-from .utils import izip, iterkeys, iteritems, is_integer_type
+from .utils import izip, iterkeys, iteritems, is_integer_type, lazy_range
 
 _default_category = 'none'
 _do_nothing_sentinel = object()
 
 DEFAULT_VARFRAC = 0.7
+
+def _group(boundaries, arr):
+    return [arr[boundaries[i-1]:boundaries[i]]
+            for i in lazy_range(1, len(boundaries))]
 
 
 class Features(object):
@@ -113,8 +117,7 @@ class Features(object):
             # arguments
 
         self._n_pts = n_pts
-        self._end_pts = np.cumsum(n_pts)
-        self._start_pts = np.hstack(([0], self._end_pts[:-1]))
+        self._boundaries = np.hstack([[0], np.cumsum(n_pts)])
 
         n_bags = n_pts.size
 
@@ -129,7 +132,7 @@ class Features(object):
 
         # handle names
         if names is None:
-            names = np.arange(n_bags).astype(str)
+            names = np.array([str(i) for i in lazy_range(n_bags)])
         else:
             names = np.asarray(names, dtype=str)
             if len(names) != n_bags:
@@ -180,8 +183,7 @@ class Features(object):
         self = cls(_do_nothing_sentinel)
 
         self._n_pts = np.array([f.shape[0] for f in feats])
-        self._end_pts = np.cumsum(self._n_pts)
-        self._start_pts = np.hstack(([0], self._end_pts[:-1]))
+        self._boundaries = np.hstack([[0], np.cumsum(self._n_pts)])
 
         reg_names = frozenset(['category', 'features', 'name'])
         self._extra_names = frozenset(data.dtype.names) - reg_names
@@ -208,10 +210,7 @@ class Features(object):
         return self
 
     def _refresh_features(self):
-        fs = self._features
-        self.data['features'] = [
-            fs[start:end] for start, end in izip(self._start_pts, self._end_pts)
-        ]
+        self.data['features'] = _group(self._boundaries, self._features)
 
     # TODO: add __copy__, __deepcopy__, __getstate__, __setstate__
 
@@ -404,7 +403,7 @@ class Features(object):
         extra's name.
         '''
         import h5py
-        with h5py.File(filename) as f:
+        with h5py.File(filename, 'w') as f:
             skip_set = frozenset(['category', 'name'])
             for row in self:
                 g = f.require_group(row['category']).create_group(row['name'])
@@ -500,8 +499,7 @@ class Features(object):
 
             n_bags = len(bag_names)
             n_pts = np.asarray(n_pts)
-            end_pts = np.cumsum(n_pts)
-            start_pts = np.hstack([0, end_pts[:-1]])
+            boundaries = np.hstack([[0], np.cumsum(n_pts)])
 
             # allocate space for features and extras
             dtype = dtypes.pop()
@@ -524,7 +522,7 @@ class Features(object):
             # actually load all the features and extras
             for i, (cat, fname) in enumerate(bag_names):
                 g = f[cat][fname]
-                features[start_pts[i]:end_pts[i]] = g['features']
+                features[boundaries[i]:boundaries[i+1]] = g['features']
 
                 for ex_name in extra_types:
                     if ex_name in g:

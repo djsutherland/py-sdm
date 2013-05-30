@@ -15,3 +15,10 @@ from .np_divs import estimate_divs
 
 from . import sdm
 from .sdm import SDC, NuSDC, SDR, NuSDR, OneClassSDM
+
+try:
+    from numpy.testing import nosetester
+    test = nosetester.NoseTester().test
+    del nosetester
+except ImportError:
+    pass

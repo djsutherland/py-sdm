@@ -31,14 +31,14 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.utils import ConvergenceWarning
 from sklearn import svm  # NOTE: needs version 0.13+ for svm iter limits
 
+from .features import Features
 from .utils import (positive_int, positive_float, portion, is_integer_type,
                     iteritems, iterkeys, izip, identity, lazy_range,
-                    get_status_fn)
+                    get_status_fn, read_cell_array)
 from .mp_utils import ForkedData, get_pool, progressbar_and_updater
 from .np_divs import (estimate_divs,
-                      FIX_MODE_DEFAULT, FIX_TERM_MODES, TAIL_DEFAULT,
-                      read_cell_array, subset_data,
                       check_h5_settings, add_to_h5_cache, normalize_div_name)
+
 
 # TODO: better logging
 
@@ -284,7 +284,7 @@ def split_km(km, train_idx, test_idx):
 
 def get_divs_cache(bags, div_func, K, cache_filename=None,
                    names=None, cats=None,
-                   fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
+                   min_dist=None,
                    n_proc=None, status_fn=True, progressbar=None):
     # TODO: support loading subsets of the file, or reordered, based on names
     # TODO: support flann arguments
@@ -295,7 +295,7 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
         path = '{}/{}'.format(div_func, K)
         with h5py.File(cache_filename, 'r') as f:
             check_h5_settings(f, n=len(bags), dim=bags[0].shape[1],
-                fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+                min_dist=min_dist,
                 names=names, cats=cats)
             if path in f:
                 divs = f[path]
@@ -306,7 +306,7 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
 
     divs = np.squeeze(estimate_divs(
             bags, specs=[div_func], Ks=[K],
-            n_proc=n_proc, fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+            n_proc=n_proc, min_dist=min_dist,
             status_fn=status_fn, progressbar=progressbar))
 
     if cache_filename:
@@ -314,7 +314,7 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
         with h5py.File(cache_filename) as f:
             add_to_h5_cache(f, {(div_func, K): divs},
                             dim=bags[0].shape[1],
-                            fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+                            min_dist=min_dist,
                             names=names, cats=cats)
 
     return divs
@@ -370,7 +370,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
                  tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
                  svm_shrinking=DEFAULT_SVM_SHRINKING,
                  status_fn=None, progressbar=None,
-                 fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
+                 min_dist=None,
                  symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
                  km_method=DEFAULT_KM_METHOD,
                  transform_test=DEFAULT_TRANSFORM_TEST,
@@ -391,8 +391,6 @@ class BaseSDM(sklearn.base.BaseEstimator):
         self.svm_shrinking = svm_shrinking
         self.status_fn = status_fn
         self.progressbar = progressbar
-        self.fix_mode = fix_mode
-        self.tail = tail
         self.min_dist = min_dist
         self.symmetrize_divs = symmetrize_divs
         self.km_method = km_method
@@ -431,8 +429,6 @@ class BaseSDM(sklearn.base.BaseEstimator):
         d = {
             'n_proc': self.n_proc,
             'min_dist': self.min_dist,
-            'fix_mode': self.fix_mode,
-            'tail': self.tail,
             'status_fn': self._status_fn,
             'progressbar': self.progressbar,
         }
@@ -826,7 +822,6 @@ class BaseSDM(sklearn.base.BaseEstimator):
             divs = get_divs_cache(bags,
                     div_func=self.div_func, K=self.K,
                     cache_filename=divs_cache, n_proc=self.n_proc,
-                    fix_mode=self.fix_mode, tail=self.tail,
                     min_dist=self.min_dist,
                     names=names, cats=cats,
                     status_fn=self._status_fn, progressbar=self.progressbar)
@@ -927,7 +922,7 @@ class SDC(BaseSDM):
                  svm_shrinking=DEFAULT_SVM_SHRINKING,
                  probability=DEFAULT_SVM_PROBABILITY,
                  status_fn=None, progressbar=None,
-                 fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
+                 min_dist=None,
                  symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
                  km_method=DEFAULT_KM_METHOD,
                  transform_test=DEFAULT_TRANSFORM_TEST,
@@ -940,7 +935,7 @@ class SDC(BaseSDM):
             svm_max_iter=svm_max_iter, tuning_svm_max_iter=tuning_svm_max_iter,
             svm_shrinking=svm_shrinking,
             status_fn=status_fn, progressbar=progressbar,
-            fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+            min_dist=min_dist,
             symmetrize_divs=symmetrize_divs,
             km_method=km_method,
             transform_test=transform_test,
@@ -994,7 +989,7 @@ class NuSDC(BaseSDM):
                  svm_shrinking=DEFAULT_SVM_SHRINKING,
                  probability=DEFAULT_SVM_PROBABILITY,
                  status_fn=None, progressbar=None,
-                 fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
+                 min_dist=None,
                  symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
                  km_method=DEFAULT_KM_METHOD,
                  transform_test=DEFAULT_TRANSFORM_TEST,
@@ -1007,7 +1002,7 @@ class NuSDC(BaseSDM):
             svm_max_iter=svm_max_iter, tuning_svm_max_iter=tuning_svm_max_iter,
             svm_shrinking=svm_shrinking,
             status_fn=status_fn, progressbar=progressbar,
-            fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+            min_dist=min_dist,
             symmetrize_divs=symmetrize_divs,
             km_method=km_method,
             transform_test=transform_test,
@@ -1059,7 +1054,7 @@ class SDR(BaseSDM):
                  tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
                  svm_shrinking=DEFAULT_SVM_SHRINKING,
                  status_fn=None, progressbar=None,
-                 fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
+                 min_dist=None,
                  symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
                  km_method=DEFAULT_KM_METHOD,
                  transform_test=DEFAULT_TRANSFORM_TEST,
@@ -1072,7 +1067,7 @@ class SDR(BaseSDM):
             svm_max_iter=svm_max_iter, tuning_svm_max_iter=tuning_svm_max_iter,
             svm_shrinking=svm_shrinking,
             status_fn=status_fn, progressbar=progressbar,
-            fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+            min_dist=min_dist,
             symmetrize_divs=symmetrize_divs,
             km_method=km_method,
             transform_test=transform_test,
@@ -1122,7 +1117,7 @@ class NuSDR(BaseSDM):
                  tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
                  svm_shrinking=DEFAULT_SVM_SHRINKING,
                  status_fn=None, progressbar=None,
-                 fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
+                 min_dist=None,
                  symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
                  km_method=DEFAULT_KM_METHOD,
                  transform_test=DEFAULT_TRANSFORM_TEST,
@@ -1135,7 +1130,7 @@ class NuSDR(BaseSDM):
             svm_max_iter=svm_max_iter, tuning_svm_max_iter=tuning_svm_max_iter,
             svm_shrinking=svm_shrinking,
             status_fn=status_fn, progressbar=progressbar,
-            fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+            min_dist=min_dist,
             symmetrize_divs=symmetrize_divs,
             km_method=km_method,
             transform_test=transform_test,
@@ -1182,7 +1177,7 @@ class OneClassSDM(BaseSDM):
                  tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
                  svm_shrinking=DEFAULT_SVM_SHRINKING,
                  status_fn=None, progressbar=None,
-                 fix_mode=FIX_MODE_DEFAULT, tail=TAIL_DEFAULT, min_dist=None,
+                 min_dist=None,
                  symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
                  km_method=DEFAULT_KM_METHOD,
                  transform_test=DEFAULT_TRANSFORM_TEST,
@@ -1195,7 +1190,7 @@ class OneClassSDM(BaseSDM):
             svm_max_iter=svm_max_iter, tuning_svm_max_iter=tuning_svm_max_iter,
             svm_shrinking=svm_shrinking,
             status_fn=status_fn, progressbar=progressbar,
-            fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+            min_dist=min_dist,
             symmetrize_divs=symmetrize_divs,
             km_method=km_method,
             transform_test=transform_test,
@@ -1330,9 +1325,6 @@ def parse_args():
         algo.add_argument('-K', type=positive_int, default=DEFAULT_K,
             help="How many nearest neighbors to use " + _def)
 
-        algo.add_argument('--n-points', type=positive_int, default=None,
-            help="The number of points to use per group; defaults to all.")
-
         algo.add_argument('--tuning-folds', '-F', type=positive_int,
             default=DEFAULT_TUNING_FOLDS,
             help="Number of CV folds to use in evaluating parameters " + _def)
@@ -1396,12 +1388,6 @@ def parse_args():
             help="Values to try for tuning the nu of NuSVR, a lower bound on "
                  "the fraction of support vectors " + _def)
 
-        algo.add_argument('--trim-tails', type=portion, metavar='PORTION',
-            default=TAIL_DEFAULT,
-            help="How much to trim when using a trimmed mean estimator " + _def)
-        algo.add_argument('--trim-mode',
-            choices=FIX_TERM_MODES, default=FIX_MODE_DEFAULT,
-            help="Whether to trim or clip ends; default %(default)s.")
         algo.add_argument('--min-dist', type=float, default=None,
             help="Protect against identical points by making sure kNN "
                  "distances are always at least this big. Default: the smaller "
@@ -1521,8 +1507,6 @@ def opts_dict(args):
         'svm_max_iter': args.svm_max_iter,
         'tuning_svm_max_iter': args.tuning_svm_max_iter,
         'svm_shrinking': args.svm_shrinking,
-        'tail': args.trim_tails,
-        'fix_mode': args.trim_mode,
         'min_dist': args.min_dist,
         'symmetrize_divs': args.symmetrize_divs,
         'km_method': args.km_method,
@@ -1553,9 +1537,6 @@ def do_predict(args):
         train_bags = read_cell_array(f, f[args.train_bags_name])
         train_labels = f[args.train_labels_name][...]
         test_bags = read_cell_array(f, f[args.test_bags_name])
-        if args.n_points:
-            train_bags = subset_data(train_bags, args.n_points)
-            test_bags = subset_data(test_bags, args.n_points)
 
     assert np.all(train_labels == np.round(train_labels))
     train_labels = train_labels.astype(int)
@@ -1609,17 +1590,15 @@ def do_cv(args):
         assert args.input_format == 'python'
 
         if os.path.isdir(args.input_file):
-            from .image_features import read_features_perimage
-            feats = read_features_perimage(args.input_file)
+            feats = Features.load_from_perbag(args.input_file)
         else:
-            from .image_features import read_features
-            feats = read_features(args.input_file)
+            feats = Features.load_from_hdf5(args.input_file)
         bags = feats.features
-        names = np.asarray(feats.names)
-        cats = np.asarray(feats.categories)
+        names = feats.names
+        cats = feats.categories
 
         if args.labels_name:
-            labels = np.array([ex[args.labels_name] for ex in feats.extras])
+            labels = feats[args.labels_name]
         elif args.labels_name is None and classifier:
             labels = cats
         else:
@@ -1644,9 +1623,6 @@ def do_cv(args):
                 np.min(labels), np.max(labels))
     status_fn('Loaded {} bags of dimension {} with {}.'.format(
             len(bags), bags[0].shape[1], label_str))
-
-    if args.n_points:
-        bags = subset_data(bags, args.n_points)
 
     clf = sdm_for_mode[args.svm_mode](status_fn=True, **opts_dict(args))
     score, preds, folds, params = clf.crossvalidate(bags, labels,

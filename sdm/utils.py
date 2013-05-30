@@ -127,3 +127,11 @@ def get_status_fn(val):
         return lambda *args, **kwargs: None
     else:
         return val
+
+
+def read_cell_array(f, data, dtype=None):
+    return [
+        np.ascontiguousarray(np.transpose(f[ptr]), dtype=dtype)
+        for row in data
+        for ptr in row
+    ]
