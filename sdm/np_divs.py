@@ -281,7 +281,7 @@ def kl(xx, xy, yy, yx, Ks, dim,
     rs = np.empty(len(Ks))
     for knd, K in enumerate(Ks):
         rho, nu = get_col(xx, K - 1), get_col(xy, K - 1)
-        ratios = fix(rho / nu)
+        ratios = fix(nu / rho)
         rs[knd] = dim * np.mean(np.log(ratios))
     return rs + np.log(M / (N - 1))
 kl.is_symmetric = False
