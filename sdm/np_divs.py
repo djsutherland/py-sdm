@@ -1059,6 +1059,7 @@ def add_to_h5_cache(f, div_dict, dim, min_dist,
                     names=None, cats=None):
     """
     Add some divergences to an hdf5 file of divergences.
+    Overwrites any matching ones that already exist.
 
         f: an h5py.File object
         div_dict: dict of (div_func, K) => divs array
@@ -1074,7 +1075,11 @@ def add_to_h5_cache(f, div_dict, dim, min_dist,
                       names=names, cats=cats, write=True)
 
     for (div_func, K), divs in iteritems(div_dict):
-        f.require_group(div_func).create_dataset(str(K), data=divs)
+        g = f.require_group(div_func)
+        name = str(K)
+        if name in g:
+            del g[name]
+        g.create_dataset(name, data=divs)
 
 
 def add_to_h5_file(filename, data):
