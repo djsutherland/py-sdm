@@ -10,9 +10,9 @@ else:
 import numpy as np
 import h5py
 
-from sdm.np_divs import estimate_divs, normalize_div_name_list
+from sdm.np_divs import estimate_divs, normalize_div_name
 from sdm.features import Features
-from sdm.utils import iteritems, itervalues
+from sdm.utils import iteritems, itervalues, strict_map
 
 
 class capture_output(object):
@@ -68,7 +68,7 @@ def assert_close(got, expected, msg, atol=1e-8, rtol=1e-5):
 
 
 def load_divs(f, specs, Ks):
-    specs = np.squeeze(normalize_div_name_list(specs))
+    specs = np.squeeze(strict_map(normalize_div_name, specs))
     Ks = np.squeeze(Ks)
 
     n_bags = next(itervalues(next(itervalues(f)))).shape[0]

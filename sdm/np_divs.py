@@ -14,6 +14,7 @@ from __future__ import division, print_function
 import argparse
 from collections import namedtuple, defaultdict, OrderedDict
 import itertools
+from operator import itemgetter
 import os
 import sys
 
@@ -24,7 +25,7 @@ from scipy.special import gamma, gammaln
 from pyflann import FLANN
 
 from .features import _group, Features
-from .utils import (eps, izip, lazy_range, raw_input,
+from .utils import (eps, izip, lazy_range, strict_map, raw_input, identity,
                     str_types, bytes, positive_int, confirm_outfile,
                     is_integer, is_integer_type,
                     read_cell_array,
@@ -138,7 +139,7 @@ def linear(Ks, num_q, dim, rhos, nus):
     #   (using gamma(k) / gamma(k - 1) = k - 1)
     # and the rest of the estimator is
     #   B / m * mean(nu ^ -dim)
-    Ks = np.asarray(Ks)
+    Ks = np.reshape(Ks, (-1,))
     Bs = (Ks - 1) / np.pi ** (dim / 2) * gamma(dim / 2 + 1)  # shape (num_Ks,)
     return Bs / num_q * np.mean(nus ** (-dim), axis=0)
 linear.self_value = None  # have to execute it
@@ -221,87 +222,6 @@ alpha_div.self_value = 1
 alpha_div.needs_alpha = True
 
 
-def bhattacharyya(Ks, num_q, dim, rhos, nus, clamp=True):
-    r'''
-    Estimate the Bhattacharyya coefficient between distributions, based on kNN
-    distances:  \int \sqrt{p q}
-
-    If clamp (the default), enforces 0 <= BC <= 1.
-
-    Returns an array of shape (num_Ks,).
-    '''
-    est = alpha_div(alphas=.5, Ks=Ks, num_q=num_q, dim=dim, rhos=rhos, nus=nus,
-                    clamp=clamp)[0]
-    if clamp:
-        np.minimum(est, 1, out=est)  # BC <= 1
-    return est
-bhattacharyya.self_value = 1
-bhattacharyya.needs_alpha = False
-
-
-def hellinger(Ks, num_q, dim, rhos, nus, clamp=True):
-    r'''
-    Estimate the Hellinger distance between distributions, based on kNN
-    distances:  \sqrt{1 - \int \sqrt{p q}}
-
-    If clamp (the default), enforces 0 <= H <= 1.
-
-    Returns a vector: one element for each K.
-    '''
-    bc = bhattacharyya(Ks=Ks, num_q=num_q, dim=dim, rhos=rhos, nus=nus,
-                       clamp=clamp)
-    return np.sqrt(1 - bc)
-hellinger.self_value = 0
-hellinger.needs_alpha = False
-
-
-def renyi(alphas, Ks, num_q, dim, rhos, nus, min_val=eps, clamp=True):
-    r'''
-    Estimate the Renyi-alpha divergence between distributions, based on kNN
-    distances:  1/(\alpha-1) \log \int p^alpha q^(1-\alpha)
-
-    If the inner integral is less than min_val (default `utils.eps`), uses the
-    log of min_val instead.
-
-    If clamp (the default), enforces that the estimates are nonnegative by
-    replacing any negative estimates with 0.
-
-    Returns an array of shape (num_alphas, num_Ks).
-    '''
-    alphas = np.reshape(alphas, (-1, 1))
-
-    est = alpha_div(alphas=alphas, Ks=Ks, num_q=num_q, dim=dim,
-                    rhos=rhos, nus=nus, clamp=False)
-    np.maximum(est, min_val, out=est)
-    np.log(est, out=est)
-    est /= alphas - 1
-    if clamp:
-        np.maximum(est, 0, out=est)
-    return est
-renyi.self_value = 0
-renyi.needs_alpha = True
-
-
-def tsallis(alphas, Ks, num_q, dim, rhos, nus, clamp=True):
-    r'''
-    Estimate the Tsallis-alpha divergence between distributions, based on kNN
-    distances:  (\int p^alpha q^(1-\alpha) - 1) / (\alpha - 1)
-
-    If clamp (the default), enforces that the inner integral is nonnegative.
-
-    Returns an array of shape (num_alphas, num_Ks).
-    '''
-    alphas = np.reshape(alphas, (-1, 1))
-    est = alpha_div(alphas=alphas, Ks=Ks, num_q=num_q, dim=dim,
-                    rhos=rhos, nus=nus, clamp=clamp)
-    est -= 1
-    est /= alphas - 1
-    # TODO: Tsallis is also nonnegative, no? Should we clamp it here?
-    return est
-tsallis.self_value = 0
-tsallis.needs_alpha = True
-
-
 ################################################################################
 ### Meta-estimators: things that need some additional computation on top of
 ###                  the per-bag stuff of the functions above.
@@ -339,9 +259,94 @@ tsallis.needs_alpha = True
 
 MetaRequirement = namedtuple('MetaRequirement', 'func alpha needs_transpose')
 # func: the function of the regular divergence that's needed
-# alpha: the alpha value for the function that's needed, or None
+# alpha: None if no alpha is needed. Otherwise, can be a scalar alpha value,
+#        or a callable which takes the (scalar or list) alphas for the meta
+#        function and returns the required function's alpha(s).
 # needs_transpose: if true, ensure the required results also have a result for
 #                  [j, i] for any [i, j] that we need
+
+
+def bhattacharyya(Ks, dim, rhos, required, clamp=True):
+    r'''
+    Estimate the Bhattacharyya coefficient between distributions, based on kNN
+    distances:  \int \sqrt{p q}
+
+    If clamp (the default), enforces 0 <= BC <= 1.
+
+    Returns an array of shape (num_Ks,).
+    '''
+    est, = required
+    if clamp:
+        est = np.minimum(est, 1)  # BC <= 1
+    return est
+bhattacharyya.needs_alpha = False
+bhattacharyya.needs_results = [MetaRequirement(alpha_div, 0.5, False)]
+
+
+def hellinger(Ks, dim, rhos, required):
+    r'''
+    Estimate the Hellinger distance between distributions, based on kNN
+    distances:  \sqrt{1 - \int \sqrt{p q}}
+
+    Always clamps 0 <= H <= 1.
+
+    Returns a vector: one element for each K.
+    '''
+    bc, = required
+    est = 1 - bc
+    np.maximum(est, 0, out=est)
+    np.sqrt(est, out=est)
+    return est
+hellinger.needs_alpha = False
+hellinger.needs_results = [MetaRequirement(alpha_div, 0.5, False)]
+
+
+def renyi(alphas, Ks, dim, rhos, required, min_val=eps, clamp=True):
+    r'''
+    Estimate the Renyi-alpha divergence between distributions, based on kNN
+    distances:  1/(\alpha-1) \log \int p^alpha q^(1-\alpha)
+
+    If the inner integral is less than min_val (default `utils.eps`), uses the
+    log of min_val instead.
+
+    If clamp (the default), enforces that the estimates are nonnegative by
+    replacing any negative estimates with 0.
+
+    Returns an array of shape (num_alphas, num_Ks).
+    '''
+    alphas = np.reshape(alphas, (-1, 1))
+    est = np.concatenate(required, axis=2)
+
+    # TODO: make sure modifying est doesn't modify the original data
+    np.maximum(est, min_val, out=est)
+    np.log(est, out=est)
+    est /= alphas - 1
+    if clamp:
+        np.maximum(est, 0, out=est)
+    return est
+renyi.needs_alpha = True
+renyi.needs_results = [MetaRequirement(alpha_div, identity, False)]
+
+
+def tsallis(alphas, Ks, dim, rhos, required, clamp=True):
+    r'''
+    Estimate the Tsallis-alpha divergence between distributions, based on kNN
+    distances:  (\int p^alpha q^(1-\alpha) - 1) / (\alpha - 1)
+
+    If clamp (the default), enforces that the inner integral is nonnegative.
+
+    Returns an array of shape (num_alphas, num_Ks).
+    '''
+    alphas = np.reshape(alphas, (-1, 1))
+    alpha_est = required
+
+    est = alpha_est - 1
+    est /= alphas - 1
+    # TODO: Tsallis is also nonnegative, no? Should we clamp it here?
+    return est
+tsallis.needs_alpha = True
+tsallis.needs_results = [MetaRequirement(alpha_div, identity, False)]
+
 
 def l2(Ks, dim, rhos, required):
     r'''
@@ -355,16 +360,16 @@ def l2(Ks, dim, rhos, required):
     n_bags = len(rhos)
 
     linears, = required
-    assert linears.shape == (n_bags, n_bags, Ks.size)
+    assert linears.shape == (n_bags, n_bags, 1, Ks.size)
 
     quadratics = np.empty((n_bags, Ks.size), dtype=np.float32)
     for i, rho in enumerate(rhos):
         quadratics[i, :] = quadratic(Ks, dim, rho)
 
     est = -linears
-    est -= linears.transpose(1, 0, 2)
-    est += quadratics.reshape(n_bags, 1, Ks.size)
-    est += quadratics.reshape(1, n_bags, Ks.size)
+    est -= linears.transpose(1, 0, 2, 3)
+    est += quadratics.reshape(n_bags, 1, 1, Ks.size)
+    est += quadratics.reshape(1, n_bags, 1, Ks.size)
     np.maximum(est, 0, out=est)
     np.sqrt(est, out=est)
     return est
@@ -510,33 +515,47 @@ def _parse_specs(specs):
             else:
                 d[func] = _MetaFuncInfo(deps=[], **args)
                 for req in func.needs_results:
-                    add_func(req.func, alpha=req.alpha)
+                    if callable(req.alpha):
+                        req_alpha = req.alpha(alpha)
+                    else:
+                        req_alpha = req.alpha
+                    add_func(req.func, alpha=req_alpha)
                     meta_deps[func].add(req.func)
                     meta_deps[req.func]  # make sure required func is in there
 
-        elif pos is not None:
-            # already have an entry for the func, need to give it this pos
+        else:
+            # already have an entry for the func
+            # need to give it this pos, if it's not None
+            # and also make sure that the alpha is present
             info = d[func]
             if not needs_alpha:
-                if info.pos != [None]:
-                    msg = "{} passed more than once"
-                    raise ValueError(msg.format(func_name))
-                # already in as a meta dependency, now it's also an output
-                info.pos[0] = pos
-            else:
+                if pos is not None:
+                    if info.pos != [None]:
+                        msg = "{} passed more than once"
+                        raise ValueError(msg.format(func_name))
+
+                    info.pos[0] = pos
+            else:  # needs alpha
                 try:
                     idx = info.alphas.index(alpha)
                 except ValueError:
                     # this is a new alpha value we haven't seen yet
                     info.alphas.append(alpha)
                     info.pos.append(pos)
+                    if is_meta:
+                        for req in func.needs_results:
+                            if callable(req.alpha):
+                                req_alpha = req.alpha(alpha)
+                            else:
+                                req_alpha = req.alpha
+                            add_func(req.func, alpha=req_alpha)
                 else:
                     # repeated alpha value
-                    if info.pos[idx] is not None:
-                        msg = "{} with alpha {} passed more than once"
-                        raise ValueError(msg.format(func_name, alpha))
-                    # already in as a meta dependency, now it's also an output
-                    info.pos[idx] = pos
+                    if pos is not None:
+                        if info.pos[idx] is not None:
+                            msg = "{} with alpha {} passed more than once"
+                            raise ValueError(msg.format(func_name, alpha))
+                        info.pos[idx] = pos
 
     # add functions for each spec
     for i, spec in enumerate(specs):
@@ -571,14 +590,25 @@ def _parse_specs(specs):
     for func, info in iteritems(metas):
         deps = info.deps
         assert deps == []
+
         for req in func.needs_results:
             f = req.func
             req_info = (metas if hasattr(f, 'needs_results') else funcs)[f]
             if req.alpha is not None:
-                pos = req_info.pos[info.alphas.index(req.alpha)]
+                if callable(req.alpha):
+                    req_alpha = req.alpha(info.alphas)
+                else:
+                    req_alpha = req.alpha
+
+                find_alpha = np.vectorize(req_info.alphas.index, otypes=[int])
+                pos = np.asarray(req_info.pos)[find_alpha(req_alpha)]
+                if np.isscalar(pos):
+                    deps.append(pos[()])
+                else:
+                    deps.extend(pos)
             else:
                 pos, = req_info.pos
-            info.deps.append(pos)
+                deps.append(pos)
 
     # topological sort of metas
     meta_order = topological_sort(meta_deps)
@@ -588,17 +618,11 @@ def _parse_specs(specs):
     return funcs, metas, -next(meta_counter) - 1
 
 
-def normalize_div_name_list(name):
+def normalize_div_name(name):
     if ':' in name:
         main, alpha = name.split(':')
-        return ['{}:{}'.format(main, float(al))
-                for al in alpha.split(',')]
-    return [name]
-
-
-def normalize_div_name(name):
-    n, = normalize_div_name_list(name)  # has to be just one
-    return n
+        return '{}:{}'.format(main, float(alpha))
+    return name
 
 
 ################################################################################
@@ -802,7 +826,7 @@ def estimate_divs(features,
         elif 'alphas' in args:
             del args['alphas']
 
-        required = [outputs[:, :, i, :] for i in info.deps]
+        required = [outputs[:, :, [i], :] for i in info.deps]
         r = meta(required=required, **args)
         if r.ndim == 3:
             r = r.reshape(r.shape[0], r.shape[1], 1, r.shape[2])
@@ -1075,7 +1099,7 @@ def add_to_h5_cache(f, div_dict, dim, min_dist,
                       names=names, cats=cats, write=True)
 
     for (div_func, K), divs in iteritems(div_dict):
-        g = f.require_group(div_func)
+        g = f.require_group(normalize_div_name(div_func))
         name = str(K)
         if name in g:
             del g[name]
@@ -1110,18 +1134,18 @@ def check_h5_file_agreement(filename, features, args, interactive=True):
                           write=False)
 
         # any overlap with stuff we've already calculated?
-        div_funcs = []
-        for div_func in args.div_funcs:
-            div_funcs.extend(normalize_div_name_list(div_func))
+        div_funcs = strict_map(normalize_div_name, args.div_funcs)
         overlap = [(div_func, k)
                    for div_func in div_funcs if div_func in f
                    for k in args.K if str(k) in f[div_func]]
         if overlap:
             if not interactive:
                 raise ValueError("hdf5 conflict: {}".format(overlap))
+
             msg = '\n'.join(
                 ["WARNING: the following divs will be overwritten:"] +
-                ['\t{}, k = {}'.format(df, k) for df, k in overlap] +
+                ['\t{:12} k = {}'.format(df, ', '.join(str(k) for d, k in d_ks))
+                 for df, d_ks in itertools.groupby(overlap, itemgetter(0))] +
                 ['Proceed? [yN] '])
             resp = raw_input(msg)
             if not resp.startswith('y'):
