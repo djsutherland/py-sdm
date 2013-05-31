@@ -874,7 +874,7 @@ def parse_args():
         choices=['hdf5', 'mat'], default='hdf5',
         help="Output file format; default %(default)s.")
 
-    parser.add_argument('--n-proc', type=positive_int, default=None,
+    parser.add_argument('--cores', '--n-proc', type=positive_int, default=None,
         help="Number of processes to use; default is as many as CPU cores.")
 
     parser.add_argument('--div-funcs', nargs='*',
@@ -946,7 +946,7 @@ def main():
 
     divs = estimate_divs(
             bags, specs=args.div_funcs, Ks=Ks,
-            n_proc=args.n_proc,
+            cores=args.n_proc,
             min_dist=args.min_dist,
             return_opts=True,
             **args.flann_args)
