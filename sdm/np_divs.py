@@ -283,7 +283,8 @@ def kl(xx, xy, yy, yx, Ks, dim,
         rho, nu = get_col(xx, K - 1), get_col(xy, K - 1)
         ratios = fix(nu / rho)
         rs[knd] = dim * np.mean(np.log(ratios))
-    return rs + np.log(M / (N - 1))
+    rs += np.log(M / (N - 1))
+    return np.maximum(0, rs)
 kl.is_symmetric = False
 kl.name = 'NP-KL'
 
@@ -319,7 +320,7 @@ def alpha_div(xx, xy, yy, yx, alphas, Ks, dim,
 
             rs[ind, knd] = es * B
 
-    return rs
+    return np.maximum(0, rs)
 alpha_div.is_symmetric = False
 alpha_div.name = 'NP-A'
 
