@@ -469,31 +469,40 @@ def _parse_specs(specs):
         - the number of meta-only results
 
     >>> _parse_specs(['renyi:.8', 'hellinger', 'renyi:.9'])
-    ({<function hellinger at 0x10b601410>: _FuncInfo(alphas=None, pos=[1]),
-      <function renyi at 0x10b601758>: _FuncInfo(alphas=[0.8, 0.9], pos=[0, 2])
-     },
-     OrderedDict(),
-     0)
+    ({<function alpha_div at 0x10954f848>:
+            _FuncInfo(alphas=[0.8, 0.5, 0.9], pos=[-1, -2, -3])},
+     OrderedDict([
+        (<function hellinger at 0x10954fc80>,
+            _MetaFuncInfo(alphas=None, pos=[1], deps=[array(-2)])),
+        (<function renyi at 0x10954fcf8>,
+            _MetaFuncInfo(alphas=[0.8, 0.9], pos=[0, 2], deps=[-1, -3]))
+     ]), 3)
 
     >>> _parse_specs(['renyi:.8', 'hellinger', 'renyi:.9', 'l2'])
-    ({<function linear at 0x10b4bfc08>: _FuncInfo(alphas=None, pos=[-1]),
-      <function hellinger at 0x10b601410>: _FuncInfo(alphas=None, pos=[1]),
-      <function renyi at 0x10b601758>: _FuncInfo(alphas=[0.8, 0.9], pos=[0, 2])
+    ({<function alpha_div at 0x10954f848>:
+        _FuncInfo(alphas=[0.8, 0.5, 0.9], pos=[-1, -2, -3]),
+      <function linear at 0x10954f758>: _FuncInfo(alphas=None, pos=[-4])
      }, OrderedDict([
-        (<function l2 at 0x10b5f7140>,
-            _MetaFuncInfo(alphas=None, pos=[3], deps=[-1]))
-     ]),
-     1)
+        (<function hellinger at 0x10954fc80>,
+            _MetaFuncInfo(alphas=None, pos=[1], deps=[array(-2)])),
+        (<function l2 at 0x10954fde8>,
+            _MetaFuncInfo(alphas=None, pos=[3], deps=[-4])),
+        (<function renyi at 0x10954fcf8>,
+            _MetaFuncInfo(alphas=[0.8, 0.9], pos=[0, 2], deps=[-1, -3]))
+     ]), 4)
 
     >>> _parse_specs(['renyi:.8', 'hellinger', 'renyi:.9', 'l2', 'linear'])
-    ({<function linear at 0x10b4bfc08>: _FuncInfo(alphas=None, pos=[4]),
-      <function hellinger at 0x10b601410>: _FuncInfo(alphas=None, pos=[1]),
-      <function renyi at 0x10b601758>: _FuncInfo(alphas=[0.8, 0.9], pos=[0, 2])
+    ({<function alpha_div at 0x10954f848>:
+        _FuncInfo(alphas=[0.8, 0.5, 0.9], pos=[-1, -2, -3]),
+      <function linear at 0x10954f758>: _FuncInfo(alphas=None, pos=[4])
      }, OrderedDict([
-        (<function l2 at 0x10b5f7140>,
-            _MetaFuncInfo(alphas=None, pos=[3], deps=[4]))
-     ]),
-     0)
+        (<function hellinger at 0x10954fc80>,
+            _MetaFuncInfo(alphas=None, pos=[1], deps=[array(-2)])),
+        (<function l2 at 0x10954fde8>,
+            _MetaFuncInfo(alphas=None, pos=[3], deps=[4])),
+        (<function renyi at 0x10954fcf8>,
+            _MetaFuncInfo(alphas=[0.8, 0.9], pos=[0, 2], deps=[-1, -3]))
+     ]), 3)
     '''
     funcs = {}
     metas = {}
