@@ -825,7 +825,7 @@ def estimate_divs(features,
 
                     r = func(rhos=rhos[j], nus=nu, num_q=features._n_pts[i],
                              **args)
-                    outputs[i, j, pos, :] = r
+                    outputs[j, i, pos, :] = r
 
     # fill in the meta values
     args = {'Ks': Ks, 'dim': dim, 'rhos': rhos}
