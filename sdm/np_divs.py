@@ -372,6 +372,10 @@ def l2(Ks, dim, rhos, required):
     est += quadratics.reshape(1, n_bags, 1, Ks.size)
     np.maximum(est, 0, out=est)
     np.sqrt(est, out=est)
+
+    # diagonal is of course known to be zero
+    all_bags = lazy_range(n_bags)
+    est[all_bags, all_bags, :, :] = 0
     return est
 l2.needs_alpha = False
 l2.needs_results = [MetaRequirement(linear, alpha=None, needs_transpose=True)]
@@ -394,7 +398,7 @@ def quadratic(Ks, dim, rhos, required=None):
     N = rhos.shape[0]
     Ks = np.asarray(Ks)
     Bs = (Ks - 1) / np.pi ** (dim / 2) * gamma(dim / 2 + 1)  # shape (num_Ks,)
-    return Bs / N * np.mean(rhos ** (-dim), axis=0)
+    return Bs / (N - 1) * np.mean(rhos ** (-dim), axis=0)
 
 
 ################################################################################
@@ -759,6 +763,8 @@ def estimate_divs(features,
                        dtype=np.float32)
     outputs.fill(np.nan)
 
+    # TODO: should just call functions that need self up here with rhos
+    #       instead of computing nus and then throwing them out below
     any_run_self = False
     all_bags = lazy_range(n_bags)
     for func, info in iteritems(funcs):
@@ -820,8 +826,10 @@ def estimate_divs(features,
                 pos = info.pos
 
                 for j, nu in izip(lazy_range(start, end), nus):
-                    if i == j and getattr(func, 'self_value', None) is not None:
-                        continue  # already set this above
+                    if i == j:
+                        if getattr(func, 'self_value', None) is not None:
+                            continue  # already set this above
+                        nu = rhos[j]  # nu counts each point as its NN...
 
                     r = func(rhos=rhos[j], nus=nu, num_q=features._n_pts[i],
                              **args)
