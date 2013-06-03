@@ -32,8 +32,9 @@ from sklearn.utils import ConvergenceWarning
 from sklearn import svm  # NOTE: needs version 0.13+ for svm iter limits
 
 from .features import Features
-from .utils import (positive_int, positive_float, portion, is_integer_type,
-                    iteritems, iterkeys, izip, identity, lazy_range,
+from .utils import (positive_int, positive_float, portion,
+                    is_categorical_type,
+                    rmse, iteritems, iterkeys, izip, identity, lazy_range,
                     get_status_fn, read_cell_array)
 from .mp_utils import ForkedData, get_pool, progressbar_and_updater
 from .np_divs import (estimate_divs,
@@ -60,14 +61,6 @@ DEFAULT_TUNING_FOLDS = 3
 DEFAULT_SYMMETRIZE_DIVS = False
 DEFAULT_KM_METHOD = 'clip'
 DEFAULT_TRANSFORM_TEST = True
-
-
-def is_categorical_type(ary):
-    return is_integer_type(ary) or np.asanyarray(ary).dtype.kind == 'b'
-
-
-def rmse(y_true, y_pred):
-    return np.sqrt(mean_squared_error(y_true, y_pred))
 
 
 ################################################################################

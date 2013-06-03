@@ -6,7 +6,8 @@ import sys
 
 import numpy as np
 
-from .utils import izip, iterkeys, iteritems, is_integer_type, lazy_range
+from .utils import (izip, iterkeys, iteritems, lazy_range,
+                    is_integer_type, is_categorical_type)
 
 _default_category = 'none'
 _do_nothing_sentinel = object()
@@ -188,12 +189,10 @@ class Features(object):
         reg_names = frozenset(['category', 'features', 'name'])
         self._extra_names = frozenset(data.dtype.names) - reg_names
 
-        base = feats[0].base
-        if any(f.base is not base for f in feats):
-            base = np.vstack(feats)
-        elif copy:
-            base = base.copy()
-        self._features = base
+        # TODO: avoid copying data (as much as is possible) by examining
+        #       feats[i].base. If we're copying or subsetting, we should be
+        #       able to be smarter than this.
+        self._features = np.vstack(feats)
 
         if copy:
             if deep:
@@ -242,10 +241,18 @@ class Features(object):
     def dim(self):
         return self._features.shape[1]
 
-    ### indexing/etc works directly on the data array
-    def __getitem__(self, key): return self.data[key]
+    ### indexing/etc
     def __len__(self): return self.data.size
     def __iter__(self): return iter(self.data)
+    def __getitem__(self, key):
+        if not is_categorical_type(key):
+            msg = "Features indexing only accepts integers or booleans"
+            raise TypeError(msg)
+
+        if np.shape(key) == ():
+            return self.data[key]
+        else:
+            return Features.from_data(self.data[key], copy=False)
 
     ### convenience properties to get at a single column of the data
     features = property(lambda self: self.data['features'])
