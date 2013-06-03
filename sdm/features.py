@@ -43,10 +43,11 @@ class Features(object):
             passed, should be of equal length to the number of bags. This
             might be a class name, a data source, etc. Used in storing the data;
             if not passed, uses "none" for all of them. Should not contain the
-            '/' character.
+            '/' character; sticking to [-_a-zA-Z0-9 ]+ is safest.
         - names (optional): a name for each object. Should be unique per
-            category but may have repeats across categories. Should not contain
-            the '/' character. If not present, defaults to sequential integers.
+            category but may have repeats across categories. Same restrictions
+            on characters as categories. If not present, defaults to sequential
+            integers.
         - any other keyword argument: interpreted as metadata for each
             object. Lists of scalars are converted to numpy arrays; anything
             else is treated as a numpy object array.
