@@ -17,7 +17,7 @@ from vlfeat.phow import (vl_phow, DEFAULT_MAGNIF, DEFAULT_CONTRAST_THRESH,
 
 from .utils import (positive_int, positive_float, nonnegative_float,
                     strict_map, str_types, confirm_outfile, iteritems)
-from .image_features import Features, save_features, save_features_perimage
+from .features import Features
 
 # NOTE: depends on skimage for resizing, and either opencv, matplotlib with PIL,
 # or skimage with one of the plugins below for reading images
@@ -242,10 +242,16 @@ def extract_features(paths, cats, imread_mode=IMREAD_MODES,
         return True
     load_features = partial(_load_features, imread_mode=imread_mode, **kwargs)
     frames, descrs = zip(*filter(predicate, do_map(load_features, paths)))
+
     if n_skipped[0]:
         msg = "Skipped {} images that got no features out.".format(n_skipped[0])
         warnings.warn(msg)
-    return Features(cats, image_names, frames, descrs, extras)
+
+    if pool is not None:
+        pool.close()
+        pool.join()
+    return Features(descrs, categories=cats, names=image_names,
+                    frames=frames, **extras)
 
 
 ################################################################################
@@ -408,9 +414,9 @@ def main():
 
     print("Saving results to '{}'".format(args.save_path))
     if args.output_format == 'single-hdf5':
-        save_features(args.save_path, features, args=repr(vars(args)))
+        features.save_as_hdf5(args.save_path, args=repr(vars(args)))
     else:
-        save_features_perimage(args.save_path, features, args=repr(vars(args)))
+        features.save_as_perbag(args.save_path, args=repr(vars(args)))
 
 if __name__ == '__main__':
     main()

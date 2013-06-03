@@ -11,144 +11,30 @@ distances. Based on the method of
 
 from __future__ import division, print_function
 
-import os
-assert os.name == 'posix', 'the os should support fork()'
-
 import argparse
-import functools
+from collections import namedtuple, defaultdict, OrderedDict
 import itertools
-import re
+from operator import itemgetter
+import os
 import sys
-import warnings
 
-import bottleneck as bn
 import numpy as np
 import scipy.io
 from scipy.special import gamma, gammaln
 
-try:
-    from pyflann import FLANN
-    use_flann = True
-except ImportError:
-    warnings.warn('Cannot find FLANN. KNN searches will be much slower.')
-    use_flann = False
+from pyflann import FLANN
 
-from .utils import (eps, col, get_col, izip, lazy_range, is_integer, raw_input,
-                    str_types, bytes, portion, positive_int, confirm_outfile,
+from .features import _group, Features
+from .utils import (eps, izip, lazy_range, strict_map, raw_input, identity,
+                    str_types, bytes, positive_int, confirm_outfile,
+                    is_integer, is_integer_type,
+                    read_cell_array,
                     iteritems, itervalues, get_status_fn)
-from .mp_utils import ForkedData, map_unordered_with_progressbar, get_pool
-
-################################################################################
-### Helpers for robust mean estimation
-# XXX: old code used _clip, but _trim seems better
-# TODO: figure out the "right" way to do this
-
-TAIL_DEFAULT = 0.01
-FIX_MODE_DEFAULT = 'trim'
-
-def fix_terms_trim(terms, tail=TAIL_DEFAULT):
-    '''
-    Trims the elements of an array, to use in a more robust mean estimate, by:
-        - removing any nan elements
-        - removing elements below the tail-th and above the (1-tail)th quantiles
-        - removing any remaining inf elements
-    '''
-    terms = terms[np.logical_not(np.isnan(terms))]
-    n = terms.size
-
-    if n >= 3:
-        terms = np.sort(terms)  # TODO: could do this with partial sorting
-        ends = int(round(n * tail))
-        terms = terms[ends:n-ends]
-
-    return terms[np.isfinite(terms)]
-
-def quantile(a, prob):
-    '''
-    Estimates the prob'th quantile of the values in a data array.
-
-    Uses the algorithm of matlab's quantile(), namely:
-        - Remove any nan values
-        - Take the sorted data as the (.5/n), (1.5/n), ..., (1-.5/n) quantiles.
-        - Use linear interpolation for values between (.5/n) and (1 - .5/n).
-        - Use the minimum or maximum for quantiles outside that range.
-
-    See also: scipy.stats.mstats.mquantiles
-    '''
-    a = np.asanyarray(a)
-    a = a[np.logical_not(np.isnan(a))].ravel()
-    n = a.size
-
-    if prob >= 1 - .5/n:
-        return a.max()
-    elif prob <= .5 / n:
-        return a.min()
-
-    # find the two bounds we're interpreting between:
-    # that is, find i such that (i+.5) / n <= prob <= (i+1.5)/n
-    t = n * prob - .5
-    i = int(np.floor(t))
-
-    # partial sort so that the ith element is at position i, with bigger ones
-    # to the right and smaller to the left
-    a = bn.partsort(a, i)
-
-    if i == t:  # did we luck out and get an integer index?
-        return a[i]
-    else:
-        # we'll linearly interpolate between this and the next index
-        smaller = a[i]
-        larger = a[i+1:].min()
-        if np.isinf(smaller):
-            return smaller  # avoid inf - inf
-        else:
-            return smaller + (larger - smaller) * (t - i)
-
-
-def fix_terms_clip(terms, tail=TAIL_DEFAULT):
-    '''
-    Takes a vector of elements and replaces any infinite or very-large elements
-    with the value of the highest non-very-large element, as well as throwing
-    away any nan values, possibly changing the order.
-
-    Used for estimating the mean of positive quantities.
-
-    "Very-large" is defined as the (1-tail)th quantile if tail > 0, otherwise
-    the largest non-inf element. Note that values of -inf are not altered.
-
-    Uses the matlab-style quantile() function, above, because that's what the
-    code this is trying to replicate did.
-    '''
-    terms = terms[np.logical_not(np.isnan(terms))]
-
-    find_noninf_max = True
-    if 0 < tail < 1:
-        cutoff = quantile(terms, 1 - tail)
-        find_noninf_max = not np.isfinite(cutoff)
-
-    if find_noninf_max:
-        cutoff = np.max(terms[np.isfinite(terms)])
-
-    terms[terms > cutoff] = cutoff
-    return terms
-
-FIX_TERM_MODES = {'trim': fix_terms_trim, 'clip': fix_terms_clip}
-def fix_terms(terms, tail=TAIL_DEFAULT, mode=FIX_MODE_DEFAULT):
-    return FIX_TERM_MODES[mode](terms, tail=tail)
+from .mp_utils import progress
 
 
 ################################################################################
 ### Nearest neighbor searches.
-
-def l2_dist_sq(A, B):
-    '''
-    Calculates pairwise squared Euclidean distances between points in A and
-    in B, which are row-instance data matrices.
-    Returns a matrix whose (i,j)th element is the distance from the ith point
-    in A to the jth point in B.
-    '''
-    return -2 * np.dot(A, B.T) + col((A**2).sum(1)) + (B**2).sum(1)
-
 
 def default_min_dist(dim):
     return min(1e-2, 1e-100 ** (1.0 / dim))
@@ -158,18 +44,22 @@ def pick_flann_algorithm(dim):
     return 'linear' if dim > 5 else 'kdtree_single'
 
 
-def knn_search(x, y, K, min_dist=None, index=None, algorithm=None, **kwargs):
+def knn_search(K, x, y=None, min_dist=None, index=None, algorithm=None,
+               return_indices=False, **kwargs):
     '''
     Calculates Euclidean distances to the first K closest elements of y
     for each x, which are row-instance data matrices.
 
-    Returns a matrix whose (i,j)th element is the distance from the ith point
-    in x to the (j+1)th-closest point in y.
+    Returns a matrix whose (i, j)th element is the distance from the ith point
+    in x to the (j+1)th nearest neighbor in y.
+
+    If return_indices, also returns a matrix whose (i, j)th element is the
+    identity of the (j+1)th nearest neighbor in y to the ith point in x.
 
     By default, clamps minimum distance to min(1e-2, 1e-100 ** (1/dim));
     setting min_dist to a number changes this value. Use 0 for no clamping.
 
-    If index is passed, uses a preconstructed flann index for the elements of y
+    If index is passed, uses a preconstructed FLANN index for the elements of y
     (a FLANN() instance where build_index() has been run). Otherwise, constructs
     an index here and then deletes it, using the passed algorithm. By default,
     uses a single k-d tree for data with dimension 5 or lower, and brute-force
@@ -177,88 +67,86 @@ def knn_search(x, y, K, min_dist=None, index=None, algorithm=None, **kwargs):
     arguments are also passed to the FLANN() object.
     '''
     N, dim = x.shape
-    M, dim2 = y.shape
-    if dim != dim2:
-        raise TypeError("x and y must have same second dimension")
-    if not is_integer(K) and K >= 1:
+    if y is not None:
+        M, dim2 = y.shape
+        if dim != dim2:
+            raise TypeError("x and y must have same second dimension")
+
+    if not is_integer(K) or K < 1:
         raise TypeError("K must be a positive integer")
 
-    if use_flann:
+    if index is None:
         if algorithm is None:
             algorithm = pick_flann_algorithm(dim)
+        index = FLANN(algorithm=algorithm, **kwargs)
+        index.build_index(y)
 
-        if index is None:
-            if 'cores' not in kwargs:
-                kwargs['cores'] = 1
-            index = FLANN(algorithm=algorithm, **kwargs)
-            params = index.build_index(y)
+    idx, dist = index.nn_index(x, K)
 
-        idx, dist = index.nn_index(x, K)
-    else:
-        D = l2_dist_sq(x, y)
-        idx = np.argsort(D, 1)[:, :K]
-        dist = D[np.repeat(col(np.arange(N)), K, axis=1), idx]
-
-    idx = idx.astype('uint16')
-    dist = np.sqrt(dist.astype('float64'))
+    idx = idx.astype(np.uint16)
+    dist = np.sqrt(dist.astype(np.float64))
 
     # protect against identical points
     if min_dist is None:
         min_dist = default_min_dist(dim)
-    elif min_dist <= 0:
-        return dist, idx
-    return np.maximum(min_dist, dist), idx
+    if min_dist > 0:
+        np.maximum(min_dist, dist, out=dist)
 
-
-def knn_search_forked(bags, indices, i, j, K, **kwargs):
-    bags = bags.value
-    return knn_search(bags[i], bags[j], K=K, index=indices.value[j], **kwargs)
+    return (dist, idx) if return_indices else dist
 
 
 ################################################################################
 ### Estimators of various divergences based on nearest-neighbor distances.
+#
+# The standard interface for these functions is:
+#
+# Function attributes:
+#
+#   needs_alpha: whether this function needs an alpha parameter. Default false.
+#
+#   self_value: The value that this function should take when comparing a
+#               sample to itself: either a scalar constant or None (the
+#               default), in which case the function is still called with
+#               rhos = nus.
+#
+# Arguments:
+#
+#   alphas (if needs_alpha; array-like, scalar or 1d): the alpha values to use
+#
+#   Ks (array-like, scalar or 1d): the K values used
+#
+#   num_q (scalar): the number of points in the sample from q
+#
+#   dim (scalar): the dimension of the feature space
+#
+#   rhos: an array of within-bag nearest neighbor distances for a sample from p.
+#         rhos[i, j] should be the distance from the ith sample from p to its
+#         Ks[j]'th neighbor in the same sample. Shape: (num_p, num_Ks).
+#   nus: an array of nearest neighbor distances from samples from other dists.
+#        nus[i, j] should be the distance from the ith sample from p to its
+#        Ks[j]'th neighbor in the sample from q. Shape: (num_p, num_Ks).
+#
+# Returns an array of divergence estimates. If needs_alpha, should be of shape
+# (num_alphas, num_Ks); otherwise, of shape (num_Ks,).
 
-def l2(xx, xy, yy, yx, Ks, dim, tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT,
-       **opts):
+def linear(Ks, num_q, dim, rhos, nus):
+    r'''
+    Estimates the linear inner product \int p q between two distributions,
+    based on kNN distances.
     '''
-    Estimate the L2 distance between two distributions, based on kNN distances.
-
-    Returns a vector: one element for each K.
-    '''
-    fix = functools.partial(fix_terms, tail=tail, mode=fix_mode)
-
-    if xy is None:  # identical bags
-        return np.zeros(len(Ks))
-
-    N = xx.shape[0]
-    M = yy.shape[0]
-    c = np.pi ** (dim / 2) / gamma(dim / 2 + 1)
-
-    rs = np.empty(len(Ks))
-    for knd, K in enumerate(Ks):
-        rho_x, nu_x = get_col(xx, K - 1), get_col(xy, K - 1)
-        rho_y, nu_y = get_col(yy, K - 1), get_col(yx, K - 1)
-
-        e_p2 = (K-1) / ((N-1)*c) / (rho_x ** dim)  # \int p^2
-        e_pq = (K-1) / (  M * c) / ( nu_x ** dim)  # \int pq (p is proposal)
-        e_qp = (K-1) / (  N * c) / ( nu_y ** dim)  # \int qp (q is proposal)
-        e_q2 = (K-1) / ((M-1)*c) / (rho_y ** dim)  # \int q^2
-
-        if N == M:  # TODO: this should probably go away?
-            total = fix(e_p2 - e_pq - e_qp + e_q2).mean()
-        else:
-            total = (fix(e_p2).mean()
-                   - fix(e_pq).mean()
-                   - fix(e_qp).mean()
-                   + fix(e_q2).mean())
-        rs[knd] = np.sqrt(max(0, total))
-    return rs
-l2.is_symmetric = True
-l2.name = 'NP-L2'
+    # Estimated with alpha=0, beta=1:
+    #   B_{k,d,0,1} = (k - 1) / pi^(dim/2) * gamma(dim/2 + 1)
+    #   (using gamma(k) / gamma(k - 1) = k - 1)
+    # and the rest of the estimator is
+    #   B / m * mean(nu ^ -dim)
+    Ks = np.reshape(Ks, (-1,))
+    Bs = (Ks - 1) / np.pi ** (dim / 2) * gamma(dim / 2 + 1)  # shape (num_Ks,)
+    return Bs / num_q * np.mean(nus ** (-dim), axis=0)
+linear.self_value = None  # have to execute it
+linear.needs_alpha = False
 
 
-def kl(xx, xy, yy, yx, Ks, dim,
-       tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT, **opts):
+def kl(Ks, num_q, dim, rhos, nus, clamp=True):
     r'''
     Estimate the KL divergence between distributions:
         \int p(x) \log (p(x) / q(x))
@@ -270,460 +158,704 @@ def kl(xx, xy, yy, yx, Ks, dim,
         http://www.ee.princeton.edu/~verdu/reprints/WanKulVer.May2009.pdf
     which is:
         d * 1/n \sum \log (nu_k(i) / rho_k(i)) + log(m / (n - 1))
+
+    If clamp is True (default), enforces KL >= 0.
+
+    Returns an array of shape (num_Ks,).
     '''
-    if xy is None:  # identical bags
-        return np.zeros(len(Ks))
-
-    fix = functools.partial(fix_terms, tail=tail, mode=fix_mode)
-
-    N = xx.shape[0]
-    M = yy.shape[0]
-    rs = np.empty(len(Ks))
-    for knd, K in enumerate(Ks):
-        rho, nu = get_col(xx, K - 1), get_col(xy, K - 1)
-        ratios = fix(nu / rho)
-        rs[knd] = dim * np.mean(np.log(ratios))
-    rs += np.log(M / (N - 1))
-    return np.maximum(0, rs)
-kl.is_symmetric = False
-kl.name = 'NP-KL'
+    est = dim * np.mean(np.log(nus) - np.log(rhos), axis=0) + \
+          np.log(num_q / (rhos.shape[0] - 1))
+    if clamp:
+        np.maximum(est, 0, out=est)
+    return est
+kl.self_value = 0
+kl.needs_alpha = False
 
 
-def alpha_div(xx, xy, yy, yx, alphas, Ks, dim,
-              tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT, **opts):
+def alpha_div(alphas, Ks, num_q, dim, rhos, nus, clamp=True):
     r'''
-    Estimate the alpha divergence between distributions, based on kNN distances:
+    Estimate the alpha divergence between distributions:
         \int p^\alpha q^(1-\alpha)
-    Used in Renyi, Hellinger, Bhattacharyya divergence estimation.
+    based on kNN distances.
 
-    Returns a matrix: each row corresponds to an alpha, each column to a K.
+    Used in Renyi, Hellinger, Bhattacharyya, Tsallis divergences.
+
+    If clamp is True (default), enforces that estimates are >= 0.
+
+    Returns divergence estimates with shape (num_alphas, num_Ks).
     '''
-    if xy is None:  # identical bags
-        return np.ones((len(alphas), len(Ks)))
+    # We don't do argument checking here, because this is called repeatedly from
+    # estimate_divs and it'd slow things down.
+    # TODO: should we these be "private"?
 
-    alphas = np.asarray(alphas)
-    fix = functools.partial(fix_terms, tail=tail, mode=fix_mode)
+    N = rhos.shape[0]
+    M = num_q
+    alphas = np.reshape(alphas, (-1, 1))
+    Ks = np.reshape(Ks, (1, -1))
 
-    N = xx.shape[0]
-    M = yy.shape[0]
-    size_c = (N - 1) / M
+    # We're estimating with alpha = alpha-1, beta = 1-alpha.
+    # B constant in front:
+    #   estimator's alpha = -beta, so volume of unit ball cancels out
+    #   and then ratio of gamma functions
+    omas = 1 - alphas
+    Bs = np.exp(gammaln(Ks) * 2 - gammaln(Ks + omas) - gammaln(Ks - omas))
 
-    rs = np.empty((len(alphas), len(Ks)))
-    for knd, K in enumerate(Ks):
-        rho, nu = get_col(xx, K - 1), get_col(xy, K - 1)
-        ratios = fix(rho / nu)
+    # factors based on the sizes:
+    #   1 / [ (n-1)^(est alpha) * m^(est beta) ] = ((n-1) / m) ^ (1 - alpha)
+    consts = ((N - 1) / M) ** omas
 
-        for ind, alpha in enumerate(alphas):
-            oalph = 1 - alpha
-            es = (size_c ** oalph) * (ratios ** (dim * oalph)).mean()
-            B = np.exp(gammaln(K)*2 - gammaln(K + oalph) - gammaln(K - oalph))
+    # the actual main estimate:
+    #   rho^(- dim * est alpha) nu^(- dim * est beta)
+    #   = (rho / nu) ^ (dim * (1 - alpha))
+    # do some reshaping trickery to get broadcasting right
+    ratios = np.reshape(rhos / nus, (N, 1, Ks.size))
+    estimates = ratios ** (dim * omas.reshape(1, -1, 1))
+    estimates = np.mean(estimates, axis=0)  # shape (n_alphas, n_Ks)
 
-            rs[ind, knd] = es * B
+    estimates *= Bs
+    estimates *= consts
 
-    return np.maximum(0, rs)
-alpha_div.is_symmetric = False
-alpha_div.name = 'NP-A'
+    if clamp:
+        np.maximum(estimates, 0, out=estimates)
+    return estimates
+alpha_div.self_value = 1
+alpha_div.needs_alpha = True
 
 
-def bhattacharyya(xx, xy, yy, yx, Ks, **opts):
+################################################################################
+### Meta-estimators: things that need some additional computation on top of
+###                  the per-bag stuff of the functions above.
+
+# These functions are run after the base estimators above are complete.
+#
+# The interface here is:
+#
+# Function attributes:
+#
+#   needs_alpha: whether this function needs an alpha parameter. Default false.
+#
+#   needs_results: a list of MetaRequirement objects (below).
+#                  Note that it is legal for meta estimators to depend on other
+#                  meta estimators; circular dependencies cause the spec parser
+#                  to crash.
+#
+# Arguments:
+#
+#   alphas (if needs_alpha; array-like, scalar or 1d): the alpha values to use
+#
+#   Ks (array-like, scalar or 1d): the K values used
+#
+#   dim (scalar): the dimension of the feature space
+#
+#   rhos: a list of within-bag NN distances, each of which is like the rhos
+#         argument above
+#
+#   required: a list of the results array for each MetaRequirement classes,
+#             each of shape (n_bags, n_bags, num_Ks).
+#
+# Returns: array of results.
+# If needs_alpha, has shape (n_bags, n_bags, num_alphas, num_Ks);
+# otherwise, has shape (n_bags, n_bags, num_Ks).
+
+MetaRequirement = namedtuple('MetaRequirement', 'func alpha needs_transpose')
+# func: the function of the regular divergence that's needed
+# alpha: None if no alpha is needed. Otherwise, can be a scalar alpha value,
+#        or a callable which takes the (scalar or list) alphas for the meta
+#        function and returns the required function's alpha(s).
+# needs_transpose: if true, ensure the required results also have a result for
+#                  [j, i] for any [i, j] that we need
+
+
+def bhattacharyya(Ks, dim, rhos, required, clamp=True):
     r'''
     Estimate the Bhattacharyya coefficient between distributions, based on kNN
     distances:  \int \sqrt{p q}
 
-    Returns a vector, one element for each K.
+    If clamp (the default), enforces 0 <= BC <= 1.
+
+    Returns an array of shape (num_Ks,).
     '''
-    del opts['alphas']
-    est = alpha_div(xx, xy, yy, yx, alphas=[.5], Ks=Ks, **opts)[0]
-    return np.minimum(est, 1)  # BC <= 1
-bhattacharyya.is_symmetric = False  # the true BC is, but not our estimate
-bhattacharyya.name = 'NP-BC'
+    est, = required
+    if clamp:
+        est = np.minimum(est, 1)  # BC <= 1
+    return est
+bhattacharyya.needs_alpha = False
+bhattacharyya.needs_results = [MetaRequirement(alpha_div, 0.5, False)]
 
 
-def renyi(xx, xy, yy, yx, alphas, Ks, **opts):
+def hellinger(Ks, dim, rhos, required):
+    r'''
+    Estimate the Hellinger distance between distributions, based on kNN
+    distances:  \sqrt{1 - \int \sqrt{p q}}
+
+    Always clamps 0 <= H <= 1.
+
+    Returns a vector: one element for each K.
+    '''
+    bc, = required
+    est = 1 - bc
+    np.maximum(est, 0, out=est)
+    np.sqrt(est, out=est)
+    return est
+hellinger.needs_alpha = False
+hellinger.needs_results = [MetaRequirement(alpha_div, 0.5, False)]
+
+
+def renyi(alphas, Ks, dim, rhos, required, min_val=eps, clamp=True):
     r'''
     Estimate the Renyi-alpha divergence between distributions, based on kNN
     distances:  1/(\alpha-1) \log \int p^alpha q^(1-\alpha)
 
-    Returns a matrix: each row corresponds to an alpha, each column to a K.
+    If the inner integral is less than min_val (default `utils.eps`), uses the
+    log of min_val instead.
+
+    If clamp (the default), enforces that the estimates are nonnegative by
+    replacing any negative estimates with 0.
+
+    Returns an array of shape (num_alphas, num_Ks).
     '''
-    alphas = np.asarray(alphas)
-    Ks = np.asarray(Ks)
+    alphas = np.reshape(alphas, (-1, 1))
+    est = np.concatenate(required, axis=2)
 
-    est = alpha_div(xx, xy, yy, yx, alphas=alphas, Ks=Ks, **opts)
-    return np.maximum(0, np.log(np.maximum(est, eps)) / (col(alphas) - 1))
-renyi.is_symmetric = False
-renyi.name = 'NP-R'
+    # TODO: make sure modifying est doesn't modify the original data
+    np.maximum(est, min_val, out=est)
+    np.log(est, out=est)
+    est /= alphas - 1
+    if clamp:
+        np.maximum(est, 0, out=est)
+    return est
+renyi.needs_alpha = True
+renyi.needs_results = [MetaRequirement(alpha_div, identity, False)]
 
 
-def hellinger(xx, xy, yy, yx, Ks, dim,
-              tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT, **opts):
+def tsallis(alphas, Ks, dim, rhos, required, clamp=True):
     r'''
-    Estimate the Hellinger distance between distributions, based on kNN
-    distances:  \sqrt{1 - \int \sqrt{p q}}
-    Returns a vector: one element for each K.
+    Estimate the Tsallis-alpha divergence between distributions, based on kNN
+    distances:  (\int p^alpha q^(1-\alpha) - 1) / (\alpha - 1)
+
+    If clamp (the default), enforces that the inner integral is nonnegative.
+
+    Returns an array of shape (num_alphas, num_Ks).
     '''
-    est = np.squeeze(alpha_div(xx, xy, yy, yx, alphas=[0.5], Ks=Ks, dim=dim,
-                               tail=tail, fix_mode=fix_mode))
-    return np.sqrt(np.maximum(0, 1 - est))
-hellinger.is_symmetric = False  # the metric is symmetric, but estimator is not
-hellinger.name = 'NP-H'
+    alphas = np.reshape(alphas, (-1, 1))
+    alpha_est = required
+
+    est = alpha_est - 1
+    est /= alphas - 1
+    # TODO: Tsallis is also nonnegative, no? Should we clamp it here?
+    return est
+tsallis.needs_alpha = True
+tsallis.needs_results = [MetaRequirement(alpha_div, identity, False)]
+
+
+def l2(Ks, dim, rhos, required):
+    r'''
+    Estimates the L2 distance between distributions, via
+        \int (p - q)^2 = \int p^2 - \int p q - \int q p + \int q^2.
+
+    \int pq and \int qp are estimated with the linear function (in both
+    directions), while \int p^2 and \int q^2 are estimated via the quadratic
+    function below.
+    '''
+    n_bags = len(rhos)
+
+    linears, = required
+    assert linears.shape == (n_bags, n_bags, 1, Ks.size)
+
+    quadratics = np.empty((n_bags, Ks.size), dtype=np.float32)
+    for i, rho in enumerate(rhos):
+        quadratics[i, :] = quadratic(Ks, dim, rho)
+
+    est = -linears
+    est -= linears.transpose(1, 0, 2, 3)
+    est += quadratics.reshape(n_bags, 1, 1, Ks.size)
+    est += quadratics.reshape(1, n_bags, 1, Ks.size)
+    np.maximum(est, 0, out=est)
+    np.sqrt(est, out=est)
+
+    # diagonal is of course known to be zero
+    all_bags = lazy_range(n_bags)
+    est[all_bags, all_bags, :, :] = 0
+    return est
+l2.needs_alpha = False
+l2.needs_results = [MetaRequirement(linear, alpha=None, needs_transpose=True)]
+
+
+# Not actually a meta-estimator, though it could be if it just repeated the
+# values across rows (or columns).
+def quadratic(Ks, dim, rhos, required=None):
+    r'''
+    Estimates \int p^2 based on kNN distances.
+
+    In here because it's used in the l2 distance, above.
+
+    Returns array of shape (num_Ks,).
+    '''
+    # Estimated with alpha=1, beta=0:
+    #   B_{k,d,1,0} is the same as B_{k,d,0,1} in linear()
+    # and the full estimator is
+    #   B / (n - 1) * mean(rho ^ -dim)
+    N = rhos.shape[0]
+    Ks = np.asarray(Ks)
+    Bs = (Ks - 1) / np.pi ** (dim / 2) * gamma(dim / 2 + 1)  # shape (num_Ks,)
+    return Bs / (N - 1) * np.mean(rhos ** (-dim), axis=0)
+
+
+################################################################################
 
 func_mapping = {
-    'l2': l2,
+    'linear': linear,
     'kl': kl,
     'alpha': alpha_div,
     'bc': bhattacharyya,
-    'renyi': renyi,
     'hellinger': hellinger,
+    'renyi': renyi,
+    'tsallis': tsallis,
+    'l2': l2,
 }
 
 
-################################################################################
-### Jensen-Renyi divergences
-
-def renyi_entropy_knns(knns, dim, alphas, Ks,
-                       tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT):
+def topological_sort(deps):
     '''
-    Estimates Renyi entropy using a special case of our estimator above
-    (with alpha=alpha-1, beta=0).
+    Topologically sort a DAG, represented by a dict of child => set of parents.
+    The dependency dict is destroyed during operation.
 
-    knns: an (n_samps x max(Ks)) matrix of nearest-neighbor distances
-    dim: the dimensionality of the underlying data
-    alphas: a sequence of alpha values to use
-    Ks: a sequence of K values to use
-    tail, fix_mode: used for get_divs.fix_terms
-
-    Returns a matrix of entropy estimates: rows correspond to alphas, columns
-    to Ks.
-
-    See also: renyi_entropy, to run on samples directly.
+    Uses the Kahn algorithm: http://en.wikipedia.org/wiki/Topological_sorting
+    Not a particularly good implementation, but we're just running it on tiny
+    graphs.
     '''
-    alphas = np.asarray(alphas).reshape(-1, 1)
-    Ks = np.asarray(Ks).reshape(1, -1)
 
-    N, num_ks = knns.shape
-    if num_ks < np.max(Ks):
-        raise ValueError("renyi_entropy_knns: knns should be square")
+    order = []
+    available = set()
 
-    # multiplicative constant:
-    #   c_d^{1-alpha} * gamma(K) / gamma(K - alpha + 1)
-    #   where c_d is volume of a d-dimensional ball, pi^{d/2} / gamma(d/2 + 1)
-    # so exp(
-    #         (1-alpha) * (d/2 * log(pi) - gammaln(d/2 + 1))
-    #         + gammaln(K) - gammaln(K - alpha + 1)
-    #    )
-    Bs = np.exp(
-        (1-alphas) * (dim/2 * np.log(np.pi) - gammaln(dim/2 + 1))
-        + gammaln(Ks)
-        - gammaln(Ks - alphas + 1)
-    ) / (N - 1)**(alphas - 1)
+    def _move_available():
+        to_delete = []
+        for n, parents in iteritems(deps):
+            if not parents:
+                available.add(n)
+                to_delete.append(n)
+        for n in to_delete:
+            del deps[n]
 
-    ms = np.empty((alphas.size, Ks.size))
-    ms.fill(np.nan)
-    for K_i, K in enumerate(Ks.flat):
-        rho_k = knns[:, K-1]
-        for alph_i, alpha in enumerate(alphas):
-            terms = rho_k ** (dim * (1 - alpha))
-            ms[alph_i, K_i] = fix_terms(terms, tail=tail, mode=fix_mode).mean()
+    _move_available()
+    while available:
+        n = available.pop()
+        order.append(n)
+        for parents in itervalues(deps):
+            parents.discard(n)
+        _move_available()
 
-    return np.log(Bs * ms) / (1 - alphas)
+    if available:
+        raise ValueError("dependency cycle found")
+    return order
 
 
-def renyi_entropy(samps, alphas, Ks,
-                  tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT, **kwargs):
+_FuncInfo = namedtuple('_FuncInfo', 'alphas pos')
+_MetaFuncInfo = namedtuple('_MetaFuncInfo', 'alphas pos deps')
+def _parse_specs(specs):
     '''
-    Estimates Renyi entropy using a special case of our estimator above
-    (with alpha=alpha-1, beta=0).
+    Set up the different functions we need to call.
 
-    samps: an (n_samps x dimensionality) matrix of samples
-    alphas: a sequence of alpha values to use
-    Ks: a sequence of K values to use
-    tail, fix_mode: used for fix_terms
-    other kwargs: passed along to knn_search
+    Returns:
+        - a dict mapping base estimator functions to _FuncInfo objects.
+          If the function needs_alpha, then the alphas attribute is an array
+          of alpha values and pos is a corresponding array of indices.
+          Otherwise, alphas is None and pos is a list containing a single index.
+          Indices are >= 0 if they correspond to something in a spec,
+          and negative if they're just used for a meta estimator but not
+          directly requested.
+        - an OrderedDict mapping functions to _MetaFuncInfo objects.
+          alphas and pos are like for _FuncInfo; deps is a list of indices
+          which should be passed to the estimator. Note that these might be
+          other meta functions; this list is guaranteed to be in an order
+          such that all dependencies are resolved before calling that function.
+          If no such order is possible, raise ValueError.
+        - the number of meta-only results
 
-    Returns a matrix of entropy estimates: one row per alpha, col per K
+    >>> _parse_specs(['renyi:.8', 'hellinger', 'renyi:.9'])
+    ({<function alpha_div at 0x10954f848>:
+            _FuncInfo(alphas=[0.8, 0.5, 0.9], pos=[-1, -2, -3])},
+     OrderedDict([
+        (<function hellinger at 0x10954fc80>,
+            _MetaFuncInfo(alphas=None, pos=[1], deps=[array(-2)])),
+        (<function renyi at 0x10954fcf8>,
+            _MetaFuncInfo(alphas=[0.8, 0.9], pos=[0, 2], deps=[-1, -3]))
+     ]), 3)
+
+    >>> _parse_specs(['renyi:.8', 'hellinger', 'renyi:.9', 'l2'])
+    ({<function alpha_div at 0x10954f848>:
+        _FuncInfo(alphas=[0.8, 0.5, 0.9], pos=[-1, -2, -3]),
+      <function linear at 0x10954f758>: _FuncInfo(alphas=None, pos=[-4])
+     }, OrderedDict([
+        (<function hellinger at 0x10954fc80>,
+            _MetaFuncInfo(alphas=None, pos=[1], deps=[array(-2)])),
+        (<function l2 at 0x10954fde8>,
+            _MetaFuncInfo(alphas=None, pos=[3], deps=[-4])),
+        (<function renyi at 0x10954fcf8>,
+            _MetaFuncInfo(alphas=[0.8, 0.9], pos=[0, 2], deps=[-1, -3]))
+     ]), 4)
+
+    >>> _parse_specs(['renyi:.8', 'hellinger', 'renyi:.9', 'l2', 'linear'])
+    ({<function alpha_div at 0x10954f848>:
+        _FuncInfo(alphas=[0.8, 0.5, 0.9], pos=[-1, -2, -3]),
+      <function linear at 0x10954f758>: _FuncInfo(alphas=None, pos=[4])
+     }, OrderedDict([
+        (<function hellinger at 0x10954fc80>,
+            _MetaFuncInfo(alphas=None, pos=[1], deps=[array(-2)])),
+        (<function l2 at 0x10954fde8>,
+            _MetaFuncInfo(alphas=None, pos=[3], deps=[4])),
+        (<function renyi at 0x10954fcf8>,
+            _MetaFuncInfo(alphas=[0.8, 0.9], pos=[0, 2], deps=[-1, -3]))
+     ]), 3)
     '''
-    # throw away the smallest one, which is dist to self
-    knns, _ = knn_search(samps, samps, K=np.max(Ks) + 1, **kwargs)
-    return renyi_entropy_knns(knns=knns[:, 1:], dim=samps.shape[1], Ks=Ks,
-                              alphas=alphas, tail=tail, fix_mode=fix_mode)
+    funcs = {}
+    metas = {}
+    meta_deps = defaultdict(set)
 
+    def add_func(func, alpha=None, pos=None):
+        needs_alpha = getattr(func, 'needs_alpha', False)
+        is_meta = hasattr(func, 'needs_results')
 
-def jensen_renyi(xx, xy, yy, yx, alphas, Ks, dim,
-                 tail=TAIL_DEFAULT, fix_mode=FIX_MODE_DEFAULT,
-                 clamp=True, **opts):
-    r'''
-    Estimate the Jensen-Renyi divergence between distributions,
-        R_\alpha((p + q)/2) - 1/2 R_\alpha(p) - 1/2 R_\alpha(q)
-    where R_\alpha is the Renyi entropy:
-        1/(1 - \alpha) \log \int p^\alpha
-    which is estimated based on kNN distances.
+        d = metas if is_meta else funcs
+        if func not in d:
+            if needs_alpha:
+                args = {'alphas': [alpha], 'pos': [pos]}
+            else:
+                args = {'alphas': None, 'pos': [pos]}
 
-    Returns a matrix: each row corresponds to an alpha, each column to a K.
-    '''
-    if xy is None:  # identical bags
-        return np.zeros((len(alphas), len(Ks)))
+            if not is_meta:
+                d[func] = _FuncInfo(**args)
+            else:
+                d[func] = _MetaFuncInfo(deps=[], **args)
+                for req in func.needs_results:
+                    if callable(req.alpha):
+                        req_alpha = req.alpha(alpha)
+                    else:
+                        req_alpha = req.alpha
+                    add_func(req.func, alpha=req_alpha)
+                    meta_deps[func].add(req.func)
+                    meta_deps[req.func]  # make sure required func is in there
 
-    max_K = xx.shape[1]
-    N = xx.shape[0]
-    M = yy.shape[0]
-    alphas = np.asarray(alphas)
-    entropy = functools.partial(renyi_entropy_knns,
-                                dim=dim, alphas=alphas, Ks=Ks,
-                                tail=tail, fix_mode=fix_mode)
-
-    # assuming N == M here
-    #
-    # when N != M, one option is to take min(N, M) from each
-    # TODO: need to either get all NNs from x to y to combine,
-    #       or redo the NN search within the mixture for this
-    #
-    # it'd also be possible to do some kind of negative binomial
-    # type combination, to form all(?) samples we can from these samples
-    # and maybe take an expectation over it or something
-    #
-    # TODO: can we do something with just these kNN distances?
-    if N != M:
-        raise ValueError("can't do jensen-renyi for nonequal sample sizes yet")
-    mixture_toself = np.empty((N + M, 2 * max_K))
-    mixture_toself[:N, :max_K] = xx
-    mixture_toself[:N, max_K:] = xy
-    mixture_toself[N:, :max_K] = yy
-    mixture_toself[N:, max_K:] = yx
-    mixture_toself.sort(axis=1)
-    mix_entropies = entropy(mixture_toself)
-
-    x_entropies = entropy(xx)
-    y_entropies = entropy(yy)
-
-    ests = mix_entropies - x_entropies / 2 - y_entropies / 2
-    return np.maximum(ests, 0) if clamp else ests
-jensen_renyi.is_symmetric = True
-jensen_renyi.name = 'NP-JR'
-
-func_mapping['jr'] = jensen_renyi
-
-
-################################################################################
-### Parallelization helpers for computing estimators.
-
-def handle_divs(funcs, opts, xx, xy, yy, yx, rt=None):
-    '''
-    Processes a set of pairwise nearest-neighbor distances into
-    divergence estimates.
-
-    funcs: a list of functions from div_estimation
-    xx: nearest-neighbor distances from x to x
-    xy: nearest-neighbor distances from x to y
-    yx: nearest-neighbor distances from y to x
-    yy: nearest-neighbor distances from y to y
-    rt: the results from the symmetric call
-    '''
-    if rt is None:
-        rt = itertools.repeat(None)
-
-    return [
-        symm_result if (f.is_symmetric and symm_result is not None)
-        else np.asarray(f(xx[0], xy[0], yy[0], yx[0], **opts))
-        for f, symm_result in izip(funcs, rt)
-    ]
-    # NOTE: if we add div funcs that need the index, pass those.
-
-
-def process_pair(funcs, opts, bags, indices, xxs, row, col, symm=True):
-    '''
-    Does nearest-neighbor searches and computes the divergences between
-    the row-th and col-th bags. xxs is a list of nearest-neighbor searches
-    within each bag.
-    '''
-    handle = functools.partial(handle_divs, funcs, opts)
-
-    bags = bags.value
-    indices = indices.value
-    xxs = xxs.value
-
-    if row == col:
-        xx = xxs[row]
-        r = handle(xx, (None, None), (None, None), (None, None))
-        if symm:
-            rt = r
-    else:
-        xbag, ybag = bags[row], bags[col]
-        xindex, yindex = indices[row], indices[col]
-        xx, yy = xxs[row], xxs[col]
-
-        mK = max(opts['Ks'])
-        xy = knn_search(xbag, ybag, K=mK, index=yindex)
-        yx = knn_search(ybag, xbag, K=mK, index=xindex)
-
-        r = handle(xx, xy, yy, yx)
-        if symm:
-            rt = handle(yy, yx, xx, xy, r)
-
-    r = np.hstack([np.asarray(a, dtype='float32').flat for a in r])
-    if symm:
-        rt = np.hstack([np.asarray(a, dtype='float32').flat for a in rt])
-
-    return row, col, r, (rt if symm else None)
-
-
-################################################################################
-### Argument handling.
-
-def process_func_specs(div_specs, Ks):
-    alphas = []
-    funcs = []
-    div_names = []
-    for func_spec in div_specs:
-        if ':' in func_spec:
-            func_name, alpha_spec = func_spec.split(':', 2)
-
-            new_alphas = np.sort([float(a) for a in alpha_spec.split(',')])
-            if len(alphas) and not np.all(alphas == new_alphas):
-                raise ValueError("Can't do conflicting alpha options yet.")
-            alphas = new_alphas
-
-            func = func_mapping[func_name]
-            funcs.append(func)
-            div_names.extend(['{}[a={},K={}]'.format(func.name, al, K)
-                              for al in alphas for K in Ks])
         else:
-            func = func_mapping[func_spec]
-            funcs.append(func)
-            div_names.extend(['{}[K={}]'.format(func.name, K) for K in Ks])
-    return funcs, div_names, alphas
+            # already have an entry for the func
+            # need to give it this pos, if it's not None
+            # and also make sure that the alpha is present
+            info = d[func]
+            if not needs_alpha:
+                if pos is not None:
+                    if info.pos != [None]:
+                        msg = "{} passed more than once"
+                        raise ValueError(msg.format(func_name))
 
-def read_cell_array(f, data):
-    return [
-        np.ascontiguousarray(np.transpose(f[ptr]), dtype=np.float32)
-        for row in data
-        for ptr in row
-    ]
+                    info.pos[0] = pos
+            else:  # needs alpha
+                try:
+                    idx = info.alphas.index(alpha)
+                except ValueError:
+                    # this is a new alpha value we haven't seen yet
+                    info.alphas.append(alpha)
+                    info.pos.append(pos)
+                    if is_meta:
+                        for req in func.needs_results:
+                            if callable(req.alpha):
+                                req_alpha = req.alpha(alpha)
+                            else:
+                                req_alpha = req.alpha
+                            add_func(req.func, alpha=req_alpha)
+                else:
+                    # repeated alpha value
+                    if pos is not None:
+                        if info.pos[idx] is not None:
+                            msg = "{} with alpha {} passed more than once"
+                            raise ValueError(msg.format(func_name, alpha))
+                        info.pos[idx] = pos
 
-def subset_data(bags, n_points):
-    return [x[np.random.permutation(x.shape[0])[:n_points]]
-            if x.shape[0] < n_points else x for x in bags]
+    # add functions for each spec
+    for i, spec in enumerate(specs):
+        func_name, alpha = (spec.split(':', 1) + [None])[:2]
+        if alpha is not None:
+            alpha = float(alpha)
+
+        try:
+            func = func_mapping[func_name]
+        except KeyError:
+            msg = "'{}' is not a known function type"
+            raise ValueError(msg.format(func_name))
+
+        needs_alpha = getattr(func, 'needs_alpha', False)
+        if needs_alpha and alpha is None:
+            msg = "{} needs alpha but not passed in spec '{}'"
+            raise ValueError(msg.format(func_name, spec))
+        elif not needs_alpha and alpha is not None:
+            msg = "{} doesn't need alpha but is passed in spec '{}'"
+            raise ValueError(msg.format(func_name, spec))
+
+        add_func(func, alpha, i)
+
+    # number things that are dependencies only
+    meta_counter = itertools.count(-1, step=-1)
+    for info in itertools.chain(itervalues(funcs), itervalues(metas)):
+        for i, pos in enumerate(info.pos):
+            if pos is None:
+                info.pos[i] = next(meta_counter)
+
+    # fill in the dependencies for metas
+    for func, info in iteritems(metas):
+        deps = info.deps
+        assert deps == []
+
+        for req in func.needs_results:
+            f = req.func
+            req_info = (metas if hasattr(f, 'needs_results') else funcs)[f]
+            if req.alpha is not None:
+                if callable(req.alpha):
+                    req_alpha = req.alpha(info.alphas)
+                else:
+                    req_alpha = req.alpha
+
+                find_alpha = np.vectorize(req_info.alphas.index, otypes=[int])
+                pos = np.asarray(req_info.pos)[find_alpha(req_alpha)]
+                if np.isscalar(pos):
+                    deps.append(pos[()])
+                else:
+                    deps.extend(pos)
+            else:
+                pos, = req_info.pos
+                deps.append(pos)
+
+    # topological sort of metas
+    meta_order = topological_sort(meta_deps)
+    metas = OrderedDict((
+        (f, metas[f]) for f in meta_order if hasattr(f, 'needs_results')
+    ))
+    return funcs, metas, -next(meta_counter) - 1
+
+
+def normalize_div_name(name):
+    if ':' in name:
+        main, alpha = name.split(':')
+        return '{}:{}'.format(main, float(alpha))
+    return name
+
 
 ################################################################################
 ### The main dealio
 
-def estimate_divs(bags,
+def estimate_divs(features,
                   mask=None,
                   specs=['renyi:.9'],
                   Ks=[3],
-                  n_proc=None,
-                  tail=TAIL_DEFAULT,
-                  fix_mode=FIX_MODE_DEFAULT,
+                  cores=None,
+                  algorithm=None,
                   min_dist=None,
                   status_fn=True, progressbar=None,
                   return_opts=False,
                   **flann_args):
     '''
     Gets the divergences between bags.
-        bags: a length n list of row-instance feature matrices
-        mask: an n x n boolean array: whether to estimate each div pair
-        specs: a list of strings of divergence specs
-        Ks: a K values
-        n_proc: number of processes to use; None for # of cores
-        tail: an argument for fix_terms (above)
-        fix_mode: mode arg for fix_terms, above
-        min_dist: a minimum distance to use in kNN searches
-        status_fn: a function to print out status messages
-            None means don't print any; True prints to stderr
-        progressbar: show a progress bar on stderr. default: (status_fn is True)
-        return_opts: return a dictionary of options used as second value
+
+    Parameters:
+        features: a Features instance containing n bags of features.
+        mask (optional): an n x n boolean array indicating whether to
+                         estimate each div pair. Any not estimated are returned
+                         as nan in the output. Default: estimate all.
+        specs: a list of strings of divergence specs. TODO: document
+        Ks: a list of K values to estimate
+        cores: number of threads to use for estimating in parallel. None uses
+               all cores on the machine.
+        algorithm: the FLANN algorithm to use. Defaults to kdtree_single when
+                   dimensionality is 5 or less, linear otherwise. (These give
+                   exact answers; approximate solutions may be significantly
+                   faster but require tuning.)
+        min_dist: a minimum distance to use in kNN searches. Defaults to the
+                  return value of default_min_dist().
+        status_fn: a function to print out status messages.
+                   None means don't print any; True prints to stderr.
+        progressbar: show a progress bar on stderr. Default: (status_fn is True)
+        return_opts: return a dictionary of options used as the second value.
         other options: passed along to FLANN for nearest-neighbor searches
-    Returns a matrix of size  n x n x num_div_funcs
+
+    Returns an array of shape (n, n, num_specs, num_Ks), whose (i, j, k, l)
+    value is the estimate of D(features[i] || features[j]) with specs[k] using
+    Ks[l].
     '''
-    # TODO: document progressbar specs
+    # TODO: document how progressbar works
     # TODO: other kinds of callbacks for showing progress bars
 
     if progressbar is None:
         progressbar = status_fn is True
-
     status_fn = get_status_fn(status_fn)
 
-    opts = {}
-    opts['Ks'] = np.sort(np.ravel(Ks))
-    opts['tail'] = tail
-    opts['fix_mode'] = fix_mode
-    opts['min_dist'] = min_dist
-    funcs, opts['div_names'], opts['alphas'] = \
-            process_func_specs(specs, opts['Ks'])
+    if not isinstance(features, Features):
+        raise TypeError("features should be a Features instance")
+    n_bags = len(features)
+    dim = features.dim
 
-    num_bags = len(bags)
-    opts['dim'] = dim = bags[0].shape[1]
-    assert all(bag.shape[1] == dim for bag in bags)
-    max_K = opts['Ks'][-1]
-
-    if flann_args.get('algorithm', None) is None:
-        flann_args['algorithm'] = pick_flann_algorithm(dim)
-    opts.update(flann_args)
-
-    if mask is not None:
-        assert mask.dtype == np.dtype('bool')
-        assert mask.shape == (num_bags, num_bags)
-
-    status_fn('kNN processing: {} bags, dimension {}, # points {} to {}, K = {}'
-            .format(num_bags, dim,
-                    min(b.shape[0] for b in bags),
-                    max(b.shape[0] for b in bags),
-                    max_K))
-
-    status_fn('Preparing...')
-    bag_data = ForkedData(bags)
-
-    # build indices for each bag. unfortunately, we have to either do this all
-    # in the master process or save/load the indices in disk, since ForkedData
-    # has copy-on-write semantics and FLANN() objects aren't pickleable.
-    if 'cores' not in flann_args:
-        flann_args['cores'] = 1
-    indices = [FLANN(**flann_args) for _ in bags]
-    for bag, index in izip(bags, indices):
-        index.build_index(bag)
-    index_data = ForkedData(indices)
-
-    # do kNN searches within each bag
-    # need to throw away the closest neighbor, which will always be self
-    knn_searcher = functools.partial(knn_search_forked,
-            bag_data, index_data, K=max_K + 1, min_dist=min_dist, **flann_args)
-    bag_is = lazy_range(num_bags)
-    with get_pool(n_proc) as pool:
-        xxs = [(xx[:, 1:], xxi[:, 1:]) for xx, xxi
-                in pool.starmap(knn_searcher, izip(bag_is, bag_is))]
-
-    xxs_data = ForkedData(xxs)
-
-    processor = functools.partial(
-            process_pair, funcs, opts, bag_data, index_data, xxs_data)
-    all_pairs = itertools.combinations_with_replacement(range(num_bags), 2)
     if mask is None:
-        jobs = list(all_pairs)
+        mask = np.ones((n_bags, n_bags), dtype=bool)
     else:
-        jobs = []  # probably a nicer way to do this...
-        for i, j in all_pairs:
-            if mask[i, j]:
-                jobs.append((i, j, mask[j, i]))
-            elif mask[j, i]:
-                jobs.append((j, i, False))
+        mask = np.asarray(mask)
+        if mask.shape != (n_bags, n_bags):
+            raise TypeError("mask should be n x n, not {}".format(mask.shape))
+        elif mask.dtype.kind != 'b':
+            msg = "mask should be a boolean array, not {}"
+            raise TypeError(msg.format(mask.dtype))
 
-    # TODO: instead of keeping a crappy list-formatted sparse spec of the
-    #       matrix, just fill it in as we get it with a callback
-    status_fn('Doing the real work...')
-    with get_pool(n_proc) as pool:
-        if progressbar:
-            rs = map_unordered_with_progressbar(pool, processor, jobs)
+    funcs, metas, n_meta_only = _parse_specs(specs)
+
+    Ks = np.array(np.squeeze(Ks), ndmin=1)
+    if Ks.ndim != 1:
+        raise TypeError("Ks should be 1-dim, got shape {}".format(Ks.shape))
+    if not is_integer_type(Ks):
+        raise TypeError("Ks should be of integer type, not {}".format(Ks.dtype))
+    if Ks.min() < 1:
+        raise ValueError("Ks should be positive; got {}".format(Ks.min()))
+    if Ks.max() >= features._n_pts.min():
+        msg = "asked for K = {}, but there's a bag with only {} points"
+        raise ValueError(msg.format(Ks.max(), features._n_pts.min()))
+    max_K = Ks.max()
+
+    if cores is None:
+        from multiprocessing import cpu_count
+        cores = cpu_count()
+    flann_args['cores'] = cores
+
+    if algorithm is None:
+        algorithm = pick_flann_algorithm(dim)
+    flann_args['algorithm'] = algorithm
+
+    if min_dist is None:
+        min_dist = default_min_dist(dim)
+
+    status_fn('kNN processing: K = {} on {!r}'.format(max_K, features))
+
+    status_fn('Building indices...')
+    # Build indices for each bag. Do this one-at-a-time for now.
+    # TODO: can probably multithread this? If not, can at least do it in
+    #       multiprocessing, save the indices to disk, and load them in master.
+    #       (Or, patch flann so that indices become pickleable....)
+    #       Is that worth it?
+    indices = [FLANN(**flann_args) for _ in lazy_range(n_bags)]
+
+    if progressbar:
+        pbar = progress()
+        indices_loop = pbar(indices)
+    else:
+        indices_loop = indices
+    for bag, index in izip(features.features, indices_loop):
+        index.build_index(bag)
+    if progressbar:
+        pbar.finish()
+
+    status_fn('\nGetting within-bag distances...')
+    # need to throw away the closet neighbor, which will always be self
+    # this means that K=1 corresponds to column 1 in the array
+    if progressbar:
+        pbar = progress()
+        indices_loop = pbar(indices)
+    rhos = [knn_search(max_K + 1, bag, index=idx)[:, Ks]
+            for bag, idx in izip(features.features, indices_loop)]
+    if progressbar:
+        pbar.finish()
+
+    status_fn('\nGetting cross-bag distances and divergences...')
+    outputs = np.empty((n_bags, n_bags, len(specs) + n_meta_only, len(Ks)),
+                       dtype=np.float32)
+    outputs.fill(np.nan)
+
+    # TODO: should just call functions that need self up here with rhos
+    #       instead of computing nus and then throwing them out below
+    any_run_self = False
+    all_bags = lazy_range(n_bags)
+    for func, info in iteritems(funcs):
+        self_val = getattr(func, 'self_value', None)
+        if self_val is not None:
+            pos = np.reshape(info.pos, (-1, 1))
+            outputs[all_bags, all_bags, pos, :] = self_val
         else:
-            rs = pool.starmap(processor, jobs)
+            any_run_self = True
 
-    R = np.empty((num_bags, num_bags, rs[0][2].size), dtype=np.float32)
-    R.fill(np.nan)
-    for i, j, r, rt in rs:
-        R[i, j, :] = r
-        if rt is not None:
-            R[j, i, :] = rt
+    # If anything needs its transpose also, then we just compute everything
+    # with the transpose; we'll nan out the unnecessary bits later.
+    # TODO: only compute the things we need transposed...
+    real_mask = mask
+    if any(req.needs_transpose for f in metas for req in f.needs_results):
+        mask = real_mask + real_mask.T
 
-    return (R, opts) if return_opts else R
+    indices_loop = progress()(indices) if progressbar else indices
+    for i, index in enumerate(indices_loop):
+        # Loop over rows of the output array.
+        #
+        # We want to search from most(?) of the other bags to this one, as
+        # determined by mask and to avoid repeating nus.
+        #
+        # But we don't want to waste memory copying almost all of the features.
+        #
+        # So instead we'll run a separate NN search for each contiguous
+        # subarray of the features. If they're too small, of course, this hurts
+        # the parallelizability.
+        #
+        # TODO: is there a better scheme than this? use a custom version of
+        #       nanoflann or something?
+        #
+        # TODO: Is cythonning this file/this function worth it?
+
+        # make a boolean array of whether we want to do the ith bag
+        do_bag = mask[i].copy()
+        if not any_run_self:
+            do_bag[i] = False
+
+        # loop over contiguous sections where do_bag is True
+        change_pts = np.hstack([0, np.diff(do_bag).nonzero()[0] + 1, n_bags])
+        s = int(not do_bag[0])
+        for start, end in izip(change_pts[s::2], change_pts[s+1::2]):
+            boundaries = features._boundaries[start:end+1]
+            feats = features._features[boundaries[0]:boundaries[-1]]
+
+            # find the nearest neighbors in features[i] from each of these bags
+            nus = _group(boundaries - boundaries[0],
+                         knn_search(max_K, feats, index=index)[:, Ks - 1])
+
+            # TODO: parallelize this bit?
+            args = {'Ks': Ks, 'dim': dim}
+            for func, info in iteritems(funcs):
+                if getattr(func, 'needs_alpha', False):
+                    args['alphas'] = info.alphas
+                elif 'alphas' in args:
+                    del args['alphas']
+                pos = info.pos
+
+                for j, nu in izip(lazy_range(start, end), nus):
+                    if i == j:
+                        if getattr(func, 'self_value', None) is not None:
+                            continue  # already set this above
+                        nu = rhos[j]  # nu counts each point as its NN...
+
+                    r = func(rhos=rhos[j], nus=nu, num_q=features._n_pts[i],
+                             **args)
+                    outputs[j, i, pos, :] = r
+
+    # fill in the meta values
+    args = {'Ks': Ks, 'dim': dim, 'rhos': rhos}
+    for meta, info in iteritems(metas):
+        if getattr(meta, 'needs_alpha', False):
+            args['alphas'] = info.alphas
+        elif 'alphas' in args:
+            del args['alphas']
+
+        required = [outputs[:, :, [i], :] for i in info.deps]
+        r = meta(required=required, **args)
+        if r.ndim == 3:
+            r = r.reshape(r.shape[0], r.shape[1], 1, r.shape[2])
+        outputs[:, :, info.pos, :] = r
+
+    if n_meta_only:
+        outputs = np.ascontiguousarray(outputs[:, :, :-n_meta_only, :])
+
+    if real_mask is not mask and np.any(real_mask != mask):
+        outputs[~mask] = np.nan
+
+    return outputs
 
 
 ################################################################################
@@ -750,25 +882,18 @@ def parse_args():
         choices=['hdf5', 'mat'], default='hdf5',
         help="Output file format; default %(default)s.")
 
-    parser.add_argument('--n-proc', type=positive_int, default=None,
+    parser.add_argument('--cores', '--n-proc', type=positive_int, default=None,
         help="Number of processes to use; default is as many as CPU cores.")
-    parser.add_argument('--n-points', type=positive_int, default=None,
-        help="The number of points to use per group; defaults to all.")
 
     parser.add_argument('--div-funcs', nargs='*',
-        default=['hellinger', 'l2', 'renyi:.5,.7,.9,.99', 'kl'],
+        default=['hellinger', 'bc', 'linear', 'l2', 'kl',
+                 'renyi:.5', 'renyi:.7', 'renyi:.9', 'renyi:.99'],
         help="The divergences to estimate. Default: %(default)s.")
 
     parser.add_argument('-K', nargs='*', type=positive_int,
         default=[1, 3, 5, 10],
-        help="The numbers of nearest neighbors to calculate.")
-
-    parser.add_argument('--trim-tails', type=portion, default=TAIL_DEFAULT,
-        help="How much to trim off the ends of things we take the mean of; "
-             "default %(default)s.", metavar='PORTION')
-    parser.add_argument('--trim-mode',
-        choices=FIX_TERM_MODES, default=FIX_MODE_DEFAULT,
-        help="Whether to trim or clip ends; default %(default)s.")
+        help="The numbers of nearest neighbors to calculate. "
+             "Default: %(default)s.")
 
     parser.add_argument('--min-dist', type=float, default=None,
         help="Protect against identical points by making sure kNN distances "
@@ -797,16 +922,22 @@ def main():
     status_fn('Reading data...')
     if args.input_format == 'matlab':
         with h5py.File(args.input_file, 'r') as f:
-            bags = read_cell_array(f, f[args.input_var_name])
-            cats = np.squeeze(f['cats'][()])
+            feats = read_cell_array(f, f[args.input_var_name])
+            for x in ['cats', 'categories', 'labels']:
+                if x in f:
+                    cats = np.squeeze(f[x][()])
+                    break
+            else:
+                cats = None
+        bags = Features(feats, categories=cats)
     else:
-        from .image_features import read_features
-        data = read_features(args.input_file)
-        bags = data.features
+        if os.path.isdir(args.input_file):
+            bags = Features.load_from_perbag(args.input_file)
+        else:
+            bags = Features.load_from_hdf5(args.input_file)
 
-    dim = bags[0].shape[1]
     if args.min_dist is None:
-        args.min_dist = default_min_dist(dim)
+        args.min_dist = default_min_dist(bags.dim)
 
     if args.output_format == 'mat':
         confirm_outfile(args.output_file)
@@ -814,44 +945,39 @@ def main():
         if not os.path.exists(args.output_file):
             confirm_outfile(args.output_file)
         else:
-            check = functools.partial(check_h5_file_agreement,
-                        args.output_file, bags=bags, args=args)
-            if args.input_format == 'matlab':
-                check(cats=cats)
-            else:
-                check(names=data.names, cats=data.categories)
+            check_h5_file_agreement(args.output_file, features=bags, args=args)
             status_fn("Output file already exists, but agrees with args.")
 
-    if args.n_points:
-        bags = subset_data(bags, args.n_points)
+    Ks = np.asarray(args.K)
+    if args.min_dist is None:
+        args.min_dist = default_min_dist(args.min_dist)
 
-    R, opts = estimate_divs(
-            bags, specs=args.div_funcs, Ks=args.K,
-            n_proc=args.n_proc,
-            tail=args.trim_tails, fix_mode=args.trim_mode,
+    divs = estimate_divs(
+            bags, specs=args.div_funcs, Ks=Ks,
+            cores=args.n_proc,
             min_dist=args.min_dist,
             return_opts=True,
             **args.flann_args)
 
     status_fn("Outputting results to", args.output_file)
 
-    opts['Ds'] = R
-    if opts['min_dist'] is None:
-        opts['min_dist'] = default_min_dist(opts['dim'])
-
-    if args.input_format == 'matlab':
-        opts['cats'] = cats
-    else:
-        opts['cats'] = data.categories
-        opts['names'] = data.names
+    opts = {
+        'specs': args.div_funcs,
+        'Ks': args.K,
+        'min_dist': args.min_dist,
+        'dim': bags.dim,
+        'cats': bags.categories,
+        'names': bags.names,
+        'Ds': divs,
+    }
 
     if args.output_format == 'mat':
         scipy.io.savemat(args.output_file, opts, oned_as='column')
     else:
         add_to_h5_file(args.output_file, opts)
 
-    assert not np.any(np.isnan(R)), 'nan found in the result'
-    assert not np.any(np.isinf(R)), 'inf found in the result'
+    assert not np.any(np.isnan(divs)), 'nan found in the result'
+    assert not np.any(np.isinf(divs)), 'inf found in the result'
 
 
 ################################################################################
@@ -879,7 +1005,6 @@ def _convert_cats(ary):
     if is_str:
         import h5py
         ary = np.asarray(ary, h5py.special_dtype(vlen=bytes))
-
     return ary, is_str
 
 
@@ -941,7 +1066,7 @@ def reconcile_file_order(f, names=None, cats=None, write=False):
 
 
 # TODO: track flann algorithms used here? or just whether they're exact?
-def check_h5_settings(f, n, dim, fix_mode, tail, min_dist=None,
+def check_h5_settings(f, n, dim, min_dist=None,
                       names=None, cats=None, write=False):
     """
     Checks that the hdf5 div cache file has settings that agree with the
@@ -962,8 +1087,6 @@ def check_h5_settings(f, n, dim, fix_mode, tail, min_dist=None,
             pass
 
     check('dim', dim)
-    check('fix_mode', fix_mode)
-    check('tail', tail)
     check('min_dist', default_min_dist(dim) if min_dist is None else min_dist)
 
     for x in ['names', 'cats']:
@@ -973,8 +1096,7 @@ def check_h5_settings(f, n, dim, fix_mode, tail, min_dist=None,
         reconcile_file_order(f, names=names, cats=cats, write=write)
 
 
-def add_to_h5_cache(f, div_dict, dim, fix_mode, tail, min_dist,
-                    names=None, cats=None):
+def add_to_h5_cache(f, div_dict, dim, min_dist, names=None, cats=None):
     """
     Add some divergences to an hdf5 file of divergences.
     Overwrites any matching ones that already exist.
@@ -989,100 +1111,61 @@ def add_to_h5_cache(f, div_dict, dim, fix_mode, tail, min_dist,
     assert all(div.shape == (n, n) for div in itervalues(div_dict))
 
     check_h5_settings(f, n=n,
-                      dim=dim, fix_mode=fix_mode, tail=tail, min_dist=min_dist,
+                      dim=dim, min_dist=min_dist,
                       names=names, cats=cats, write=True)
 
     for (div_func, K), divs in iteritems(div_dict):
-        g = f.require_group(div_func)
+        g = f.require_group(normalize_div_name(div_func))
         name = str(K)
         if name in g:
             del g[name]
         g.create_dataset(name, data=divs)
 
 
-def add_to_h5_file(filename, opts):
+def add_to_h5_file(filename, data):
     import h5py
     with h5py.File(filename) as f:
-        div_dict = {}
-        for div_name, divs in izip(opts['div_names'],
-                                   np.rollaxis(opts['Ds'], axis=-1)):
-            name, K = reverse_div_name(div_name)
-            div_dict[name, K] = divs
+        div_dict = dict(
+            ((name, K), data['Ds'][:, :, i, j])
+            for i, name in enumerate(data['specs'])
+            for j, K in enumerate(data['Ks'])
+        )
 
         add_to_h5_cache(f, div_dict,
-                        dim=opts['dim'], fix_mode=opts['fix_mode'],
-                        tail=opts['tail'], min_dist=opts['min_dist'],
-                        names=opts.get('names', None),
-                        cats=opts.get('cats', None))
+                        dim=data['dim'], min_dist=data['min_dist'],
+                        names=data.get('names', None),
+                        cats=data.get('cats', None))
 
 
-def check_h5_file_agreement(filename, bags, args, names=None, cats=None,
-                            interactive=True):
+def check_h5_file_agreement(filename, features, args, interactive=True):
     import h5py
     with h5py.File(filename) as f:
         # output file already exists; make sure args agree
         if not f.attrs.keys() and not f.keys():
             return
 
-        check_h5_settings(f, n=len(bags),
-                          dim=bags[0].shape[1], min_dist=args.min_dist,
-                          fix_mode=args.trim_mode, tail=args.trim_tails,
-                          names=names, cats=cats,
+        check_h5_settings(f, n=len(features),
+                          dim=features.dim, min_dist=args.min_dist,
+                          names=features.names, cats=features.categories,
                           write=False)
 
         # any overlap with stuff we've already calculated?
-        div_funcs = []
-        for div_func in args.div_funcs:
-            div_funcs.extend(normalize_div_name_list(div_func))
+        div_funcs = strict_map(normalize_div_name, args.div_funcs)
         overlap = [(div_func, k)
                    for div_func in div_funcs if div_func in f
                    for k in args.K if str(k) in f[div_func]]
         if overlap:
             if not interactive:
                 raise ValueError("hdf5 conflict: {}".format(overlap))
+
             msg = '\n'.join(
                 ["WARNING: the following divs will be overwritten:"] +
-                ['\t{}, k = {}'.format(df, k) for df, k in overlap] +
+                ['\t{:12} k = {}'.format(df, ', '.join(str(k) for d, k in d_ks))
+                 for df, d_ks in itertools.groupby(overlap, itemgetter(0))] +
                 ['Proceed? [yN] '])
             resp = raw_input(msg)
             if not resp.startswith('y'):
                 sys.exit("Aborting.")
-
-
-################################################################################
-### Normalize and reverse divergence names
-
-_rev_name_map = dict((f.name, k) for k, f in iteritems(func_mapping))
-_name_fmt = re.compile(r'''
-    ([^\[]+)          # div func name, eg NP-H
-    \[
-    (?:a=([.\d]+),)?  # optional alpha specification
-    K=(\d+)           # K spec
-    \]
-''', re.VERBOSE)
-def reverse_div_name(name):
-    '''
-    Parse names like NP-H[K=1] or NP-R[a=0.9,K=5]
-    into something like ('hellinger', 1) or ('renyi:.9', 5).
-    '''
-    # TODO: make the reversal unnecessary...sigh
-    div_name, alpha, k = _name_fmt.match(name).groups()
-    div_name = _rev_name_map[div_name]
-    s = '{}:{}'.format(div_name, alpha) if alpha else div_name
-    return s, k
-
-
-def normalize_div_name_list(name):
-    if ':' in name:
-        main, alpha = name.split(':')
-        return ['{}:{}'.format(main, float(al))
-                for al in alpha.split(',')]
-    return [name]
-
-
-def normalize_div_name(name):
-    n, = normalize_div_name_list(name)  # has to be just one
-    return n
 
 
 ################################################################################
