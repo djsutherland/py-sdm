@@ -469,7 +469,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
         if X is None:
             if divs is None:
                 raise ValueError("need to pass either X or divs to fit()")
-            if not self.save_bags:
+            if self.save_bags:
                 msg = "Need to pass data to fit() if save_bags is true."
                 raise ValueError(msg)
             n_bags = None
@@ -512,7 +512,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
         if not self.oneclass and np.all(train_y == train_y[0]):
             raise ValueError("can't train with only one class")
 
-        if not isinstance(X, Features):
+        if (self.save_bags or divs is None) and not isinstance(X, Features):
             X = Features(X)
 
         if self.save_bags:
@@ -609,7 +609,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
         return self.eval_score(labels, preds)
 
     def transduct(self, train_bags, train_labels, test_bags, divs=None,
-                  save_fit=False):
+                  mode='predict', save_fit=False):
         '''
         Trains an SDM transductively, where the kernel matrix is constructed on
         the training + test points, the SVM is trained on training points, and
@@ -624,7 +624,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
             or None. (If None, divs is required.)
 
         train_labels: a label vector, like y for fit() except that the
-            "semi-supervised"label is not supported.
+            "semi-supervised" label is not supported.
 
         test_bags: a Features instance, list of row-instance data matrices,
             or None. (If None, divs is required.)
@@ -633,6 +633,11 @@ class BaseSDM(sklearn.base.BaseEstimator):
             (num_train + num_test, num_train + num_test), ordered with the
             training bags first and then the test bags following.
             Transparent caching is not yet supported here.
+
+        mode (default 'predict'): one of 'predict', 'dec', 'proba', 'log_proba'.
+            Returns the results of predict(), decision_function(),
+            predict_proba(), or predict_log_proba(), depending on this argument.
+            The latter two only work for classifiers.
 
         save_fit (boolean, default false): By default, the SDM object does not
             save its fit and is reset to an un-fit state as if it had just been
@@ -646,6 +651,14 @@ class BaseSDM(sklearn.base.BaseEstimator):
         if train_labels.ndim != 1:
             raise TypeError("train_labels should be 1d")
         n_train = train_labels.shape[0]
+
+        pred_fns = {'predict': self.predict, 'dec': self.decision_function}
+        if self.classifier:
+            pred_fns['proba'] = self.predict_proba
+            pred_fns['log_proba'] = self.predict_log_proba
+        if mode not in pred_fns:
+            raise ValueError("unknown transduction mode '{}'".format(mode))
+        pred_fn = pred_fns[mode]
 
         if self.classifier:
             if not is_categorical_type(train_labels) or train_labels.min() < 0:
@@ -692,7 +705,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
         combo_labels = np.hstack((train_labels, test_fake_labels))
 
         full_km = self.fit(combo_bags, combo_labels, divs=divs, ret_km=True)
-        preds = self.predict(test_bags, km=full_km[-n_test:, :n_train])
+        preds = pred_fn(test_bags, km=full_km[-n_test:, :n_train])
 
         if not save_fit:
             self.save_bags = old_save_bags
@@ -986,7 +999,7 @@ class BaseSDMClassifier(BaseSDM):
                  km_method=DEFAULT_KM_METHOD,
                  transform_test=DEFAULT_TRANSFORM_TEST,
                  save_bags=True):
-        super(SDC, self).__init__(
+        super(BaseSDMClassifier, self).__init__(
             div_func=div_func, K=K, tuning_folds=tuning_folds, n_proc=n_proc,
             sigma_vals=sigma_vals, scale_sigma=scale_sigma,
             cache_size=cache_size, tuning_cache_size=tuning_cache_size,
@@ -1024,7 +1037,7 @@ class BaseSDMClassifier(BaseSDM):
 
     def fit(self, X, y, sample_weight=None, divs=None, divs_cache=None,
             ret_km=False):
-        return super(self, BaseSDMClassifier).fit(
+        return super(BaseSDMClassifier, self).fit(
             X, y, sample_weight=sample_weight, divs=divs, divs_cache=divs_cache,
             ret_km=ret_km)
     fit.__doc__ = BaseSDM._fit_docstr.format(y_doc="""
@@ -1151,7 +1164,7 @@ class BaseSDMRegressor(BaseSDM):
 
     def fit(self, X, y, sample_weight=None, divs=None, divs_cache=None,
             ret_km=False):
-        return super(self, BaseSDMRegressor).fit(
+        return super(BaseSDMRegressor, self).fit(
             X, y, sample_weight=sample_weight, divs=divs, divs_cache=divs_cache,
             ret_km=ret_km)
     fit.__doc__ = BaseSDM._fit_docstr.format(y_doc="""
