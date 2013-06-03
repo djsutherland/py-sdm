@@ -11,7 +11,7 @@ from __future__ import division, print_function
 from collections import Counter
 from functools import partial, reduce
 import itertools
-from operator import itemgetter, mul
+from operator import mul
 import os
 import random
 import warnings
@@ -347,7 +347,6 @@ class BaseSDM(sklearn.base.BaseEstimator):
     # TODO: support squaring or not squaring divs
     # TODO: support non-Gaussian kernels
     # TODO: support CVing between multiple div funcs, values of K
-    # TODO: change API to be nicer to just give divs/km w/o faking data
     def __init__(self,
                  div_func=DEFAULT_DIV_FUNC,
                  K=DEFAULT_K,
@@ -442,32 +441,63 @@ class BaseSDM(sklearn.base.BaseEstimator):
             if attr_name.endswith('_') and not attr_name.startswith('_'):
                 delattr(self, attr_name)
 
-    def fit(self, X, y, sample_weight=None,
-            divs=None, divs_cache=None, names=None, cats=None, ret_km=False):
-        '''
-        X: a list of row-instance data matrices, with common dimensionality
+    _fit_docstr = '''
+        Tunes parameters and then fits an SVM using the final parameters
+        on training data.
 
-        If classifying, y should be a vector of nonnegative integer class labels
-            -1 corresponds to data that should be used semi-supervised, ie
-            used in projecting the Gram matrix, but not in training the SVM.
-        If regressing, y should be a vector of real-valued class labels
-            nan is the corresponding semi-supervised indicator value
+        X should be one of:
+            - an sdm.Features instance (preferred)
+            - a list of row-instance data matrices each (num_pts x dim),
+              where num_pts can vary but dim needs to be constant
+            - None, if save_bags is False and you're passing divs. In this case,
+              you need to compute divergences for any test points yourself.
+        {y_doc}
+        sample_weight (optional): a vector of weights applied to each sample,
+            where 1 means unweighted.
 
-        divs: precomputed divergences among the passed points
+        divs (optional): precomputed divergences among the passed points
+            (an array of shape num_bags x num_bags)
 
-        divs_cache: a filename for a cache file. Note that this needs to be
-                    on the TRAINING data only, in the same order.
-        names, cats: optional metadata to verify the cache file is actually
-                     for the right data (highly recommended if available)
-        '''
-        n_bags = len(X)
+        divs_cache (optional): a filename for a cache file. Note that this
+            needs to be on the TRAINING data only, in the same order. Any names
+            or categories in X are used to verify the cache file is for the
+            right data.
+
+        ret_km (optional, boolean): if True, returns the final training kernel
+            matrix.
+    '''
+    def fit(self, X, y, sample_weight=None, divs=None, divs_cache=None,
+            ret_km=False):
+        if X is None:
+            if divs is None:
+                raise ValueError("need to pass either X or divs to fit()")
+            if not self.save_bags:
+                msg = "Need to pass data to fit() if save_bags is true."
+                raise ValueError(msg)
+            n_bags = None
+        else:
+            n_bags = len(X)
+
+        if divs is not None:
+            divs = np.asarray(divs)
+            if divs.ndim != 2:
+                raise ValueError("divs should be n_bags x n_bags")
+            a, b = divs.shape
+            if a != b:
+                raise ValueError("divs should be n_bags x n_bags")
+
+            if n_bags is None:
+                n_bags = a
+            elif a != n_bags:
+                raise ValueError("divs should be n_bags x n_bags")
 
         y = np.squeeze(y)
-        assert y.shape == (n_bags,)
-        if self.classifier:
-            assert is_categorical_type(y)
-            assert np.all(y >= -1)
+        if y.shape != (n_bags,):
+            raise ValueError("y should be 1d of length n_bags")
 
+        if self.classifier:
+            if not is_categorical_type(y) or np.any(y < -1):
+                raise ValueError("y for classification should be ints >= -1")
             train_idx = y != -1
         else:
             train_idx = ~np.isnan(y)
@@ -479,22 +509,22 @@ class BaseSDM(sklearn.base.BaseEstimator):
             train_sample_weight = sample_weight[train_idx]
 
         train_y = y[train_idx]
-        assert train_y.size >= 2
-        if not self.oneclass:
-            assert not np.all(train_y == train_y[0])
+        if train_y.size < 2:
+            raise ValueError("must train with at least 2 points")
+        if not self.oneclass and np.all(train_y == train_y[0]):
+            raise ValueError("can't train with only one class")
+
+        if not isinstance(X, Features):
+            X = Features(X)
 
         if self.save_bags:
-            self.train_bags_ = itemgetter(*train_idx.nonzero()[0])(X)
+            self.train_bags_ = X[train_idx]
 
         # get divergences
         if divs is None:
             self.status_fn('Getting divergences...')
-            divs = get_divs_cache(X, names=names, cats=cats,
-                                  cache_filename=divs_cache,
-                                  **self._div_args(for_cache=True))
-        else:
-            #self.status_fn('Using passed-in divergences...')
-            assert divs.shape == (n_bags, n_bags)
+            div_args = self._div_args(for_cache=True)
+            divs = get_divs_cache(X, cache_filename=divs_cache, **div_args)
 
         if self.symmetrize_divs:
             divs = symmetrize(divs)
@@ -523,6 +553,9 @@ class BaseSDM(sklearn.base.BaseEstimator):
 
         if ret_km:
             return full_km
+    fit.__doc__ = _fit_docstr.format(y_doc="""
+        y: a vector of class labels (depending on the subclass)
+        """)
 
     def _prediction_km(self, data=None, divs=None, km=None):
         # TODO: smarter projection options for inductive use
@@ -549,7 +582,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
             mask[-n_test:, :n_train] = True
 
             divs = np.squeeze(estimate_divs(
-                    self.train_bags_ + tuple(data), mask=mask,
+                    self.train_bags_ + data, mask=mask,
                     **self._div_args(for_cache=False)))
             divs = (divs[-n_test:, :n_train] + divs[:n_train, -n_test].T) / 2
             destroy_divs = True
@@ -586,28 +619,70 @@ class BaseSDM(sklearn.base.BaseEstimator):
 
         The SVM itself is inductive (given the kernel).
 
-        If divs is passed, it should be a div matrix for train_bags + test_bags.
-        Transparent caching is not yet supported here because of the re-ordering
-        issue.
+        Arguments
+        ---------
 
-        By default, the object does not save the fit state and is reset to
-        an un-fit state as if it had just been constructed.
-        Passing save_fit=True makes the fit persistent.
+        train_bags: a Features instance, list of row-instance data matrices,
+            or None. (If None, divs is required.)
+
+        train_labels: a label vector, like y for fit() except that the
+            "semi-supervised"label is not supported.
+
+        test_bags: a Features instance, list of row-instance data matrices,
+            or None. (If None, divs is required.)
+
+        divs (optional): a matrix of divergences of shape
+            (num_train + num_test, num_train + num_test), ordered with the
+            training bags first and then the test bags following.
+            Transparent caching is not yet supported here.
+
+        save_fit (boolean, default false): By default, the SDM object does not
+            save its fit and is reset to an un-fit state as if it had just been
+            constructed. Passing save_fit=True makes the fit persistent.
         '''
         # TODO: support transparent divs caching by passing in indices
-
-        n_train = len(train_bags)
-        n_test = len(test_bags)
+        # TODO: support passing in pre-stacked train/test features,
+        #       for minimal stacking purposes
 
         train_labels = np.squeeze(train_labels)
-        assert train_labels.shape == (n_train,)
-        if self.classifier:
-            assert is_categorical_type(train_labels)
-            assert np.all(train_labels >= 0)
-        else:
-            assert np.all(np.isfinite(train_labels))
+        if train_labels.ndim != 1:
+            raise TypeError("train_labels should be 1d")
+        n_train = train_labels.shape[0]
 
-        combo_bags = train_bags + test_bags
+        if self.classifier:
+            if not is_categorical_type(train_labels) or train_labels.min() < 0:
+                raise TypeError("train_labels should be nonnegative integers")
+        else:
+            if not np.all(np.isfinite(train_labels)):
+                raise TypeError("train_labels should be finite")
+
+        if divs is not None:
+            divs = np.asarray(divs)
+            if divs.ndim != 2:
+                raise TypeError("divs should be 2d")
+            n_both, b = divs.shape
+            if n_both != b:
+                raise TypeError("divs should be n_bags x n_bags")
+            n_test = n_both - n_train
+            if n_test < 1:
+                raise TypeError("divs should have length num_train + num_test")
+            combo_bags = None
+        else:
+            if train_bags is None or test_bags is None:
+                raise TypeError("must pass either divs or train_bags/test_bags")
+
+            if len(train_bags) != n_train:
+                raise TypeError("train_bags and train_labels should have "
+                                "consistent lengths")
+            n_test = len(test_bags)
+
+        if divs is None or (save_fit and self.save_bags):
+            if train_bags is None or test_bags is None:
+                raise TypeError("must pass bags if save_fit and save_bags")
+
+            combo_bags = train_bags + test_bags
+            if not isinstance(combo_bags, Features):
+                combo_bags = Features(combo_bags)
 
         if not save_fit:
             old_save_bags = self.save_bags
@@ -791,26 +866,26 @@ class BaseSDM(sklearn.base.BaseEstimator):
             num_folds=10, stratified_cv=False, folds=None,
             ret_fold_info=False, ret_tune_info=False,
             divs=None, divs_cache=None, names=None, cats=None):
+        # TODO: document crossvalidate()
         # TODO: nicer interface for ret_tune_info
         status = self.status_fn
 
-        num_bags = len(bags)
-        dim = bags[0].shape[1]
-        if any(bag.ndim != 2 or bag.shape[1] != dim or bag.shape[0] == 0
-               for bag in bags):
-            msg = "all bags should be n_i x dim, with n_i > 0, consistent dim"
-            raise ValueError(msg)
-
         labels = np.squeeze(labels)
-        assert labels.shape == (num_bags,)
+        if labels.ndim != 1:
+            raise TypeError("train_labels should be 1d")
+        num_bags = labels.shape[0]
+
         if self.classifier:
             # TODO: be nicer about this (support rounding)
-            assert is_categorical_type(labels)
-            assert np.all(labels >= 0)
+            if not is_categorical_type(labels) or labels.min() < 0:
+                raise TypeError("train_labels should be nonnegative integers")
         else:
-            assert np.all(np.isfinite(labels))
+            if not np.all(np.isfinite(labels)):
+                raise TypeError("train_labels should be finite")
 
         if divs is None:
+            if not isinstance(bags, Features):
+                bags = Features(bags)
             status('Getting divergences...')
             divs = get_divs_cache(bags,
                     div_func=self.div_func, K=self.K,
@@ -819,8 +894,8 @@ class BaseSDM(sklearn.base.BaseEstimator):
                     names=names, cats=cats,
                     status_fn=self._status_fn, progressbar=self.progressbar)
         else:
-            #status_fn('Using passed-in divergences...')
-            assert divs.shape == (num_bags, num_bags)
+            if divs.shape != (num_bags, num_bags):
+                raise ValueError("divs should be num_bags x num_bags")
 
         if self.classifier:
             preds = -np.ones(num_bags, dtype=int)
@@ -844,8 +919,6 @@ class BaseSDM(sklearn.base.BaseEstimator):
             status('Starting fold {} / {}'.format(i, num_folds))
 
             both = np.hstack((train, test))
-            train_bags = itemgetter(*train)(bags)
-            test_bags = itemgetter(*test)(bags)
 
             if self.classifier:
                 status('Train distribution: {}'.format(
@@ -855,14 +928,13 @@ class BaseSDM(sklearn.base.BaseEstimator):
 
             if project_all:
                 preds[test] = self.transduct(
-                        train_bags, labels[train], test_bags,
+                        None, labels[train], None,
                         divs=divs[np.ix_(both, both)], save_fit=True)
             else:
-                self.fit(train_bags, labels[train],
-                         divs=divs[np.ix_(train, train)])
+                self.fit(None, labels[train], divs=divs[np.ix_(train, train)])
                 pred_divs = (divs[np.ix_(test, train)] +
                              divs[np.ix_(train, test)].T) / 2
-                preds[test] = self.predict(test_bags, divs=pred_divs)
+                preds[test] = self.predict(None, divs=pred_divs)
 
             score = self.eval_score(labels[test], preds[test])
             status('Fold {score_name}: {score:{score_fmt}}'.format(score=score,
@@ -952,6 +1024,18 @@ class BaseSDMClassifier(BaseSDM):
         self._check_proba()
         km = self._prediction_km(data, divs=divs, km=km)
         return self.svm_.predict_log_proba(km)
+
+    def fit(self, X, y, sample_weight=None, divs=None, divs_cache=None,
+            ret_km=False):
+        return super(self, BaseSDMClassifier).fit(
+            X, y, sample_weight=sample_weight, divs=divs, divs_cache=divs_cache,
+            ret_km=ret_km)
+    fit.__doc__ = BaseSDM._fit_docstr.format(y_doc="""
+        y: a vector of nonnegative integer class labels.
+            -1 corresponds to data that should be used semi-supervised, i.e. its
+            divergences are calculated and used to project the Gram matrix, but
+            are not used in training the SVM.
+    """)
 
 
 class SDC(BaseSDMClassifier):
@@ -1067,6 +1151,18 @@ class BaseSDMRegressor(BaseSDM):
     eval_score = staticmethod(rmse)
     score_name = 'RMSE'
     score_fmt = ''
+
+    def fit(self, X, y, sample_weight=None, divs=None, divs_cache=None,
+            ret_km=False):
+        return super(self, BaseSDMRegressor).fit(
+            X, y, sample_weight=sample_weight, divs=divs, divs_cache=divs_cache,
+            ret_km=ret_km)
+    fit.__doc__ = BaseSDM._fit_docstr.format(y_doc="""
+        y: a vector of real-valued labels.
+            nan corresponds to data that should be used semi-supervised, i.e.
+            its divergences are calculated and used to project the Gram matrix,
+            but are not used in training the SVM.
+        """)
 
 
 class SDR(BaseSDMRegressor):
@@ -1237,12 +1333,14 @@ class OneClassSDM(BaseSDM):
             d['nu'] = self.nu_
         return d
 
-    def fit(self, X, sample_weight=None, ret_km=False,
-            divs=None, divs_cache=None, names=None, cats=None):
+    def fit(self, X, sample_weight=None, divs=None, divs_cache=None,
+            ret_km=False):
         y = np.zeros(len(X))  # fake labels so superclass doesn't flip out
         return super(OneClassSDM, self).fit(
                 X, y, sample_weight=sample_weight, ret_km=ret_km,
-                divs=divs, divs_cache=divs_cache, names=names, cats=cats)
+                divs=divs, divs_cache=divs_cache)
+    fit.__doc__ = BaseSDM._fit_docstr.format(y_doc='')
+
 
 sdm_for_mode = {
     'SVC': SDC,
