@@ -38,9 +38,6 @@ setup(
         'nose',
         'vlfeat-ctypes',
     ],
-    dependency_links=[
-        'https://github.com/dougalsutherland/vlfeat-ctypes/tarball/master#egg=vlfeat-ctypes-0.1.0dev'
-    ],
     entry_points={
         'console_scripts': [
             'extract_image_features = sdm.extract_image_features:main',

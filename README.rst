@@ -71,14 +71,8 @@ Pip wil also check out the code for you into (by default) ``./src/py-sdm``::
 In either case, if you issue a ``git pull`` in the source directory it'll update
 the code.
 
-If you use the image feature extraction code, you might want to do the same for
-the ``vlfeat-ctypes`` package (which is modified less often but still does not
-have any official releases). It's easiest to do this *before* the above::
-
-    pip install -e 'git+https://github.com/dougalsutherland/vlfeat-ctypes.git#egg=vlfeat-ctypes-0.1.0dev'
-
-In either case, if you want to use the image feature code you need to either
-install ``libvl.so`` (or similar for your platform)
+If you want to use the image feature code you need to either install
+``libvl.so`` (or similar for your platform)
 or issue ``python -m vlfeat.download`` to install it in your site-packages.
 (Adding ``-h`` to that shows how to avoid re-downloading the binary distribution
 if you already have it.)
