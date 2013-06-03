@@ -26,7 +26,13 @@ Requirements
 
 This code is written for Python 2.7, with 3.2+ compatability in mind (but not
 tested). It is known not to work for 2.6, though adding support would not be
-overly difficult.
+overly difficult; let me know if you want that.
+
+It is also only tested on Unix-like operating systems (in particular, on OS X,
+CentOS, and Ubuntu). All of the code except for the actual SVM wrappers
+*should* work on Windows, but it's untested. The SVM wrappers *should* work
+if you use n_proc=1; if you try to use multiprocessing there it will complain
+and crash.
 
 The `Enthought Python Distribution <http://www.enthought.com/epd>`_, which
 has an academic license, includes numpy, scipy, h5py, and PIL -- the hardest to
