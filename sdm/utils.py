@@ -52,13 +52,14 @@ def get_col(X, c): return X[:, c].ravel()
 
 def is_integer_type(x):
     return issubclass(np.asanyarray(x).dtype.type, np.integer)
-
 def is_categorical_type(ary):
     ary = np.asanyarray(ary)
     return is_integer_type(ary) or ary.dtype.kind == 'b'
 
 def is_integer(x):
     return np.isscalar(x) and is_integer_type(x)
+def is_categorical(x):
+    return np.isscalar(x) and is_categorical_type(x)
 
 
 def rmse(y_true, y_pred):

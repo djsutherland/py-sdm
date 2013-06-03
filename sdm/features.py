@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-from .utils import (izip, iterkeys, iteritems, lazy_range,
+from .utils import (izip, iterkeys, iteritems, lazy_range, str_types,
                     is_integer_type, is_categorical_type)
 
 _default_category = 'none'
@@ -246,14 +246,56 @@ class Features(object):
     def __len__(self): return self.data.size
     def __iter__(self): return iter(self.data)
     def __getitem__(self, key):
-        if not is_categorical_type(key):
-            msg = "Features indexing only accepts integers or booleans"
-            raise TypeError(msg)
+        if (isinstance(key, str_types) or
+                (isinstance(key, tuple) and any(isinstance(x) for x in key))):
+            raise TypeError("Features indexing only subsets rows")
 
-        if np.shape(key) == ():
+        if np.isscalar(key):
             return self.data[key]
         else:
             return Features.from_data(self.data[key], copy=False)
+
+    def __add__(self, oth):
+        if isinstance(oth, Features):
+            common_extras = dict((k, np.vstack((self[k], oth[k])))
+                                 for k in self._extra_names & oth._extra_names)
+            return Features(
+                np.vstack((self._features, oth._features)),
+                n_pts=np.hstack((self._n_pts, oth._n_pts)),
+                categories=np.hstack((self.categories, oth.categories)),
+                names=np.hstack((self.names, oth.names)),
+                **common_extras)
+
+        if isinstance(oth, list):  # TODO: support np object arrays too?
+            feats = np.vstack([self._features] + oth)
+            n_pts = np.hstack([self._n_pts] + [len(x) for x in oth])
+
+            oth_cats = np.repeat(_default_category, len(oth))
+            cats = np.hstack([self.categories, oth_cats])
+
+            names = [str(i) for i in range(len(feats), len(feats) + len(oth))]
+            names.insert(0, self.names)
+            names = np.hstack(names)
+
+            return Features(feats, n_pts=n_pts, categories=cats, names=names)
+
+        return NotImplemented
+
+    def __radd__(self, oth):
+        if isinstance(oth, list):
+            feats = np.vstack(oth + [self._features])
+            n_pts = np.hstack([len(x) for x in oth] + [self._n_pts])
+
+            oth_cats = np.repeat(_default_category, len(oth))
+            cats = np.hstack([oth_cats, self.categories])
+
+            names = [str(i) for i in range(len(feats), len(feats) + len(oth))]
+            names.append(self.names)
+            names = np.hstack(names)
+
+            return Features(feats, n_pts=n_pts, categories=cats, names=names)
+
+        return NotImplemented
 
     ### convenience properties to get at a single column of the data
     features = property(lambda self: self.data['features'])
