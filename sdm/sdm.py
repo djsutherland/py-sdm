@@ -828,24 +828,19 @@ class BaseSDM(sklearn.base.BaseEstimator):
                              svm_params=self._svm_params(tuning=True),
                              sample_weight=sample_weight_d)
 
-        # callback to save the resulting score
-        def assign_score(params_val_and_status):
-            params, val, status = params_val_and_status
-            indices = tuple(param_d[k].searchsorted(params[k])
-                            for k in param_names)
-            scores[indices] = val
-            if status:
-                next(conv_warning_counter)
-            if self.progressbar:
-                tick_pbar()
-
         # actually do it
         with get_pool(self.n_proc) as pool:
-            for job in param_grid:
-                pool.apply_async(try_params, [job], callback=assign_score)
+            for ps, val, status in pool.imap_unordered(try_params, param_grid):
+                idx = tuple(param_d[k].searchsorted(ps[k]) for k in param_names)
+                scores[idx] = val
+                if status:
+                    next(conv_warning_counter)
+                if self.progressbar:
+                    tick_pbar()
 
         if self.progressbar:
             pbar.finish()
+
 
         warnings.filters.remove(ignore_conv)
         n_conv = next(conv_warning_counter)
