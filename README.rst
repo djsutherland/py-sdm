@@ -20,30 +20,34 @@ based partially on code by Liang Xiong <lxiong@cs.cmu.edu>.
 Installation
 ------------
 
+
 Requirements
 ============
 
-This code is written for Python 2.7, with 3.2+ compatability in mind (but not tested).
-It is known not to work for 2.6, though adding support would not be overly difficult.
+This code is written for Python 2.7, with 3.2+ compatability in mind (but not
+tested). It is known not to work for 2.6, though adding support would not be
+overly difficult.
+
 The `Enthought Python Distribution <http://www.enthought.com/epd>`_, which
 has an academic license, includes numpy, scipy, h5py, and PIL -- the hardest to
-install of the dependencies. It also includes scikit-image and scikit-learn, but we
-need newer versions than it ships with.
+install of the dependencies. It also includes scikit-image and scikit-learn, but
+we need newer versions than it ships with.
 
-* `numpy <http://numpy.org>`_ and `scipy <http://scipy.org>`_ are not included in
-  the pip requirements, to avoid over-eager reinstallation with ``pip install -U``.
-  If you're going to run on largeish datasets, the PCA and PSD projection stages
-  will be faster if your numpy is linked to a fast BLAS/LAPACK like MKL (true of EPD).
+* `numpy <http://numpy.org>`_ and `scipy <http://scipy.org>`_ are not included
+  in the pip requirements, to avoid over-eager reinstallation with
+  ``pip install -U``. If you're going to run on largeish datasets, the PCA and
+  PSD projection stages will be faster if your numpy is linked to a fast
+  BLAS/LAPACK like MKL (true of EPD).
 
 * `FLANN <http://people.cs.ubc.ca/~mariusm/index.php/FLANN/FLANN>`_,
-  including the Python interface, is highly recommended for much
-  faster nearest neighbor searches. This isn't in pip but is in homebrew,
-  ubuntu's apt, etc.
+  including the Python interface, is highly recommended for much faster nearest
+  neighbor searches. This isn't in pip but is in homebrew, ubuntu's apt, etc.
 
 * `vlfeat-ctypes <https://github.com/dougalsutherland/vlfeat-ctypes>`_, a
   minimal ctypes interface to the `vlfeat <http://www.vlfeat.org>`_ computer
   vision algorithm library. This *is* installed by pip automatically, but
   make sure to run ``python -m vlfeat.download`` to download the library binary.
+
 
 Actual installation
 ===================
@@ -54,20 +58,22 @@ a `virtualenv <https://pypi.python.org/pypi/virtualenv>`_) via::
 
     pip install 'https://github.com/dougalsutherland/py-sdm/tarball/master#egg=sdm-0.1.0dev'
 
-Since this package is still in early development and not yet producing relases,
-however, this somewhat complicates the process of upgrading the code. It's
-easier to get upgrades if you do a development install. One way to do so is to
-install from the source repository, assuming you have ``git`` on your system:
+Since this package is still in early development, however, this somewhat
+complicates the process of upgrading the code. It's easier to get upgrades if
+you do a development install. If you have a checkout of the code, just do::
+
+    python setup.py develop
+
+Pip wil also check out the code for you into (by default) ``./src/py-sdm``::
 
     pip install -e 'git+https://github.com/dougalsutherland/py-sdm.git#egg=sdm-0.1.0dev'
 
-This will check the code out into ``./src/py-sdm`` by default, and then do a
-"development" install, so that you can fetch updates simply by going into that
-directory and issuing ``git pull``.
+In either case, if you issue a ``git pull`` in the source directory it'll update
+the code.
 
 If you use the image feature extraction code, you might want to do the same for
 the ``vlfeat-ctypes`` package (which is modified less often but still does not
-have any releases). It's easiest to do this *before* the above:
+have any official releases). It's easiest to do this *before* the above::
 
     pip install -e 'git+https://github.com/dougalsutherland/vlfeat-ctypes.git#egg=vlfeat-ctypes-0.1.0dev'
 
@@ -100,7 +106,6 @@ directory, and a CSV file $target_name.csv with labels of the form::
 for each image in the directory (no header).
 
 
-
 Extracting Features
 ===================
 
@@ -120,10 +125,10 @@ This by default spawns one process per core to extract features (each of which
 uses only one thread); this can be controlled with the ``--n-proc`` argument.
 
 You're likely to want to use the ``--resize`` option if your images are large
-and/or of widely varying sizes.
+and/or of widely varying sizes. We typically resize them to be about 100px wide
+or so.
 
 See ``--help`` for more options.
-
 
 
 Post-Processing Features
@@ -150,7 +155,6 @@ environment variable can limit that.
 Again, other options available via ``--help``.
 
 
-
 Classifying/Regressing
 ======================
 
@@ -173,16 +177,16 @@ For regression, the command would look like::
         feats_pca.h5 --div-cache-file feats_pca.divs.h5
         --output-file feats_pca.cv.mat
 
-This uses ``--n-proc`` to specify the number of SVMs to run in parallel during parameter
-tuning. During the projection phase (which happens in serial), an MKL-linked numpy is
-likely to spawn many threads; `OMP_NUM_THREADS` will again control this.
+This uses ``--n-proc`` to specify the number of SVMs to run in parallel during
+parameter tuning. During the projection phase (which happens in serial), an
+MKL-linked numpy is likely to spawn many threads;
+``OMP_NUM_THREADS`` will again control this.
 
 Many more options are available via ``sdm cv --help``.
 
 ``sdm`` also supports predicting using a training / test set through
-``sdm predict`` rather than ``sdm cv``,
-but there isn't currently code to produce the input files it assumes.
-
+``sdm predict`` rather than ``sdm cv``, but there isn't currently code to
+produce the input files it assumes.
 
 
 Precomputing Divergences
@@ -193,11 +197,12 @@ alpha or K), it's much more efficient to compute them all at once than to
 let ``sdm`` do them all separately.
 
 (This will hopefully no longer be true once ``sdm`` crossvalidates among
-divergence functions: `issue #12 <https://github.com/dougalsutherland/py-sdm/issues/12>`_.)
+divergence functions and Ks:
+`issue #12 <https://github.com/dougalsutherland/py-sdm/issues/12>`_.)
 
 The ``extract_divs`` command does this, using a command along the lines of::
 
-    extract_divs --div-funcs renyi:.8,.9,.99 -K 1 3 5 10 --
+    extract_divs --div-funcs kl renyi:.8 renyi:.9 renyi:.99 -K 1 3 5 10 --
         feats_pca.h5 feats_pca.divs.h5
 
 (where the ``--`` indicates that the ``-K`` arguments are done and it's time for
@@ -237,11 +242,11 @@ Some notes:
   you like.
 * The features matrices can have any number of rows but must have the same
   numbers of columns.
-* Different bags need not have the same labels, unless you want to use them
-  for training / cross-validating in ``sdm``. Each bag can have any number
+* Different bags need not have the same labels available, unless you want to use
+  them for training / cross-validating in ``sdm``. Each bag can have any number
   of labels.
 
-Alternatively, you can use the "per-image" format, where you make a ``.npz``
+Alternatively, you can use the "per-bag" format, where you make a ``.npz``
 file (with ``np.savez``) at ``root-path/cat-name/bag-name.npz`` with a
 ``features`` matrix and any labels (as above).
 
@@ -265,26 +270,29 @@ situation where test data is not available at training time::
     # train_features is a list of row-instance data matrices
     # train_labels is a numpy vector of integer categories
 
-    train_x, pca = sdm.pca_features(train_features, varfrac=0.7, ret_pca=True)
-    train_x, scaler = sdm.normalize(train_x, ret_scaler=True)
+    # PCA and standardize the features
+    train_feats = sdm.Features(train_features)
+    pca = train_feats.pca(varfrac=0.7, ret_pca=True, inplace=True)
+    scaler = train_feats.standardize(ret_scaler=True, inplace=True)
 
-    clf = sdm.SupportDistributionMachine()
-    clf.fit(train_x, train_labels)
+    clf = sdm.SDC()
+    clf.fit(train_feats, train_labels)
     # ^ gets divergences and does parameter tuning. See the docstrings for
     # more information about options, divergence caches, etc. Caching
     # divergences is highly recommended.
 
-    # get test_features
-    test_x = sdm.pca_features(test_features, pca=pca)
-    test_x = sdm.normalize(test_x, scaler=scaler)
+    # get test_features: another list of row-instance data matrices
+    # and then process them consistently with the training samples
+    test_feats = sdm.Features(test_features, default_category='test')
+    test_feats.pca(pca=pca, inplace=True)
+    test_feats.normalize(scaler=scaler, inplace=True)
 
-    # get test values
-    preds = clf.predict(test_x)
+    # get test predictions
+    preds = clf.predict(test_feats)
 
     accuracy = np.mean(preds == test_labels)
 
-
-To do regression, use ``clf = sdm.SupportDistributionMachine(mode='NuSVR')``;
+To do regression, use ``clf = sdm.NuSDR()`` and a real-valued train_labels;
 the rest of the usage is the same.
 
 If you're running on a nontrivial amount of data, it may be nice to pass
@@ -292,4 +300,4 @@ If you're running on a nontrivial amount of data, it may be nice to pass
 information out along the way (like in the CLI).
 
 If test data is available at training time, it's preferable to use
-``SupportDistributionMachine.transduct()`` instead.
+``.transduct()`` instead. There's also a ``.crossvalidate()`` method.

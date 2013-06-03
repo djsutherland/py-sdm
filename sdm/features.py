@@ -56,7 +56,8 @@ class Features(object):
     to a bag. The datatype elements are 'features' (a reference to a bag of
     features), 'category' (a string), 'name' (a string), as well as any extras.
     '''
-    def __init__(self, bags, n_pts=None, categories=None, names=None, **extras):
+    def __init__(self, bags, n_pts=None, categories=None, names=None,
+                 default_category=_default_category, **extras):
         if bags is _do_nothing_sentinel:
             return  # special path for from_data
 
@@ -125,7 +126,7 @@ class Features(object):
 
         # handle categories
         if categories is None:
-            categories = np.repeat(_default_category, n_bags)
+            categories = np.repeat(default_category, n_bags)
         else:
             categories = np.asarray(categories, dtype=str)
             if len(categories) != n_bags:
