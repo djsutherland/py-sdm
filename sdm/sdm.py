@@ -897,13 +897,72 @@ class BaseSDM(sklearn.base.BaseEstimator):
         # TODO: nicer output arguments in general (namedtuple)
 
 
-class SDC(BaseSDM):
+class BaseSDMClassifier(BaseSDM):
     classifier = True
-    svm_class = svm.SVC
     tuning_loss = staticmethod(zero_one_loss)
     eval_score = staticmethod(accuracy_score)
     score_name = 'accuracy'
     score_fmt = '.1%'
+
+    def __init__(self,
+                 div_func=DEFAULT_DIV_FUNC,
+                 K=DEFAULT_K,
+                 tuning_folds=DEFAULT_TUNING_FOLDS,
+                 n_proc=None,
+                 sigma_vals=DEFAULT_SIGMA_VALS, scale_sigma=True,
+                 cache_size=DEFAULT_SVM_CACHE,
+                 tuning_cache_size=DEFAULT_SVM_CACHE,
+                 svm_tol=DEFAULT_SVM_TOL,
+                 tuning_svm_tol=DEFAULT_SVM_TOL,
+                 svm_max_iter=DEFAULT_SVM_ITER,
+                 tuning_svm_max_iter=DEFAULT_SVM_ITER_TUNING,
+                 svm_shrinking=DEFAULT_SVM_SHRINKING,
+                 probability=DEFAULT_SVM_PROBABILITY,
+                 status_fn=None, progressbar=None,
+                 min_dist=None,
+                 symmetrize_divs=DEFAULT_SYMMETRIZE_DIVS,
+                 km_method=DEFAULT_KM_METHOD,
+                 transform_test=DEFAULT_TRANSFORM_TEST,
+                 save_bags=True):
+        super(SDC, self).__init__(
+            div_func=div_func, K=K, tuning_folds=tuning_folds, n_proc=n_proc,
+            sigma_vals=sigma_vals, scale_sigma=scale_sigma,
+            cache_size=cache_size, tuning_cache_size=tuning_cache_size,
+            svm_tol=svm_tol, tuning_svm_tol=tuning_svm_tol,
+            svm_max_iter=svm_max_iter, tuning_svm_max_iter=tuning_svm_max_iter,
+            svm_shrinking=svm_shrinking,
+            status_fn=status_fn, progressbar=progressbar,
+            min_dist=min_dist,
+            symmetrize_divs=symmetrize_divs,
+            km_method=km_method,
+            transform_test=transform_test,
+            save_bags=save_bags)
+        self.probability = probability
+
+    def _check_proba(self):
+        if not self.probability:
+            raise NotImplementedError(
+                "probability estimates must be enabled to use this method")
+        elif getattr(self, 'svm_', None) is not None:
+            pass  # hasn't been fit; _prediction_km() will complain right away
+        elif not self.svm_.probability:
+            msg = ("Although probability estimates are enabled, it looks like "
+                   "they were turned on after fitting. That won't work.")
+            raise ValueError(msg)
+
+    def predict_proba(self, data, divs=None, km=None):
+        self._check_proba()
+        km = self._prediction_km(data, divs=divs, km=km)
+        return self.svm_.predict_proba(km)
+
+    def predict_log_proba(self, data, divs=None, km=None):
+        self._check_proba()
+        km = self._prediction_km(data, divs=divs, km=km)
+        return self.svm_.predict_log_proba(km)
+
+
+class SDC(BaseSDMClassifier):
+    svm_class = svm.SVC
 
     def __init__(self,
                  div_func=DEFAULT_DIV_FUNC,
@@ -934,6 +993,7 @@ class SDC(BaseSDM):
             svm_tol=svm_tol, tuning_svm_tol=tuning_svm_tol,
             svm_max_iter=svm_max_iter, tuning_svm_max_iter=tuning_svm_max_iter,
             svm_shrinking=svm_shrinking,
+            probability=probability,
             status_fn=status_fn, progressbar=progressbar,
             min_dist=min_dist,
             symmetrize_divs=symmetrize_divs,
@@ -942,7 +1002,6 @@ class SDC(BaseSDM):
             save_bags=save_bags)
         self.C_vals = C_vals
         self.weight_classes = weight_classes
-        self.probability = probability
 
     def _param_grid_dict(self):
         d = super(SDC, self)._param_grid_dict()
@@ -956,22 +1015,9 @@ class SDC(BaseSDM):
             d['C'] = self.C_
         return d
 
-    def predict_proba(self, data, divs=None, km=None):
-        km = self._prediction_km(data, divs=divs, km=km)
-        return self.svm_.predict_proba(km)
 
-    def predict_log_proba(self, data, divs=None, km=None):
-        km = self._prediction_km(data, divs=divs, km=km)
-        return self.svm_.predict_log_proba(km)
-
-
-class NuSDC(BaseSDM):
-    classifier = True
+class NuSDC(BaseSDMClassifier):
     svm_class = svm.NuSVC
-    tuning_loss = staticmethod(zero_one_loss)
-    eval_score = staticmethod(accuracy_score)
-    score_name = 'accuracy'
-    score_fmt = '.1%'
 
     def __init__(self,
                  div_func=DEFAULT_DIV_FUNC,
@@ -1001,6 +1047,7 @@ class NuSDC(BaseSDM):
             svm_tol=svm_tol, tuning_svm_tol=tuning_svm_tol,
             svm_max_iter=svm_max_iter, tuning_svm_max_iter=tuning_svm_max_iter,
             svm_shrinking=svm_shrinking,
+            probability=probability,
             status_fn=status_fn, progressbar=progressbar,
             min_dist=min_dist,
             symmetrize_divs=symmetrize_divs,
@@ -1008,7 +1055,6 @@ class NuSDC(BaseSDM):
             transform_test=transform_test,
             save_bags=save_bags)
         self.nu_vals = nu_vals
-        self.probability = probability
 
     def _param_grid_dict(self):
         d = super(NuSDC, self)._param_grid_dict()
@@ -1021,22 +1067,17 @@ class NuSDC(BaseSDM):
             d['nu'] = self.nu_
         return d
 
-    def predict_proba(self, data, divs=None, km=None):
-        km = self._prediction_km(data, divs=divs, km=km)
-        return self.svm_.predict_proba(km)
 
-    def predict_log_proba(self, data, divs=None, km=None):
-        km = self._prediction_km(data, divs=divs, km=km)
-        return self.svm_.predict_log_proba(km)
-
-
-class SDR(BaseSDM):
+class BaseSDMRegressor(BaseSDM):
     regressor = True
-    svm_class = svm.SVR
     tuning_loss = staticmethod(mean_squared_error)
     eval_score = staticmethod(rmse)
     score_name = 'RMSE'
     score_fmt = ''
+
+
+class SDR(BaseSDMRegressor):
+    svm_class = svm.SVR
 
     def __init__(self,
                  div_func=DEFAULT_DIV_FUNC,
@@ -1093,13 +1134,8 @@ class SDR(BaseSDM):
         super(SDR, self)._set_tuning(d)
 
 
-class NuSDR(BaseSDM):
-    regressor = True
+class NuSDR(BaseSDMRegressor):
     svm_class = svm.NuSVR
-    tuning_loss = staticmethod(mean_squared_error)
-    eval_score = staticmethod(rmse)
-    score_name = 'RMSE'
-    score_fmt = ''
 
     def __init__(self,
                  div_func=DEFAULT_DIV_FUNC,
@@ -1222,6 +1258,7 @@ sdm_for_mode = {
     'NuSVR': NuSDR,
     'OneClassSVM': OneClassSDM,
 }
+
 
 ################################################################################
 ### Command-line interface
