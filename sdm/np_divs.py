@@ -1096,8 +1096,7 @@ def check_h5_settings(f, n, dim, min_dist=None,
         reconcile_file_order(f, names=names, cats=cats, write=write)
 
 
-def add_to_h5_cache(f, div_dict, dim, min_dist,
-                    names=None, cats=None):
+def add_to_h5_cache(f, div_dict, dim, min_dist, names=None, cats=None):
     """
     Add some divergences to an hdf5 file of divergences.
     Overwrites any matching ones that already exist.

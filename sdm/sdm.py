@@ -275,9 +275,7 @@ def split_km(km, train_idx, test_idx):
 ################################################################################
 ### Cached divs helper
 
-def get_divs_cache(bags, div_func, K, cache_filename=None,
-                   names=None, cats=None,
-                   min_dist=None,
+def get_divs_cache(bags, div_func, K, cache_filename=None, min_dist=None,
                    n_proc=None, status_fn=True, progressbar=None):
     # TODO: support loading subsets of the file, or reordered, based on names
     # TODO: support flann arguments
@@ -289,7 +287,7 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
         with h5py.File(cache_filename, 'r') as f:
             check_h5_settings(f, n=len(bags), dim=bags[0].shape[1],
                 min_dist=min_dist,
-                names=names, cats=cats)
+                names=bags.names, cats=bags.categories)
             if path in f:
                 divs = f[path]
                 # assert divs.shape == (len(bags), len(bags)) # in check
@@ -299,7 +297,7 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
 
     divs = np.squeeze(estimate_divs(
             bags, specs=[div_func], Ks=[K],
-            n_proc=n_proc, min_dist=min_dist,
+            cores=n_proc, min_dist=min_dist,
             status_fn=status_fn, progressbar=progressbar))
 
     if cache_filename:
@@ -308,7 +306,7 @@ def get_divs_cache(bags, div_func, K, cache_filename=None,
             add_to_h5_cache(f, {(div_func, K): divs},
                             dim=bags[0].shape[1],
                             min_dist=min_dist,
-                            names=names, cats=cats)
+                            names=bags.names, cats=bags.categories)
 
     return divs
 
@@ -863,9 +861,9 @@ class BaseSDM(sklearn.base.BaseEstimator):
     ############################################################################
     ### Cross-validation helper
     def crossvalidate(self, bags, labels, project_all=True,
-            num_folds=10, stratified_cv=False, folds=None,
-            ret_fold_info=False, ret_tune_info=False,
-            divs=None, divs_cache=None, names=None, cats=None):
+                      num_folds=10, stratified_cv=False, folds=None,
+                      ret_fold_info=False, ret_tune_info=False,
+                      divs=None, divs_cache=None):
         # TODO: document crossvalidate()
         # TODO: nicer interface for ret_tune_info
         status = self.status_fn
@@ -891,7 +889,6 @@ class BaseSDM(sklearn.base.BaseEstimator):
                     div_func=self.div_func, K=self.K,
                     cache_filename=divs_cache, n_proc=self.n_proc,
                     min_dist=self.min_dist,
-                    names=names, cats=cats,
                     status_fn=self._status_fn, progressbar=self.progressbar)
         else:
             if divs.shape != (num_bags, num_bags):
