@@ -194,8 +194,8 @@ def find_paths(dirs, img_per_cla=None, sampler='first',
     return cats, paths
 
 
-def extract_features(paths, cats, imread_mode=IMREAD_MODES,
-                     parallel=False, **kwargs):
+def extract_image_features(paths, cats, imread_mode=IMREAD_MODES,
+                           parallel=False, **kwargs):
     '''
     Extracts features from images in a list of data directories.
 
@@ -410,7 +410,8 @@ def main():
     skip = set('paths_csv dirs extensions img_per_cla '
                'sampler output_format save_path'.split())
     kwargs = dict((k, v) for k, v in vars(args).iteritems() if k not in skip)
-    features = extract_features(paths, cats, **kwargs)  # TODO: progressbar
+    features = extract_image_features(paths, cats, **kwargs)
+    # TODO: show a progressbar here
 
     print("Saving results to '{}'".format(args.save_path))
     if args.output_format == 'single-hdf5':
