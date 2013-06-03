@@ -115,12 +115,15 @@ class ForkedData(object):
     '''
     # TODO: more flexible garbage collection options
     def __init__(self, val):
-        if os.name != 'posix':
-            raise RuntimeError("ForkedData only works on OSes with fork()")
         g = globals()
         self.name = next(n for n in _data_name_cands if n not in g)
         g[self.name] = val
         self.master_pid = os.getpid()
+
+    def __getstate__(self):
+        if os.name != 'posix':
+            raise RuntimeError("ForkedData only works on OSes with fork()")
+        return self.__dict__
 
     @property
     def value(self):
