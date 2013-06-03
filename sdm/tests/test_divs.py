@@ -10,9 +10,9 @@ else:
 import numpy as np
 import h5py
 
-from sdm.np_divs import estimate_divs, normalize_div_name
-from sdm.features import Features
-from sdm.utils import iteritems, itervalues, strict_map
+from ..np_divs import estimate_divs, normalize_div_name
+from ..features import Features
+from ..utils import iteritems, itervalues, strict_map
 
 
 class capture_output(object):
