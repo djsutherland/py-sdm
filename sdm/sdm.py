@@ -329,12 +329,19 @@ def _try_params(cls, tuning_params, sigma_kms, labels, folds, svm_params,
     opts = {}
     if sample_weight is not None and sample_weight.value is not None:
         opts['sample_weight'] = sample_weight.value[train_idx]
-    clf.fit(train_km, labels.value[train_idx], **opts)
 
-    preds = clf.predict(test_km)
-    assert not np.any(np.isnan(preds))
-    loss = cls.tuning_loss(labels.value[test_idx], preds)
-    return tuning_params, loss, clf.fit_status_
+    try:
+        clf.fit(train_km, labels.value[train_idx], **opts)
+        preds = clf.predict(test_km)
+        assert not np.any(np.isnan(preds))
+        loss = cls.tuning_loss(labels.value[test_idx], preds)
+        return tuning_params, loss, clf.fit_status_
+    except ValueError as e:
+        warnings.warn("Got exception: {}".format(e))
+        return tuning_params, 1e50, 0
+        # using 1e50 because if *everything* errors, want to get the one that
+        # failed the least often
+        # TODO: count these like we count the fit_status_ errors
 
 
 def _not_implemented(*args, **kwargs):
