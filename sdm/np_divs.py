@@ -23,7 +23,7 @@ import numpy as np
 import scipy.io
 from scipy.special import gamma, gammaln
 
-from pyflann import FLANN
+from pyflann import FLANN, FLANNParameters
 
 from .features import _group, Features
 from .utils import (eps, izip, lazy_range, strict_map, raw_input, identity,
@@ -724,6 +724,15 @@ def estimate_divs(features,
     if algorithm is None:
         algorithm = pick_flann_algorithm(dim)
     flann_args['algorithm'] = algorithm
+
+    # workaround to check flann arguments are good, until
+    # https://github.com/mariusmuja/flann/pull/109
+    # makes it into a flann release
+    allow_params = set(k for k, typ in FLANNParameters._fields_)
+    if not allow_params.issuperset(flann_args):
+        bad = set(flann_args) - allow_params
+        msg = "The following are invalid keyword arguments for this function: "
+        raise TypeError(msg + ', '.join("'{}'".format(s) for s in bad))
 
     if min_dist is None:
         min_dist = default_min_dist(dim)
