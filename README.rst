@@ -163,11 +163,11 @@ can use a command like::
 
     sdm cv --div-func renyi:.9 -K 5 --cv-folds 10 \
         feats_pca.h5 --div-cache-file feats_pca.divs.h5 \
-        --output-file feats_pca.cv.mat
+        --output-file feats_pca.cv.npz
 
 for cross-validation. This will cache the calculated divergences in
 ``feats_pca.divs.h5``, and print out accuracy information as well as saving
-predictions and some other info in ``feats_pca.cv.mat``.
+predictions and some other info in ``feats_pca.cv.npz``.
 This can take a long time, especially when doing divergences.
 
 For regression, the command would look like::
@@ -175,7 +175,7 @@ For regression, the command would look like::
     sdm cv --nu-svr --div-func renyi:.9 -K 5 --cv-folds 10 \
         --labels-name target_name
         feats_pca.h5 --div-cache-file feats_pca.divs.h5
-        --output-file feats_pca.cv.mat
+        --output-file feats_pca.cv.npz
 
 This uses ``--n-proc`` to specify the number of SVMs to run in parallel during
 parameter tuning. During the projection phase (which happens in serial), an
