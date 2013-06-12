@@ -142,9 +142,9 @@ def progress(counter=True, **kwargs):
         widgets = kwargs.pop('widgets')
     except KeyError:
         if counter:
-            widgets = [pb.SimpleProgress(), ' (', pb.Percentage(), ') ']
+            widgets = [' ', pb.SimpleProgress(), ' (', pb.Percentage(), ') ']
         else:
-            widgets = [pb.Percentage(), ' ']
+            widgets = [' ', pb.Percentage(), ' ']
         widgets.extend([pb.Bar(), ' ', pb.ETA()])
     return pb.ProgressBar(widgets=widgets, **kwargs)
 
