@@ -170,7 +170,7 @@ def process_image_features(features, verbose=False, inplace=False,
 
     if do_pca:
         pr("Running PCA...")
-        old_dim = features[0].shape[1]
+        old_dim = features.dim
 
         ret = features.pca(
             pca=pca, ret_pca=True, k=pca_k, varfrac=pca_varfrac,
@@ -180,7 +180,7 @@ def process_image_features(features, verbose=False, inplace=False,
         else:
             features, pca = ret
 
-        new_dim = features[0].shape[1]
+        new_dim = features.dim
         pr("Reduced dimensionality from {} to {}.".format(old_dim, new_dim))
 
     if add_x or add_y:
@@ -290,11 +290,11 @@ def main():
     pr = partial(print, file=sys.stderr) if args.verbose else _do_nothing
 
     pr("Loading features from '{}'...".format(load_file))
-    args = {'load_attrs': True, 'features_dtype': np.float32}
+    kwargs = {'load_attrs': True, 'features_dtype': np.float32}
     if os.path.isdir(load_file):
-        orig, attrs = Features.load_from_perbag(load_file, **args)
+        orig, attrs = Features.load_from_perbag(load_file, **kwargs)
     else:
-        orig, attrs = Features.load_from_hdf5(load_file, **args)
+        orig, attrs = Features.load_from_hdf5(load_file, **kwargs)
 
     new, pca, scaler = process_image_features(
         orig, ret_pca=True, ret_scaler=True, **vars(args))

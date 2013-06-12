@@ -331,7 +331,8 @@ class Features(object):
     ############################################################################
     ### Transforming the features
 
-    def _apply_transform(self, transformer, fit_first, inplace=False):
+    def _apply_transform(self, transformer, fit_first, inplace=False,
+                         dtype=None):
         '''
         Transforms the features using an sklearn-style transformer object that
         should be fit to the full, stacked feature matrix. Assumes that the
@@ -341,15 +342,21 @@ class Features(object):
 
         transformer: the transformer object
         fit_first: whether to fit the transformer to the objects first
+        dtype: fit to the features.astype(dtype) if not None
 
         By default, returns a new Features instance.
         If inplace is passed, modifies this instance; doesn't return anything.
         '''
         transformer.copy = not inplace
+
+        feats = self._features
+        if dtype is not None:
+            feats = feats.astype(dtype)
+
         if fit_first:
-            transformed = transformer.fit_transform(self._features)
+            transformed = transformer.fit_transform(feats)
         else:
-            transformed = transformer.transform(self._features)
+            transformed = transformer.transform(feats)
 
         if inplace:
             self._features = transformed
@@ -415,7 +422,8 @@ class Features(object):
         else:
             return None if inplace else r
 
-    def standardize(self, scaler=None, ret_scaler=False, inplace=False):
+    def standardize(self, scaler=None, ret_scaler=False, inplace=False,
+                    cast_dtype=np.float32):
         '''
         Normalizes the features so that each dimension has zero mean and unit
         variance.
@@ -424,6 +432,8 @@ class Features(object):
         If inplace is passed, modifies this instance; doesn't return anything.
         If ret_scaler is passed: returns the scaler object as well as whatever
                                  else it would have returned.
+        If cast_dtype is not None, casts non-float data arrays to this dtype
+        first.
 
         If `scaler` is passed, uses that pre-fit scaler to transform. This is
         useful for transforming test objects consistently with training objects.
@@ -434,7 +444,10 @@ class Features(object):
             scaler = StandardScaler()
             fit_first = True
 
-        r = self._apply_transform(scaler, fit_first=fit_first, inplace=inplace)
+        kw = {'fit_first': fit_first, 'inplace': inplace}
+        if self._features.dtype.kind != 'f':
+            kw['dtype'] = cast_dtype
+        r = self._apply_transform(scaler, **kw)
         if ret_scaler:
             return scaler if inplace else (r, scaler)
         else:
