@@ -954,7 +954,7 @@ def main():
 
     divs = estimate_divs(
             bags, specs=args.div_funcs, Ks=Ks,
-            cores=args.n_proc,
+            cores=args.cores,
             min_dist=args.min_dist,
             return_opts=True,
             **args.flann_args)
