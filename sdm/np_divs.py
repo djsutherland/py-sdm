@@ -17,6 +17,7 @@ import itertools
 from operator import itemgetter
 import os
 import sys
+import warnings
 
 import numpy as np
 import scipy.io
@@ -976,8 +977,10 @@ def main():
     else:
         add_to_h5_file(args.output_file, opts)
 
-    assert not np.any(np.isnan(divs)), 'nan found in the result'
-    assert not np.any(np.isinf(divs)), 'inf found in the result'
+    if np.any(np.isnan(divs)):
+        warnings.warn('nan divergence calculated')
+    if np.any(np.isinf(divs)):
+        warnings.warn('infinite divergence calculated')
 
 
 ################################################################################
