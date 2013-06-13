@@ -285,7 +285,7 @@ def get_divs_cache(bags, div_func, K, cache_filename=None, min_dist=None,
     if cache_filename and os.path.exists(cache_filename):
         path = '{}/{}'.format(div_func, K)
         with h5py.File(cache_filename, 'r') as f:
-            check_h5_settings(f, n=len(bags), dim=bags[0].shape[1],
+            check_h5_settings(f, n=len(bags), dim=bags.dim,
                 min_dist=min_dist,
                 names=bags.names, cats=bags.categories)
             if path in f:
@@ -304,7 +304,7 @@ def get_divs_cache(bags, div_func, K, cache_filename=None, min_dist=None,
         status("Saving divs to cache '{}'".format(cache_filename))
         with h5py.File(cache_filename) as f:
             add_to_h5_cache(f, {(div_func, K): divs},
-                            dim=bags[0].shape[1],
+                            dim=bags.dim,
                             min_dist=min_dist,
                             names=bags.names, cats=bags.categories)
 
