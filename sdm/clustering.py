@@ -1,13 +1,15 @@
-# A basic kernel k-means implementation, ported from:
-# mathworks.com/matlabcentral/fileexchange/26182-kernel-k-means/content/knkmeans.m
-# TODO: needs checking (both correctness of port and correctness of algorithm)
+import operator as op
 
 import numpy as np
 from scipy import sparse
 
-from .utils import is_integer_type
+from .utils import is_integer_type, lazy_range
 
+# A basic kernel k-means implementation, ported from:
+# mathworks.com/matlabcentral/fileexchange/26182-kernel-k-means/content/knkmeans.m
+# TODO: needs checking (both correctness of port and correctness of algorithm)
 
+# TODO: kmeans++ or other initialization schemes
 def kn_kmeans(K, init):
     K = np.asarray(K)
     m, n = K.shape
@@ -47,3 +49,7 @@ def kn_kmeans(K, init):
     val = Z[label, np.arange(n)]
     energy = np.sum(val) + np.trace(K)
     return label, energy
+
+def repeat_kn_kmeans(K, init, num_times):
+    return min((kn_kmeans(K, init) for _ in lazy_range(num_times)),
+               key=op.itemgetter(1))
