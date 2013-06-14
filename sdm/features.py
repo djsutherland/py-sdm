@@ -229,10 +229,13 @@ class Features(object):
         return dt
 
     def __repr__(self):
-        s = '<Features: {} bags each with {} {}-dimensional points ({} total)>'
+        s = '<Features: {:,} bags with {} {}-dimensional points ({:,} total)>'
         min_p = self._n_pts.min()
         max_p = self._n_pts.max()
-        pts = min_p if min_p == max_p else '{} to {}'.format(min_p, max_p)
+        if min_p == max_p:
+            pts = "{:,}".format(min_p)
+        else:
+            pts = '{:,} to {:,}'.format(min_p, max_p)
         return s.format(len(self), pts, self.dim, self.total_points)
 
     @property
