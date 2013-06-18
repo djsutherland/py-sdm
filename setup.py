@@ -33,9 +33,10 @@ setup(
         'h5py',
         'progressbar',
         'scikit-learn >= 0.13',
-        'scikit-image >= 0.6',
-        'bottleneck',
         'nose',
+
+        # only for image feat extraction; should be "extras"
+        'scikit-image >= 0.6',
         'vlfeat-ctypes',
     ],
     entry_points={
