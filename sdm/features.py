@@ -251,6 +251,11 @@ class Features(object):
         "The dimensionality of the features."
         return self._features.shape[1]
 
+    @property
+    def dtype(self):
+        "The data type of the feature vectors."
+        return self._features.dtype
+
     ### indexing/etc
     def __len__(self): return self.data.size
     def __iter__(self): return iter(self.data)
