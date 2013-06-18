@@ -6,8 +6,8 @@ import sys
 
 import numpy as np
 
-from .utils import (izip, iterkeys, iteritems, lazy_range, str_types,
-                    is_integer_type, is_categorical_type)
+from .utils import (izip, iterkeys, iteritems, lazy_range, strict_zip,
+                    str_types, is_integer_type)
 
 _default_category = 'none'
 _do_nothing_sentinel = object()
@@ -176,8 +176,24 @@ class Features(object):
         for name, vals in iteritems(the_extras):
             data[name] = vals
 
+    def _get_dtype(self, categories, names, extras):
+        dt = [
+            ('features', object),
+            ('category', categories.dtype),
+            ('name', names.dtype)
+        ]
+        # in python 2 only, have to encode the names...sigh.
+        if sys.version_info.major == 2:
+            dt += [(n.encode(), vals.dtype) for n, vals in iteritems(extras)]
+        else:
+            dt += [(n, vals.dtype) for n, vals in iteritems(extras)]
+        return dt
+
+    ############################################################################
+    ### Copying, pickling, etc
+
     @classmethod
-    def from_data(cls, data, copy=False, deep=False):
+    def from_data(cls, data, copy=False, deep=False, _memo=None):
         '''
         Constructs a Features instance from its .data attribute.
 
@@ -185,9 +201,12 @@ class Features(object):
         features, but not any extras which are object references. Use deep=True
         in that case.
         '''
-        feats = data['features']
-        self = cls(_do_nothing_sentinel)
+        new = cls(_do_nothing_sentinel)
+        new._update_from_data(data, copy=copy, deep=deep, _memo=_memo)
+        return new
 
+    def _update_from_data(self, data, copy=False, deep=False, _memo=None):
+        feats = data['features']
         self._n_pts = np.array([f.shape[0] for f in feats])
         self._boundaries = np.hstack([[0], np.cumsum(self._n_pts)])
 
@@ -206,30 +225,33 @@ class Features(object):
             self.data = d = np.empty_like(data)
             for n in d.dtype.names:
                 if n != 'features':
-                    d[n] = deepcopy(data[n]) if deep else data[n]
+                    d[n] = deepcopy(data[n], _memo) if deep else data[n]
         else:
             self.data = data
 
         self._refresh_features()
-        return self
 
     def _refresh_features(self):
         self.data['features'] = _group(self._boundaries, self._features)
 
-    # TODO: add __copy__, __deepcopy__, __getstate__, __setstate__
+    def __copy__(self):
+        return Features.from_data(self.data, copy=True, deep=False)
 
-    def _get_dtype(self, categories, names, extras):
-        dt = [
-            ('features', object),
-            ('category', categories.dtype),
-            ('name', names.dtype)
-        ]
-        # in python 2 only, have to encode the names...sigh.
-        if sys.version_info.major == 2:
-            dt += [(n.encode(), vals.dtype) for n, vals in iteritems(extras)]
-        else:
-            dt += [(n, vals.dtype) for n, vals in iteritems(extras)]
-        return dt
+    def copy(self):
+        return self.__copy__()
+
+    def __deepcopy__(self, _memo=None):
+        return Features.from_data(self.data, copy=True, deep=True, _memo=_memo)
+
+    def __getstate__(self):
+        return (self.data,)
+
+    def __setstate__(self, state):
+        data, = state
+        self._update_from_data(state, copy=False)
+
+    ############################################################################
+    ## General magic methods for basic behavior
 
     def __repr__(self):
         s = '<Features: {:,} bags with {} {}-dimensional points ({:,} total)>'
@@ -241,24 +263,12 @@ class Features(object):
             pts = '{:,} to {:,}'.format(min_p, max_p)
         return s.format(len(self), pts, self.dim, self.total_points)
 
-    @property
-    def total_points(self):
-        "The total number of points in all bags."
-        return self._features.shape[0]
+    def __len__(self):
+        return self.data.size
 
-    @property
-    def dim(self):
-        "The dimensionality of the features."
-        return self._features.shape[1]
+    def __iter__(self):
+        return iter(self.data)
 
-    @property
-    def dtype(self):
-        "The data type of the feature vectors."
-        return self._features.dtype
-
-    ### indexing/etc
-    def __len__(self): return self.data.size
-    def __iter__(self): return iter(self.data)
     def __getitem__(self, key):
         if (isinstance(key, str_types) or
                 (isinstance(key, tuple) and any(isinstance(x) for x in key))):
@@ -311,35 +321,98 @@ class Features(object):
 
         return NotImplemented
 
-    ### convenience properties to get at a single column of the data
+    ############################################################################
+    ### Properties to get at the basic data
+
+    @property
+    def total_points(self):
+        "The total number of points in all bags."
+        return self._features.shape[0]
+
+    @property
+    def dim(self):
+        "The dimensionality of the features."
+        return self._features.shape[1]
+
+    @property
+    def dtype(self):
+        "The data type of the feature vectors."
+        return self._features.dtype
+
     features = property(lambda self: self.data['features'])
     categories = category = property(lambda self: self.data['category'])
     names = name = property(lambda self: self.data['name'])
 
     # handle extras too, even though we don't know their names in advance...
+    # TODO: actually make these in the constructor, so tab-complete/etc works
     def __getattr__(self, name):
         if name in self._extra_names:
             return self.data[name]
         else:
-            return super(Features, self).__getattr__(name)
+            return getattr(super(Features, self), name)
 
-    ### I/O helper
-    @staticmethod
-    def _missing_extras(dtype):
-        """
-        For arrays with dtype with missing vals: returns new dtype, default val.
-        """
-        if dtype.kind in 'fc':  # float/complex types
-            return dtype, np.nan
-        elif dtype.kind in 'O':  # object types
-            return dtype, None
-        elif dtype.kind in 'aSU':  # string types
-            return dtype, ''
-        elif dtype.kind in 'biu':  # integer types: no missing type, so switch
-                                   # to float and use nan
-            return np.float, np.nan
-        else:  # other types: no default, so switch to object type and use None
-            return object, None
+    ############################################################################
+    ### Adding new extras to an existing object
+
+    # TODO: add a __setitem__ that calls this? what's the right API?
+
+    def add_extra(self, name, values, dtype=None):
+        '''
+        Adds a single "extra" value to this Features object.
+
+        See add_extras for details.
+        '''
+        dtypes = None if dtype is None else [dtype]
+        self.add_extras(names=[name], values=[values], dtypes=dtypes)
+
+    def add_extras(self, names, values, dtypes=None):
+        '''
+        Adds new "extra" values to this Features object.
+
+        Note that for implementation reasons, this requires making a copy of
+        the .data array containing all the metadata (though not the actual
+        features array itself).
+
+        Arguments:
+            - names: a list of names for the new extra values
+            - values: a list of the actual values for the new extras. Should
+                      be broadcastable to be of shape (len(self),).
+            - dtypes (optional): a list of the data types for the new extras.
+                      If not passed, uses the dtype of np.asarray(val) for each
+                      value. If you don't pass dtypes and values contains
+                      objects other than numpy arrays, an extra copy will be
+                      made during this process.
+        '''
+        # Can't use numpy.lib.recfunctions.append_fields:
+        # https://github.com/numpy/numpy/issues/2346
+        len_set = set([len(names), len(values)])
+        if dtypes is not None:
+            len_set.add(len(dtypes))
+        if len(len_set) != 1:
+            raise ValueError("names, values, and dtypes (if passed) should be "
+                             "of same length")
+
+        name_set = set(names)
+        if len(name_set) != len(names):
+            raise ValueError("can't repeat names...")
+        elif not name_set.isdisjoint(self.data.dtype.names):
+            raise ValueError("can't use names already in use")
+
+        if dtypes is None:
+            values = [np.asarray(val) for val in values]
+            dtypes = [val.dtype for val in values]
+
+        old_descr = self.data.dtype.descr
+        new_descr = strict_zip(names, dtypes)
+        new = np.empty(len(self), dtype=old_descr + new_descr)
+
+        for name, dtype in old_descr:
+            new[name] = self.data[name]
+        for name, value in izip(names, values):
+            new[name] = value
+
+        self.data = new
+        self._extra_names = self._extra_names.union(names)
 
     ############################################################################
     ### Transforming the features
@@ -486,6 +559,26 @@ class Features(object):
 
         return self._apply_transform(
             normalizer, fit_first=False, inplace=inplace, dtype=dtype)
+
+    ############################################################################
+    ### generic I/O helpers
+
+    @staticmethod
+    def _missing_extras(dtype):
+        """
+        For arrays with dtype with missing vals: returns new dtype, default val.
+        """
+        if dtype.kind in 'fc':  # float/complex types
+            return dtype, np.nan
+        elif dtype.kind in 'O':  # object types
+            return dtype, None
+        elif dtype.kind in 'aSU':  # string types
+            return dtype, ''
+        elif dtype.kind in 'biu':  # integer types: no missing type, so switch
+                                   # to float and use nan
+            return np.float, np.nan
+        else:  # other types: no default, so switch to object type and use None
+            return object, None
 
     ############################################################################
     ### Stuff relating to hdf5 feature files

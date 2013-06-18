@@ -13,6 +13,7 @@ import numpy as np
 
 if sys.version_info.major == 2:
     izip = itertools.izip
+    strict_zip = zip
     imap = itertools.imap
     strict_map = map
     lazy_range = xrange
@@ -32,6 +33,10 @@ else:
     iterkeys = methodcaller('keys')
     itervalues = methodcaller('values')
     iteritems = methodcaller('items')
+
+    @functools.wraps(map)
+    def strict_zip(*args, **kwargs):
+        return list(zip(*args, **kwargs))
 
     @functools.wraps(map)
     def strict_map(*args, **kwargs):
