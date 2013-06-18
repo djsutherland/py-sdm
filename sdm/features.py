@@ -459,7 +459,28 @@ class Features(object):
         if ret_scaler:
             return scaler if inplace else (r, scaler)
         else:
-            return None if inplace else r
+            return r
+
+    def normalize(self, norm='l2', inplace=False, cast_dtype=np.float32):
+        '''
+        Normalizes the features so that each vector has unit norm (l1 or l2).
+
+        By default, returns a new Features instance.
+        If inplace is passed, modifies this instance; doesn't return anything.
+        If cast_dtype is not None, casts non-float data arrays to this dtype
+        first.
+        norm: 'l2' (default) or 'l1'.
+
+        This transformation is stateless, so unlike pca() or standardize()
+        there's no point in returning the normalizer object.
+        '''
+        from sklearn.preprocessing import Normalizer
+        normalizer = Normalizer(norm)
+
+        dtype = None if self._features.dtype.kind == 'f' else cast_dtype
+
+        return self._apply_transform(
+            normalizer, fit_first=False, inplace=inplace, dtype=dtype)
 
     ############################################################################
     ### Stuff relating to hdf5 feature files
