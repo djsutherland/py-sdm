@@ -354,18 +354,17 @@ class Features(object):
     ############################################################################
     ### Adding new extras to an existing object
 
-    # TODO: add a __setitem__ that calls this? what's the right API?
-
-    def add_extra(self, name, values, dtype=None):
+    def add_extra(self, name, values, dtype=None, inplace=False):
         '''
         Adds a single "extra" value to this Features object.
 
         See add_extras for details.
         '''
         dtypes = None if dtype is None else [dtype]
-        self.add_extras(names=[name], values=[values], dtypes=dtypes)
+        return self.add_extras(names=[name], values=[values], dtypes=dtypes,
+                               inplace=inplace)
 
-    def add_extras(self, names, values, dtypes=None):
+    def add_extras(self, names, values, dtypes=None, inplace=False):
         '''
         Adds new "extra" values to this Features object.
 
@@ -376,12 +375,18 @@ class Features(object):
         Arguments:
             - names: a list of names for the new extra values
             - values: a list of the actual values for the new extras. Should
-                      be broadcastable to be of shape (len(self),).
+                    be broadcastable to be of shape (len(self),).
             - dtypes (optional): a list of the data types for the new extras.
-                      If not passed, uses the dtype of np.asarray(val) for each
-                      value. If you don't pass dtypes and values contains
-                      objects other than numpy arrays, an extra copy will be
-                      made during this process.
+                    If not passed, uses the dtype of np.asarray(val) for each
+                    value. If you don't pass dtypes and values contains
+                    objects other than numpy arrays, an extra copy will be
+                    made during this process.
+            - inplace (optional, default False): if True, adds the extra to
+                    this object (though metadata is copied as noted above).
+                    If False, returns a new object with the extra added. Note
+                    that the new object will be like a shallow copy of this
+                    one: the features array and any object-type extras will
+                    be shared.
         '''
         # Can't use numpy.lib.recfunctions.append_fields:
         # https://github.com/numpy/numpy/issues/2346
@@ -411,8 +416,11 @@ class Features(object):
         for name, value in izip(names, values):
             new[name] = value
 
-        self.data = new
-        self._extra_names = self._extra_names.union(names)
+        if inplace:
+            self.data = new
+            self._extra_names = self._extra_names.union(names)
+        else:
+            return Features.from_data(new)
 
     ############################################################################
     ### Transforming the features
