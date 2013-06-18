@@ -42,8 +42,11 @@ class Features(object):
         - categories (optional): a list of the "category" for each object. If
             passed, should be of equal length to the number of bags. This
             might be a class name, a data source, etc. Used in storing the data;
-            if not passed, uses "none" for all of them. Should not contain the
-            '/' character; sticking to [-_a-zA-Z0-9 ]+ is safest.
+            if not passed, uses `default_category` for all of them.
+            Should not contain the '/' character; sticking to [-\w\d. ]+
+            is safest.
+        - default_category (optional, default "none"): the default category
+            to use for each object if categories is not passed.
         - names (optional): a name for each object. Should be unique per
             category but may have repeats across categories. Same restrictions
             on characters as categories. If not present, defaults to sequential
@@ -240,10 +243,12 @@ class Features(object):
 
     @property
     def total_points(self):
+        "The total number of points in all bags."
         return self._features.shape[0]
 
     @property
     def dim(self):
+        "The dimensionality of the features."
         return self._features.shape[1]
 
     ### indexing/etc
@@ -423,12 +428,12 @@ class Features(object):
         if ret_pca:
             return pca if inplace else (r, pca)
         else:
-            return None if inplace else r
+            return r
 
     def standardize(self, scaler=None, ret_scaler=False, inplace=False,
                     cast_dtype=np.float32):
         '''
-        Normalizes the features so that each dimension has zero mean and unit
+        Standardizes the features so that each dimension has zero mean and unit
         variance.
 
         By default, returns a new Features instance.
