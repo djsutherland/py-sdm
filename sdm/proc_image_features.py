@@ -121,8 +121,21 @@ def handle_blanks(features, blank_thresh=DEFAULT_BLANK_THRESH,
 
 def add_spatial_info(features, add_x=True, add_y=True, inplace=False,
                      dtype=None):
+    '''
+    Adds spatial information to image features (which should contain a frames
+    attribute in the format created by extract_image_features).
+
+    Adds a feature for x (if add_x) and y (if add_y), which are relative (x, y)
+    locations within the image of the feature between 0 and 1 (inclusive).
+
+    Returns a new Features object with these additional features, or modifies
+    features and returns None if inplace is True.
+
+    If dtype is not None, the resulting array will have that dtype. Otherwise,
+    it will maintain features.dtype if it's a float type, or float32 if not.
+    '''
     if not add_x and not add_y:
-        return features
+        return None if inplace else features
 
     indices = []
     if add_x:
@@ -158,8 +171,15 @@ def process_image_features(features, verbose=False, inplace=False,
             pca_k=None, pca_varfrac=DEFAULT_VARFRAC, pca_random=False,
             pca_whiten=False,
         add_x=True, add_y=True,
-        normalize_feats=True, scaler=None,
+        standardize_feats=True, scaler=None,
         ret_pca=False, ret_scaler=False):
+    '''
+    Does the full image processing stack:
+        - blank handling with handle_blanks()
+        - dimensionality reduction with features.pca()
+        - adds spatial information with add_spatial_info()
+        - standardizes the features with features.standardize()
+    '''
     # TODO: use sklearn.Pipeline instead?
     pr = partial(print, file=sys.stderr) if verbose else _do_nothing
 
@@ -192,7 +212,7 @@ def process_image_features(features, verbose=False, inplace=False,
             features = ret
 
     if normalize_feats:
-        pr("Normalizing features...")
+        pr("Standardizing features...")
         ret = features.standardize(scaler=scaler, ret_scaler=True,
                                    inplace=inplace)
         if inplace:
