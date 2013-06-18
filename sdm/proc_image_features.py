@@ -9,8 +9,7 @@ import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
 
 from .features import Features, DEFAULT_VARFRAC
-from .utils import (izip, positive_int, portion, nonnegative_float,
-                    confirm_outfile)
+from .utils import positive_int, portion, nonnegative_float, confirm_outfile
 
 _do_nothing = lambda *a, **k: None
 
@@ -120,7 +119,8 @@ def handle_blanks(features, blank_thresh=DEFAULT_BLANK_THRESH,
 ################################################################################
 ### Add spatial information
 
-def add_spatial_info(features, add_x=True, add_y=True, inplace=False):
+def add_spatial_info(features, add_x=True, add_y=True, inplace=False,
+                     dtype=None):
     if not add_x and not add_y:
         return features
 
@@ -130,13 +130,15 @@ def add_spatial_info(features, add_x=True, add_y=True, inplace=False):
     if add_y:
         indices.append(1)
 
-    all_spatial = []
-    for feat, frame in izip(features, frames):
-        spatial = frame[:, indices].astype(feat.dtype)
-        spatial /= spatial.max(axis=0)
-        all_spatial.append(spatial)
+    if dtype is None:
+        dtype = features.dtype
+        if dtype.kind != 'f':
+            dtype = np.float32
 
-    new_feats = np.hstack((features._features, np.vstack(all_spatial)))
+    spatial = np.asarray(np.vstack(features.frames)[:, indices], dtype=dtype)
+    spatial /= spatial.max(axis=0)
+
+    new_feats = np.hstack((features._features, spatial))
     if inplace:
         features._features = new_feats
         features._refresh_features()
