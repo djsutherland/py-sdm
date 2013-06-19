@@ -588,6 +588,29 @@ class Features(object):
         else:  # other types: no default, so switch to object type and use None
             return object, None
 
+    def save(self, path, format='hdf5', **attrs):
+        '''
+        Saves into an output file. Calls save_as_hdf5 if format=='hdf5'
+        (the default), or save_as_perbag if format=='perbag'.
+        '''
+        if format == 'hdf5':
+            return self.save_as_hdf5(path, **attrs)
+        elif format == 'perbag':
+            return self.save_as_perbag(path, **attrs)
+        else:
+            raise TypeError("unknown save format '{}'".format(format))
+
+    @classmethod
+    def load(cls, path, **kwargs):
+        '''
+        Loads from either an hdf5 file or a perbag directory. Calls
+        load_from_hdf5 if path is a file or load_from_perbag if a directory.
+        '''
+        if os.path.isdir(path):
+            return cls.load_from_perbag(path, **kwargs)
+        else:
+            return cls.load_from_hdf5(path, **kwargs)
+
     ############################################################################
     ### Stuff relating to hdf5 feature files
 
@@ -760,6 +783,9 @@ class Features(object):
             path/attrs.pkl
         '''
         import pickle
+        if not os.path.exists(path):
+            os.makedirs(path)
+
         with open(os.path.join(path, 'attrs.pkl'), 'wb') as f:
             pickle.dump(attrs, f)
 
