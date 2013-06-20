@@ -941,10 +941,7 @@ def main():
                 cats = None
         bags = Features(feats, categories=cats)
     else:
-        if os.path.isdir(args.input_file):
-            bags = Features.load_from_perbag(args.input_file)
-        else:
-            bags = Features.load_from_hdf5(args.input_file)
+        bags = Features.load(args.input_file)
 
     if args.min_dist is None:
         args.min_dist = default_min_dist(bags.dim)
