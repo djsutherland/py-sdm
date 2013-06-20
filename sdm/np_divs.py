@@ -1112,13 +1112,15 @@ def check_h5_settings(f, n, dim, min_dist=None,
     Checks that the hdf5 div cache file has settings that agree with the
     passed settings. If write, adds them to the file if not present.
     """
-    assert all(divs.shape == (n, n)
-               for div_group in f.values()
-               for divs in div_group.values())
+    if any(divs.shape == (n, n)
+           for div_group in f.values()
+           for divs in div_group.values()):
+        raise ValueError("existing divs have wronge shape")
 
     if f.attrs:
         def check(name, value):
-            assert np.all(f.attrs[name] == value)
+            if np.any(f.attrs[name] != value):
+                raise ValueError("attribute '{}' differs in file".format(name))
     elif write:
         def check(name, value):
             f.attrs[name] = value
@@ -1131,7 +1133,8 @@ def check_h5_settings(f, n, dim, min_dist=None,
 
     for x in ['names', 'cats']:
         if x in f.attrs:
-            assert np.shape(f.attrs[x]) == (n,)
+            if np.shape(f.attrs[x]) != (n,):
+                raise ValueError("'{}'' has wrong shape in file".format(x))
     if names is not None or cats is not None:
         reconcile_file_order(f, names=names, cats=cats, write=write)
 
