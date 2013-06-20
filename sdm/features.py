@@ -1,6 +1,7 @@
 from __future__ import division, print_function
 
 from collections import Counter
+from contextlib import closing
 import os
 import sys
 
@@ -852,27 +853,28 @@ class Features(object):
         with_extras = Counter()
 
         for cat, fname in bag_names:
-            data = np.load(os.path.join(path, cat, fname + '.npz'))
-            feats = None
-            extra = {}
-            for k, v in iteritems(data):
-                if k == 'features':
-                    if features_dtype is not None:
-                        feats = np.asarray(v, dtype=features_dtype)
+            npz_path = os.path.join(path, cat, fname + '.npz')
+            with closing(np.load(npz_path)) as data:
+                feats = None
+                extra = {}
+                for k, v in iteritems(data):
+                    if k == 'features':
+                        if features_dtype is not None:
+                            feats = np.asarray(v, dtype=features_dtype)
+                        else:
+                            feats = v[()]
                     else:
-                        feats = v[()]
-                else:
-                    dt = v.dtype if all(s == 1 for s in v.shape) else object
-                    if k not in extra_types:
-                        extra_types[k] = dt
-                    elif extra_types[k] != dt:
-                        msg = "different {}s have different dtypes"
-                        raise TypeError(msg.format(k))
-                        # TODO: find a dtype that'll cover all of them
-                    extra[k] = v[()]
-                    with_extras[k] += 1
-            bags.append(feats)
-            extras.append(extra)
+                        dt = v.dtype if all(s == 1 for s in v.shape) else object
+                        if k not in extra_types:
+                            extra_types[k] = dt
+                        elif extra_types[k] != dt:
+                            msg = "different {}s have different dtypes"
+                            raise TypeError(msg.format(k))
+                            # TODO: find a dtype that'll cover all of them
+                        extra[k] = v[()]
+                        with_extras[k] += 1
+                bags.append(feats)
+                extras.append(extra)
 
         # post-process the extras
         n_bags = len(bags)
