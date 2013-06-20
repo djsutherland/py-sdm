@@ -31,7 +31,7 @@ from .utils import (eps, izip, lazy_range, strict_map, raw_input, identity,
                     is_integer, is_integer_type,
                     read_cell_array,
                     iteritems, itervalues, get_status_fn)
-from .mp_utils import progress
+from .mp_utils import progress, ForkedData, get_pool
 
 
 ################################################################################
@@ -189,6 +189,7 @@ def alpha_div(alphas, Ks, num_q, dim, rhos, nus, clamp=True):
     # estimate_divs and it'd slow things down.
     # TODO: should we these be "private"?
 
+    # TODO: have things be passed in already in the right shape?
     N = rhos.shape[0]
     M = num_q
     alphas = np.reshape(alphas, (-1, 1))
@@ -765,6 +766,7 @@ def estimate_divs(features,
         indices_loop = pbar(indices)
     rhos = [knn_search(max_K + 1, bag, index=idx)[:, Ks]
             for bag, idx in izip(features.features, indices_loop)]
+    rhos_d = ForkedData(rhos)
     if progressbar:
         pbar.finish()
 
@@ -825,25 +827,42 @@ def estimate_divs(features,
             # find the nearest neighbors in features[i] from each of these bags
             nus = _group(boundaries - boundaries[0],
                          knn_search(max_K, feats, index=index)[:, Ks - 1])
+            nus_d = ForkedData(nus)
 
-            # TODO: parallelize this bit?
-            args = {'Ks': Ks, 'dim': dim}
-            for func, info in iteritems(funcs):
-                if getattr(func, 'needs_alpha', False):
-                    args['alphas'] = info.alphas
-                elif 'alphas' in args:
-                    del args['alphas']
-                pos = info.pos
-
-                for j, nu in izip(lazy_range(start, end), nus):
-                    if i == j:
-                        if getattr(func, 'self_value', None) is not None:
-                            continue  # already set this above
-                        nu = rhos[j]  # nu counts each point as its NN...
-
-                    r = func(rhos=rhos[j], nus=nu, num_q=features._n_pts[i],
-                             **args)
+            # run the base estimators using the nus on everything
+            with get_pool(cores) as pool:
+                args = itertools.product(
+                    ((func, info.pos, info.alphas)
+                        for func, info in iteritems(funcs)),
+                    [rhos_d],
+                    [nus_d],
+                    lazy_range(start, end),
+                    [features._n_pts[i]],
+                    [dim],
+                    [Ks],
+                )
+                # TODO: experiment with chunksize?
+                for r, pos, j in pool.imap_unordered(_proc_pair, args, 10):
                     outputs[j, i, pos, :] = r
+
+            # # TODO: parallelize this bit?
+            # args = {'Ks': Ks, 'dim': dim}
+            # for func, info in iteritems(funcs):
+            #     if getattr(func, 'needs_alpha', False):
+            #         args['alphas'] = info.alphas
+            #     elif 'alphas' in args:
+            #         del args['alphas']
+            #     pos = info.pos
+
+            #     for j, nu in izip(lazy_range(start, end), nus):
+            #         if i == j:
+            #             if getattr(func, 'self_value', None) is not None:
+            #                 continue  # already set this above
+            #             nu = rhos[j]  # nu counts each point as its NN...
+
+            #         r = func(rhos=rhos[j], nus=nu, num_q=features._n_pts[i],
+            #                  **args)
+            #         outputs[j, i, pos, :] = r
 
     # fill in the meta values
     args = {'Ks': Ks, 'dim': dim, 'rhos': rhos}
@@ -866,6 +885,18 @@ def estimate_divs(features,
         outputs[~mask] = np.nan
 
     return outputs
+
+
+def _proc_pair(args):
+    (func, func_pos, alphas), rhos_d, nus_d, j, num_q, dim, Ks = args
+    rho = rhos_d.value[j]
+    nu = nus_d.value[j]
+
+    if getattr(func, 'needs_alpha', False):
+        res = func(alphas=alphas, Ks=Ks, num_q=num_q, dim=dim, rhos=rho, nus=nu)
+    else:
+        res = func(Ks=Ks, num_q=num_q, dim=dim, rhos=rho, nus=nu)
+    return res, func_pos, j
 
 
 ################################################################################
