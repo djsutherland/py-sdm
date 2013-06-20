@@ -10,9 +10,13 @@ else:
 import numpy as np
 import h5py
 
-from ..np_divs import estimate_divs, normalize_div_name
-from ..features import Features
-from ..utils import iteritems, itervalues, strict_map
+if __name__ == '__main__':
+    _this_dir = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, os.path.dirname(os.path.dirname(_this_dir)))
+
+from sdm.np_divs import estimate_divs, normalize_div_name
+from sdm.features import Features
+from sdm.utils import iteritems, itervalues, strict_map
 
 
 class capture_output(object):
@@ -120,8 +124,8 @@ def check_div(feats, expected, specs, Ks, name, min_dist=None, **args):
 
 def test_divs():
     dir = os.path.join(os.path.dirname(__file__), 'data')
-    argses = [{'n_proc': n_proc, 'status_fn': status_fn}
-              for n_proc in [1]  #, None]
+    argses = [{'cores': cores, 'status_fn': status_fn}
+              for cores in [1, None]
               for status_fn in [None]]  # , True]]
     # TODO: test a custom status_fn also
 

@@ -820,7 +820,7 @@ class Features(object):
         operator. If cats is also passed, that check applies first.
 
         subsample_fn is applied to a list of (category, name) pairs, and returns
-        another list of that format. functool.partial(random.sample, k=100) can
+        another list of that format. functools.partial(random.sample, k=100) can
         be used to subsample 100 bags unifornmly at random, for example.
 
         If names_only is passed, the list of (category, name) pairs is returned
