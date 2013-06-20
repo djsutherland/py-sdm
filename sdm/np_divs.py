@@ -887,7 +887,7 @@ def parse_args():
              "if the input file is matlab format.")
 
     parser.add_argument('output_file', nargs='?',
-        help="Name of the output file; default input_file.py_divs.(mat|h5).")
+        help="Name of the output file; default input_file.divs.(mat|h5).")
     parser.add_argument('--output-format',
         choices=['hdf5', 'mat'], default='hdf5',
         help="Output file format; default %(default)s.")
@@ -917,7 +917,7 @@ def parse_args():
 
     args = parser.parse_args()
     if args.output_file is None:
-        args.output_file = '{}.py_divs.{}'.format(
+        args.output_file = '{}.divs.{}'.format(
             args.input_file, 'mat' if args.output_format == 'mat' else 'h5')
 
     return args
