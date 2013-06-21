@@ -151,7 +151,6 @@ def _estimate_cross_divs(features, indices, rhos,
                          mask, funcs, Ks, specs, n_meta_only,
                          progressbar):
     n_bags = len(features)
-    dim = features.dim
     max_K = np.max(Ks)
 
     outputs = np.empty((n_bags, n_bags, len(specs) + n_meta_only, len(Ks)),
