@@ -26,7 +26,7 @@ from scipy.special import gamma
 
 from pyflann import FLANN, FLANNParameters
 
-from .features import _group, Features
+from .features import Features
 from .utils import (eps, izip, lazy_range, strict_map, raw_input, identity,
                     str_types, bytes, positive_int, confirm_outfile,
                     is_integer_type,
@@ -34,7 +34,7 @@ from .utils import (eps, izip, lazy_range, strict_map, raw_input, identity,
                     iteritems, itervalues, get_status_fn)
 from .mp_utils import progress
 from .knn_search import knn_search, default_min_dist, pick_flann_algorithm
-from ._np_divs import linear, kl, alpha_div
+from ._np_divs import linear, kl, alpha_div, _estimate_cross_divs
 
 
 ################################################################################
@@ -610,22 +610,6 @@ def estimate_divs(features,
         pbar.finish()
 
     status_fn('\nGetting cross-bag distances and divergences...')
-    outputs = np.empty((n_bags, n_bags, len(specs) + n_meta_only, len(Ks)),
-                       dtype=np.float32)
-    outputs.fill(np.nan)
-
-    # TODO: should just call functions that need self up here with rhos
-    #       instead of computing nus and then throwing them out below
-    any_run_self = False
-    all_bags = lazy_range(n_bags)
-    for func, info in iteritems(funcs):
-        self_val = getattr(func, 'self_value', None)
-        if self_val is not None:
-            pos = np.reshape(info.pos, (-1, 1))
-            outputs[all_bags, all_bags, pos, :] = self_val
-        else:
-            any_run_self = True
-
     # If anything needs its transpose also, then we just compute everything
     # with the transpose; we'll nan out the unnecessary bits later.
     # TODO: only compute the things we need transposed...
@@ -634,58 +618,9 @@ def estimate_divs(features,
         if np.any(mask != mask.T):
             mask = real_mask + real_mask.T
 
-    indices_loop = progress()(indices) if progressbar else indices
-    for i, index in enumerate(indices_loop):
-        # Loop over rows of the output array.
-        #
-        # We want to search from most(?) of the other bags to this one, as
-        # determined by mask and to avoid repeating nus.
-        #
-        # But we don't want to waste memory copying almost all of the features.
-        #
-        # So instead we'll run a separate NN search for each contiguous
-        # subarray of the features. If they're too small, of course, this hurts
-        # the parallelizability.
-        #
-        # TODO: is there a better scheme than this? use a custom version of
-        #       nanoflann or something?
-        #
-        # TODO: Is cythonning this file/this function worth it?
-
-        num_q = features._n_pts[i]
-
-        # make a boolean array of whether we want to do the ith bag
-        do_bag = mask[i].copy()
-        if not any_run_self:
-            do_bag[i] = False
-
-        # loop over contiguous sections where do_bag is True
-        change_pts = np.hstack([0, np.diff(do_bag).nonzero()[0] + 1, n_bags])
-        s = int(not do_bag[0])
-        for start, end in izip(change_pts[s::2], change_pts[s+1::2]):
-            boundaries = features._boundaries[start:end+1]
-            feats = features._features[boundaries[0]:boundaries[-1]]
-
-            # find the nearest neighbors in features[i] from each of these bags
-            nus = _group(boundaries - boundaries[0],
-                         knn_search(max_K, feats, index=index)[:, Ks - 1])
-
-            # TODO: parallelize this bit?
-            args = {'Ks': Ks, 'dim': dim}
-            for func, info in iteritems(funcs):
-                if getattr(func, 'needs_alpha', False):
-                    args['alphas'] = info.alphas
-                elif 'alphas' in args:
-                    del args['alphas']
-                pos = info.pos
-
-                for j, nu in izip(lazy_range(start, end), nus):
-                    if i == j:
-                        if getattr(func, 'self_value', None) is not None:
-                            continue  # already set this above
-                        nu = rhos[j]  # nu counts each point as its NN...
-
-                    outputs[j, i, pos, :] = func(num_q, dim, rhos[j], nu)
+    outputs = _estimate_cross_divs(features, indices, rhos,
+                                   mask, funcs, Ks, specs, n_meta_only,
+                                   progressbar)
 
     # fill in the meta values
     for meta, info in iteritems(metas):
