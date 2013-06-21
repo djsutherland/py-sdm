@@ -14,6 +14,7 @@ from __future__ import division, print_function
 import argparse
 from collections import namedtuple, defaultdict, OrderedDict
 import itertools
+from functools import partial
 from operator import itemgetter
 import os
 import sys
@@ -21,207 +22,19 @@ import warnings
 
 import numpy as np
 import scipy.io
-from scipy.special import gamma, gammaln
+from scipy.special import gamma
 
 from pyflann import FLANN, FLANNParameters
 
-from .features import _group, Features
+from .features import Features
 from .utils import (eps, izip, lazy_range, strict_map, raw_input, identity,
                     str_types, bytes, positive_int, confirm_outfile,
-                    is_integer, is_integer_type,
+                    is_integer_type,
                     read_cell_array,
                     iteritems, itervalues, get_status_fn)
-from .mp_utils import progress, ForkedData, get_pool
-
-
-################################################################################
-### Nearest neighbor searches.
-
-def default_min_dist(dim):
-    return min(1e-2, 1e-100 ** (1.0 / dim))
-
-
-def pick_flann_algorithm(dim):
-    return 'linear' if dim > 5 else 'kdtree_single'
-
-
-def knn_search(K, x, y=None, min_dist=None, index=None, algorithm=None,
-               return_indices=False, **kwargs):
-    '''
-    Calculates Euclidean distances to the first K closest elements of y
-    for each x, which are row-instance data matrices.
-
-    Returns a matrix whose (i, j)th element is the distance from the ith point
-    in x to the (j+1)th nearest neighbor in y.
-
-    If return_indices, also returns a matrix whose (i, j)th element is the
-    identity of the (j+1)th nearest neighbor in y to the ith point in x.
-
-    By default, clamps minimum distance to min(1e-2, 1e-100 ** (1/dim));
-    setting min_dist to a number changes this value. Use 0 for no clamping.
-
-    If index is passed, uses a preconstructed FLANN index for the elements of y
-    (a FLANN() instance where build_index() has been run). Otherwise, constructs
-    an index here and then deletes it, using the passed algorithm. By default,
-    uses a single k-d tree for data with dimension 5 or lower, and brute-force
-    search in higher dimensions (which give exact results). Any other keyword
-    arguments are also passed to the FLANN() object.
-    '''
-    N, dim = x.shape
-    if y is not None:
-        M, dim2 = y.shape
-        if dim != dim2:
-            raise TypeError("x and y must have same second dimension")
-
-    if not is_integer(K) or K < 1:
-        raise TypeError("K must be a positive integer")
-
-    if index is None:
-        if algorithm is None:
-            algorithm = pick_flann_algorithm(dim)
-        index = FLANN(algorithm=algorithm, **kwargs)
-        index.build_index(y)
-
-    idx, dist = index.nn_index(x, K)
-
-    idx = idx.astype(np.uint16)
-    dist = np.sqrt(dist.astype(np.float64))
-
-    # protect against identical points
-    if min_dist is None:
-        min_dist = default_min_dist(dim)
-    if min_dist > 0:
-        np.maximum(min_dist, dist, out=dist)
-
-    return (dist, idx) if return_indices else dist
-
-
-################################################################################
-### Estimators of various divergences based on nearest-neighbor distances.
-#
-# The standard interface for these functions is:
-#
-# Function attributes:
-#
-#   needs_alpha: whether this function needs an alpha parameter. Default false.
-#
-#   self_value: The value that this function should take when comparing a
-#               sample to itself: either a scalar constant or None (the
-#               default), in which case the function is still called with
-#               rhos = nus.
-#
-# Arguments:
-#
-#   alphas (if needs_alpha; array-like, scalar or 1d): the alpha values to use
-#
-#   Ks (array-like, scalar or 1d): the K values used
-#
-#   num_q (scalar): the number of points in the sample from q
-#
-#   dim (scalar): the dimension of the feature space
-#
-#   rhos: an array of within-bag nearest neighbor distances for a sample from p.
-#         rhos[i, j] should be the distance from the ith sample from p to its
-#         Ks[j]'th neighbor in the same sample. Shape: (num_p, num_Ks).
-#   nus: an array of nearest neighbor distances from samples from other dists.
-#        nus[i, j] should be the distance from the ith sample from p to its
-#        Ks[j]'th neighbor in the sample from q. Shape: (num_p, num_Ks).
-#
-# Returns an array of divergence estimates. If needs_alpha, should be of shape
-# (num_alphas, num_Ks); otherwise, of shape (num_Ks,).
-
-def linear(Ks, num_q, dim, rhos, nus):
-    r'''
-    Estimates the linear inner product \int p q between two distributions,
-    based on kNN distances.
-    '''
-    # Estimated with alpha=0, beta=1:
-    #   B_{k,d,0,1} = (k - 1) / pi^(dim/2) * gamma(dim/2 + 1)
-    #   (using gamma(k) / gamma(k - 1) = k - 1)
-    # and the rest of the estimator is
-    #   B / m * mean(nu ^ -dim)
-    Ks = np.reshape(Ks, (-1,))
-    Bs = (Ks - 1) / np.pi ** (dim / 2) * gamma(dim / 2 + 1)  # shape (num_Ks,)
-    return Bs / num_q * np.mean(nus ** (-dim), axis=0)
-linear.self_value = None  # have to execute it
-linear.needs_alpha = False
-
-
-def kl(Ks, num_q, dim, rhos, nus, clamp=True):
-    r'''
-    Estimate the KL divergence between distributions:
-        \int p(x) \log (p(x) / q(x))
-    using the kNN-based estimator (5) of
-        Qing Wang, Sanjeev R Kulkarni, and Sergio Verdu (2009).
-        Divergence Estimation for Multidimensional Densities Via
-        k-Nearest-Neighbor Distances.
-        IEEE Transactions on Information Theory.
-        http://www.ee.princeton.edu/~verdu/reprints/WanKulVer.May2009.pdf
-    which is:
-        d * 1/n \sum \log (nu_k(i) / rho_k(i)) + log(m / (n - 1))
-
-    If clamp is True (default), enforces KL >= 0.
-
-    Returns an array of shape (num_Ks,).
-    '''
-    est = dim * np.mean(np.log(nus) - np.log(rhos), axis=0) + \
-          np.log(num_q / (rhos.shape[0] - 1))
-    if clamp:
-        np.maximum(est, 0, out=est)
-    return est
-kl.self_value = 0
-kl.needs_alpha = False
-
-
-def alpha_div(alphas, Ks, num_q, dim, rhos, nus, clamp=True):
-    r'''
-    Estimate the alpha divergence between distributions:
-        \int p^\alpha q^(1-\alpha)
-    based on kNN distances.
-
-    Used in Renyi, Hellinger, Bhattacharyya, Tsallis divergences.
-
-    If clamp is True (default), enforces that estimates are >= 0.
-
-    Returns divergence estimates with shape (num_alphas, num_Ks).
-    '''
-    # We don't do argument checking here, because this is called repeatedly from
-    # estimate_divs and it'd slow things down.
-    # TODO: should we these be "private"?
-
-    # TODO: have things be passed in already in the right shape?
-    N = rhos.shape[0]
-    M = num_q
-    alphas = np.reshape(alphas, (-1, 1))
-    Ks = np.reshape(Ks, (1, -1))
-
-    # We're estimating with alpha = alpha-1, beta = 1-alpha.
-    # B constant in front:
-    #   estimator's alpha = -beta, so volume of unit ball cancels out
-    #   and then ratio of gamma functions
-    omas = 1 - alphas
-    Bs = np.exp(gammaln(Ks) * 2 - gammaln(Ks + omas) - gammaln(Ks - omas))
-
-    # factors based on the sizes:
-    #   1 / [ (n-1)^(est alpha) * m^(est beta) ] = ((n-1) / m) ^ (1 - alpha)
-    consts = ((N - 1) / M) ** omas
-
-    # the actual main estimate:
-    #   rho^(- dim * est alpha) nu^(- dim * est beta)
-    #   = (rho / nu) ^ (dim * (1 - alpha))
-    # do some reshaping trickery to get broadcasting right
-    ratios = np.reshape(rhos / nus, (N, 1, Ks.size))
-    estimates = ratios ** (dim * omas.reshape(1, -1, 1))
-    estimates = np.mean(estimates, axis=0)  # shape (n_alphas, n_Ks)
-
-    estimates *= Bs
-    estimates *= consts
-
-    if clamp:
-        np.maximum(estimates, 0, out=estimates)
-    return estimates
-alpha_div.self_value = 1
-alpha_div.needs_alpha = True
+from .mp_utils import progress
+from .knn_search import knn_search, default_min_dist, pick_flann_algorithm
+from ._np_divs import _estimate_cross_divs, linear, kl, alpha_div
 
 
 ################################################################################
@@ -454,7 +267,7 @@ def topological_sort(deps):
 
 _FuncInfo = namedtuple('_FuncInfo', 'alphas pos')
 _MetaFuncInfo = namedtuple('_MetaFuncInfo', 'alphas pos deps')
-def _parse_specs(specs):
+def _parse_specs(specs, Ks):
     '''
     Set up the different functions we need to call.
 
@@ -473,6 +286,8 @@ def _parse_specs(specs):
           such that all dependencies are resolved before calling that function.
           If no such order is possible, raise ValueError.
         - the number of meta-only results
+
+    # TODO: replace _parse_specs docs
 
     >>> _parse_specs(['renyi:.8', 'hellinger', 'renyi:.9'])
     ({<function alpha_div at 0x10954f848>:
@@ -627,10 +442,36 @@ def _parse_specs(specs):
 
     # topological sort of metas
     meta_order = topological_sort(meta_deps)
-    metas = OrderedDict((
-        (f, metas[f]) for f in meta_order if hasattr(f, 'needs_results')
-    ))
-    return funcs, metas, -next(meta_counter) - 1
+    metas_ordered = OrderedDict(
+        (f, metas[f]) for f in meta_order if hasattr(f, 'needs_results'))
+
+    # replace functions with partials of args
+    def replace_func(func, info):
+        needs_alpha = getattr(func, 'needs_alpha', False)
+
+        new = None
+        if hasattr(func, 'chooser_fn'):
+            if needs_alpha:
+                new = func.chooser_fn(info.alphas, Ks)
+            else:
+                new = func.chooser_fn(Ks)
+        elif needs_alpha:
+            new = partial(func, info.alphas)
+
+        if new is None:
+            return func
+
+        for attr in dir(func):
+            if not (attr.startswith('__') or attr.startswith('func_')):
+                setattr(new, attr, getattr(func, attr))
+        return new
+
+    rep_funcs = dict(
+        (replace_func(f, info), info) for f, info in iteritems(funcs))
+    rep_metas_ordered = OrderedDict(
+        (replace_func(f, info), info) for f, info in iteritems(metas_ordered))
+
+    return rep_funcs, rep_metas_ordered, -next(meta_counter) - 1
 
 
 def normalize_div_name(name):
@@ -703,8 +544,6 @@ def estimate_divs(features,
             msg = "mask should be a boolean array, not {}"
             raise TypeError(msg.format(mask.dtype))
 
-    funcs, metas, n_meta_only = _parse_specs(specs)
-
     Ks = np.array(np.squeeze(Ks), ndmin=1)
     if Ks.ndim != 1:
         raise TypeError("Ks should be 1-dim, got shape {}".format(Ks.shape))
@@ -716,6 +555,8 @@ def estimate_divs(features,
         msg = "asked for K = {}, but there's a bag with only {} points"
         raise ValueError(msg.format(Ks.max(), features._n_pts.min()))
     max_K = Ks.max()
+
+    funcs, metas, n_meta_only = _parse_specs(specs, Ks)
 
     if cores is None:
         from multiprocessing import cpu_count
@@ -766,27 +607,10 @@ def estimate_divs(features,
         indices_loop = pbar(indices)
     rhos = [knn_search(max_K + 1, bag, index=idx)[:, Ks]
             for bag, idx in izip(features.features, indices_loop)]
-    rhos_d = ForkedData(rhos)
     if progressbar:
         pbar.finish()
 
     status_fn('\nGetting cross-bag distances and divergences...')
-    outputs = np.empty((n_bags, n_bags, len(specs) + n_meta_only, len(Ks)),
-                       dtype=np.float32)
-    outputs.fill(np.nan)
-
-    # TODO: should just call functions that need self up here with rhos
-    #       instead of computing nus and then throwing them out below
-    any_run_self = False
-    all_bags = lazy_range(n_bags)
-    for func, info in iteritems(funcs):
-        self_val = getattr(func, 'self_value', None)
-        if self_val is not None:
-            pos = np.reshape(info.pos, (-1, 1))
-            outputs[all_bags, all_bags, pos, :] = self_val
-        else:
-            any_run_self = True
-
     # If anything needs its transpose also, then we just compute everything
     # with the transpose; we'll nan out the unnecessary bits later.
     # TODO: only compute the things we need transposed...
@@ -794,82 +618,13 @@ def estimate_divs(features,
     if any(req.needs_transpose for f in metas for req in f.needs_results):
         mask = real_mask + real_mask.T
 
-    indices_loop = progress()(indices) if progressbar else indices
-    with get_pool(cores) as pool:
-        for i, index in enumerate(indices_loop):
-            # Loop over rows of the output array.
-            #
-            # We want to search from most(?) of the other bags to this one, as
-            # determined by mask and to avoid repeating nus.
-            #
-            # But we don't want to waste memory copying almost all of the features.
-            #
-            # So instead we'll run a separate NN search for each contiguous
-            # subarray of the features. If they're too small, of course, this hurts
-            # the parallelizability.
-            #
-            # TODO: is there a better scheme than this? use a custom version of
-            #       nanoflann or something?
-            #
-            # TODO: Is cythonning this file/this function worth it?
-
-            # make a boolean array of whether we want to do the ith bag
-            do_bag = mask[i].copy()
-            if not any_run_self:
-                do_bag[i] = False
-
-            # loop over contiguous sections where do_bag is True
-            change_pts = np.hstack([0, np.diff(do_bag).nonzero()[0] + 1, n_bags])
-            s = int(not do_bag[0])
-            for start, end in izip(change_pts[s::2], change_pts[s+1::2]):
-                boundaries = features._boundaries[start:end+1]
-                feats = features._features[boundaries[0]:boundaries[-1]]
-
-                # find the nearest neighbors in features[i] from each of these bags
-                nus = _group(boundaries - boundaries[0],
-                             knn_search(max_K, feats, index=index)[:, Ks - 1])
-
-                # run the base estimators using the nus on everything
-                args = itertools.product(
-                    ((func, info.pos, info.alphas)
-                        for func, info in iteritems(funcs)),
-                    [rhos_d],
-                    izip(nus, lazy_range(start, end)),
-                    [features._n_pts[i]],
-                    [dim],
-                    [Ks],
-                )
-                # TODO: experiment with chunksize?
-                for r, pos, j in pool.imap_unordered(_proc_pair, args, 10):
-                    outputs[j, i, pos, :] = r
-
-                # # TODO: parallelize this bit?
-                # args = {'Ks': Ks, 'dim': dim}
-                # for func, info in iteritems(funcs):
-                #     if getattr(func, 'needs_alpha', False):
-                #         args['alphas'] = info.alphas
-                #     elif 'alphas' in args:
-                #         del args['alphas']
-                #     pos = info.pos
-
-                #     for j, nu in izip(lazy_range(start, end), nus):
-                #         if i == j:
-                #             if getattr(func, 'self_value', None) is not None:
-                #                 continue  # already set this above
-                #             nu = rhos[j]  # nu counts each point as its NN...
-
-                #         r = func(rhos=rhos[j], nus=nu, num_q=features._n_pts[i],
-                #                  **args)
-                #         outputs[j, i, pos, :] = r
+    outputs = _estimate_cross_divs(features, indices, rhos,
+                                   mask, funcs, specs, n_meta_only, Ks,
+                                   progressbar, cores)
 
     # fill in the meta values
     args = {'Ks': Ks, 'dim': dim, 'rhos': rhos}
     for meta, info in iteritems(metas):
-        if getattr(meta, 'needs_alpha', False):
-            args['alphas'] = info.alphas
-        elif 'alphas' in args:
-            del args['alphas']
-
         required = [outputs[:, :, [i], :] for i in info.deps]
         r = meta(required=required, **args)
         if r.ndim == 3:
@@ -883,17 +638,6 @@ def estimate_divs(features,
         outputs[~mask] = np.nan
 
     return outputs
-
-
-def _proc_pair(args):
-    (func, func_pos, alphas), rhos_d, (nu, j), num_q, dim, Ks = args
-    rho = rhos_d.value[j]
-
-    if getattr(func, 'needs_alpha', False):
-        res = func(alphas=alphas, Ks=Ks, num_q=num_q, dim=dim, rhos=rho, nus=nu)
-    else:
-        res = func(Ks=Ks, num_q=num_q, dim=dim, rhos=rho, nus=nu)
-    return res, func_pos, j
 
 
 ################################################################################
@@ -1112,7 +856,7 @@ def check_h5_settings(f, n, dim, min_dist=None,
     if any(divs.shape == (n, n)
            for div_group in f.values()
            for divs in div_group.values()):
-        raise ValueError("existing divs have wronge shape")
+        raise ValueError("existing divs have wrong shape")
 
     if f.attrs:
         def check(name, value):
