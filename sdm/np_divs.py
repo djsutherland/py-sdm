@@ -729,7 +729,8 @@ def estimate_divs(features,
     # TODO: only compute the things we need transposed...
     real_mask = mask
     if any(req.needs_transpose for f in metas for req in f.needs_results):
-        mask = real_mask + real_mask.T
+        if np.any(mask != mask.T):
+            mask = real_mask + real_mask.T
 
     indices_loop = progress()(indices) if progressbar else indices
     for i, index in enumerate(indices_loop):
@@ -801,7 +802,7 @@ def estimate_divs(features,
     if n_meta_only:
         outputs = np.ascontiguousarray(outputs[:, :, :-n_meta_only, :])
 
-    if real_mask is not mask and np.any(real_mask != mask):
+    if real_mask is not mask:
         outputs[~mask] = np.nan
 
     return outputs
