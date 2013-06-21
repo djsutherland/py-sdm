@@ -582,10 +582,9 @@ def _parse_specs(specs, Ks):
             else:
                 new = func.chooser_fn(Ks)
         elif needs_alpha:
-            new = partial(func, info.alphas)
-
-        if new is None:
-            return func
+            new = partial(func, info.alphas, Ks)
+        else:
+            new = partial(func, Ks)
 
         for attr in dir(func):
             if not (attr.startswith('__') or attr.startswith('func_')):
@@ -812,12 +811,12 @@ def estimate_divs(features,
                             continue  # already set this above
                         nu = rhos[j]  # nu counts each point as its NN...
 
-                    outputs[j, i, pos, :] = func(Ks, num_q, dim, rhos[j], nu)
+                    outputs[j, i, pos, :] = func(num_q, dim, rhos[j], nu)
 
     # fill in the meta values
     for meta, info in iteritems(metas):
         required = [outputs[:, :, [i], :] for i in info.deps]
-        r = meta(Ks, dim, rhos, required)
+        r = meta(dim, rhos, required)
         if r.ndim == 3:
             r = r[:, :, np.newaxis, :]
         outputs[:, :, info.pos, :] = r
