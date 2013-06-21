@@ -199,7 +199,7 @@ def _estimate_cross_divs(features, indices, rhos,
 
         # loop over contiguous sections where do_bag is True
         change_pts = np.hstack([0, np.diff(do_bag).nonzero()[0] + 1, n_bags])
-        s = int(not do_bag[0])
+        s = 0 if do_bag[0] else 1
         for start, end in izip(change_pts[s::2], change_pts[s+1::2]):
             boundaries = features._boundaries[start:end+1]
             feats = features._features[boundaries[0]:boundaries[-1]]
