@@ -192,8 +192,9 @@ def _estimate_cross_divs(features, indices, rhos,
         num_q = features._n_pts[i]
 
         # make a boolean array of whether we want to do the ith bag
-        do_bag = mask[i].copy()
+        do_bag = mask[i]
         if not any_run_self:
+            do_bag = do_bag.copy()
             do_bag[i] = False
 
         # loop over contiguous sections where do_bag is True
