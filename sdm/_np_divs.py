@@ -208,19 +208,12 @@ def _estimate_cross_divs(features, indices, rhos,
                          knn_search(max_K, feats, index=index)[:, Ks - 1])
 
             # TODO: parallelize this bit?
-            args = {'Ks': Ks, 'dim': dim}
             for func, info in iteritems(funcs):
-                if getattr(func, 'needs_alpha', False):
-                    args['alphas'] = info.alphas
-                elif 'alphas' in args:
-                    del args['alphas']
-                pos = info.pos
-
                 for j, nu in izip(lazy_range(start, end), nus):
                     if i == j:
                         if getattr(func, 'self_value', None) is not None:
                             continue  # already set this above
                         nu = rhos[j]  # nu counts each point as its NN...
 
-                    outputs[j, i, pos, :] = func(num_q, rhos[j], nu)
+                    outputs[j, i, info.pos, :] = func(num_q, rhos[j], nu)
     return outputs
