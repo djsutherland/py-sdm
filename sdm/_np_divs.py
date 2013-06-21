@@ -6,7 +6,6 @@ from scipy.special import gamma, gammaln
 
 from .utils import lazy_range, izip, iteritems
 from .mp_utils import progress
-from .features import _group
 from .knn_search import knn_search
 
 
@@ -205,16 +204,19 @@ def _estimate_cross_divs(features, indices, rhos,
             feats = features._features[boundaries[0]:boundaries[-1]]
 
             # find the nearest neighbors in features[i] from each of these bags
-            nus = _group(boundaries - boundaries[0],
-                         knn_search(max_K, feats, index=index)[:, Ks - 1])
+            neighbors = knn_search(max_K, feats, index=index)[:, Ks - 1]
 
             # TODO: parallelize this bit?
-            for func, info in iteritems(funcs):
-                for j, nu in izip(lazy_range(start, end), nus):
-                    if i == j:
-                        if getattr(func, 'self_value', None) is not None:
-                            continue  # already set this above
-                        nu = rhos[j]  # nu counts each point as its NN...
+            for j in lazy_range(start, end):
+                rho = rhos[j]
+                nu = neighbors[boundaries[j]:boundaries[j+1]]
 
-                    outputs[j, i, info.pos, :] = func(num_q, rhos[j], nu)
+                if i == j:
+                    for func, info in iteritems(funcs):
+                        if getattr(func, 'self_value', None) is None:
+                            outputs[j, i, info.pos, :] = func(num_q, rho, rho)
+                            # otherwise, already set it above
+                else:
+                    for func, info in iteritems(funcs):
+                        outputs[j, i, info.pos, :] = func(num_q, rho, nu)
     return outputs
