@@ -44,24 +44,31 @@ from .knn_search import knn_search
 # Returns an array of divergence estimates. If needs_alpha, should be of shape
 # (num_alphas, num_Ks); otherwise, of shape (num_Ks,).
 
-def linear(Ks, num_q, dim, rhos, nus):
+def linear(Ks, dim, num_q, rhos, nus):
     r'''
     Estimates the linear inner product \int p q between two distributions,
     based on kNN distances.
     '''
+    return _get_linear(Ks, dim)(num_q, rhos, nus)
+
+def _get_linear(Ks, dim):
     # Estimated with alpha=0, beta=1:
     #   B_{k,d,0,1} = (k - 1) / pi^(dim/2) * gamma(dim/2 + 1)
     #   (using gamma(k) / gamma(k - 1) = k - 1)
-    # and the rest of the estimator is
-    #   B / m * mean(nu ^ -dim)
     Ks = np.reshape(Ks, (-1,))
     Bs = (Ks - 1) / np.pi ** (dim / 2) * gamma(dim / 2 + 1)  # shape (num_Ks,)
+    return partial(_linear, Bs, dim)
+
+def _linear(Bs, dim, num_q, rhos, nus):
+    # and the rest of the estimator is
+    #   B / m * mean(nu ^ -dim)
     return Bs / num_q * np.mean(nus ** (-dim), axis=0)
 linear.self_value = None  # have to execute it
 linear.needs_alpha = False
+linear.chooser_fn = _get_linear
 
 
-def kl(Ks, num_q, dim, rhos, nus):
+def kl(Ks, dim, num_q, rhos, nus):
     r'''
     Estimate the KL divergence between distributions:
         \int p(x) \log (p(x) / q(x))
@@ -86,7 +93,7 @@ kl.self_value = 0
 kl.needs_alpha = False
 
 
-def alpha_div(alphas, Ks, num_q, dim, rhos, nus):
+def alpha_div(alphas, Ks, dim, num_q, rhos, nus):
     r'''
     Estimate the alpha divergence between distributions:
         \int p^\alpha q^(1-\alpha)
@@ -100,7 +107,7 @@ def alpha_div(alphas, Ks, num_q, dim, rhos, nus):
     '''
     return _get_alpha_div(alphas, Ks)(num_q, dim, rhos, nus)
 
-def _get_alpha_div(alphas, Ks):
+def _get_alpha_div(alphas, Ks, dim):
     alphas = np.reshape(alphas, (-1, 1))
     Ks = np.reshape(Ks, (1, -1))
 
@@ -112,9 +119,9 @@ def _get_alpha_div(alphas, Ks):
     #   and then ratio of gamma functions
     Bs = np.exp(gammaln(Ks) * 2 - gammaln(Ks + omas) - gammaln(Ks - omas))
 
-    return partial(_alpha_div, omas, Bs)
+    return partial(_alpha_div, omas, Bs, dim)
 
-def _alpha_div(omas, Bs, num_q, dim, rhos, nus):
+def _alpha_div(omas, Bs, dim, num_q, rhos, nus):
     N = rhos.shape[0]
 
     # the actual main estimate:
@@ -215,5 +222,5 @@ def _estimate_cross_divs(features, indices, rhos,
                             continue  # already set this above
                         nu = rhos[j]  # nu counts each point as its NN...
 
-                    outputs[j, i, pos, :] = func(num_q, dim, rhos[j], nu)
+                    outputs[j, i, pos, :] = func(num_q, rhos[j], nu)
     return outputs

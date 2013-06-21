@@ -267,7 +267,7 @@ def topological_sort(deps):
 
 _FuncInfo = namedtuple('_FuncInfo', 'alphas pos')
 _MetaFuncInfo = namedtuple('_MetaFuncInfo', 'alphas pos deps')
-def _parse_specs(specs, Ks):
+def _parse_specs(specs, Ks, dim):
     '''
     Set up the different functions we need to call.
 
@@ -452,13 +452,13 @@ def _parse_specs(specs, Ks):
         new = None
         if hasattr(func, 'chooser_fn'):
             if needs_alpha:
-                new = func.chooser_fn(info.alphas, Ks)
+                new = func.chooser_fn(info.alphas, Ks, dim)
             else:
-                new = func.chooser_fn(Ks)
+                new = func.chooser_fn(Ks, dim)
         elif needs_alpha:
-            new = partial(func, info.alphas, Ks)
+            new = partial(func, info.alphas, Ks, dim)
         else:
-            new = partial(func, Ks)
+            new = partial(func, Ks, dim)
 
         for attr in dir(func):
             if not (attr.startswith('__') or attr.startswith('func_')):
@@ -555,7 +555,7 @@ def estimate_divs(features,
         raise ValueError(msg.format(Ks.max(), features._n_pts.min()))
     max_K = Ks.max()
 
-    funcs, metas, n_meta_only = _parse_specs(specs, Ks)
+    funcs, metas, n_meta_only = _parse_specs(specs, Ks, dim)
 
     if cores is None:
         from multiprocessing import cpu_count
@@ -625,7 +625,7 @@ def estimate_divs(features,
     # fill in the meta values
     for meta, info in iteritems(metas):
         required = [outputs[:, :, [i], :] for i in info.deps]
-        r = meta(dim, rhos, required)
+        r = meta(rhos, required)
         if r.ndim == 3:
             r = r[:, :, np.newaxis, :]
         outputs[:, :, info.pos, :] = r
