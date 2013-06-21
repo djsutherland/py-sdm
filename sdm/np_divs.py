@@ -13,6 +13,7 @@ from __future__ import division, print_function
 
 import argparse
 from collections import namedtuple, defaultdict, OrderedDict
+from functools import partial
 import itertools
 from operator import itemgetter
 import os
@@ -392,7 +393,7 @@ def topological_sort(deps):
 
 _FuncInfo = namedtuple('_FuncInfo', 'alphas pos')
 _MetaFuncInfo = namedtuple('_MetaFuncInfo', 'alphas pos deps')
-def _parse_specs(specs):
+def _parse_specs(specs, Ks):
     '''
     Set up the different functions we need to call.
 
@@ -411,6 +412,8 @@ def _parse_specs(specs):
           such that all dependencies are resolved before calling that function.
           If no such order is possible, raise ValueError.
         - the number of meta-only results
+
+    # TODO: update doctests for _parse_specs
 
     >>> _parse_specs(['renyi:.8', 'hellinger', 'renyi:.9'])
     ({<function alpha_div at 0x10954f848>:
@@ -565,10 +568,36 @@ def _parse_specs(specs):
 
     # topological sort of metas
     meta_order = topological_sort(meta_deps)
-    metas = OrderedDict((
-        (f, metas[f]) for f in meta_order if hasattr(f, 'needs_results')
-    ))
-    return funcs, metas, -next(meta_counter) - 1
+    metas_ordered = OrderedDict(
+        (f, metas[f]) for f in meta_order if hasattr(f, 'needs_results'))
+
+    # replace functions with partials of args
+    def replace_func(func, info):
+        needs_alpha = getattr(func, 'needs_alpha', False)
+
+        new = None
+        if hasattr(func, 'chooser_fn'):
+            if needs_alpha:
+                new = func.chooser_fn(info.alphas, Ks)
+            else:
+                new = func.chooser_fn(Ks)
+        elif needs_alpha:
+            new = partial(func, info.alphas)
+
+        if new is None:
+            return func
+
+        for attr in dir(func):
+            if not (attr.startswith('__') or attr.startswith('func_')):
+                setattr(new, attr, getattr(func, attr))
+        return new
+
+    rep_funcs = dict(
+        (replace_func(f, info), info) for f, info in iteritems(funcs))
+    rep_metas_ordered = OrderedDict(
+        (replace_func(f, info), info) for f, info in iteritems(metas_ordered))
+
+    return rep_funcs, rep_metas_ordered, -next(meta_counter) - 1
 
 
 def normalize_div_name(name):
@@ -641,8 +670,6 @@ def estimate_divs(features,
             msg = "mask should be a boolean array, not {}"
             raise TypeError(msg.format(mask.dtype))
 
-    funcs, metas, n_meta_only = _parse_specs(specs)
-
     Ks = np.array(np.squeeze(Ks), ndmin=1)
     if Ks.ndim != 1:
         raise TypeError("Ks should be 1-dim, got shape {}".format(Ks.shape))
@@ -654,6 +681,8 @@ def estimate_divs(features,
         msg = "asked for K = {}, but there's a bag with only {} points"
         raise ValueError(msg.format(Ks.max(), features._n_pts.min()))
     max_K = Ks.max()
+
+    funcs, metas, n_meta_only = _parse_specs(specs, Ks)
 
     if cores is None:
         from multiprocessing import cpu_count
@@ -750,6 +779,8 @@ def estimate_divs(features,
         #
         # TODO: Is cythonning this file/this function worth it?
 
+        num_q = features._n_pts[i]
+
         # make a boolean array of whether we want to do the ith bag
         do_bag = mask[i].copy()
         if not any_run_self:
@@ -781,22 +812,14 @@ def estimate_divs(features,
                             continue  # already set this above
                         nu = rhos[j]  # nu counts each point as its NN...
 
-                    r = func(rhos=rhos[j], nus=nu, num_q=features._n_pts[i],
-                             **args)
-                    outputs[j, i, pos, :] = r
+                    outputs[j, i, pos, :] = func(Ks, num_q, dim, rhos[j], nu)
 
     # fill in the meta values
-    args = {'Ks': Ks, 'dim': dim, 'rhos': rhos}
     for meta, info in iteritems(metas):
-        if getattr(meta, 'needs_alpha', False):
-            args['alphas'] = info.alphas
-        elif 'alphas' in args:
-            del args['alphas']
-
         required = [outputs[:, :, [i], :] for i in info.deps]
-        r = meta(required=required, **args)
+        r = meta(Ks, dim, rhos, required)
         if r.ndim == 3:
-            r = r.reshape(r.shape[0], r.shape[1], 1, r.shape[2])
+            r = r[:, :, np.newaxis, :]
         outputs[:, :, info.pos, :] = r
 
     if n_meta_only:
