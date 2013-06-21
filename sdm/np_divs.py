@@ -113,7 +113,7 @@ kl.self_value = 0
 kl.needs_alpha = False
 
 
-def alpha_div(alphas, Ks, num_q, dim, rhos, nus, clamp=True):
+def alpha_div(alphas, Ks, num_q, dim, rhos, nus):
     r'''
     Estimate the alpha divergence between distributions:
         \int p^\alpha q^(1-\alpha)
@@ -121,46 +121,49 @@ def alpha_div(alphas, Ks, num_q, dim, rhos, nus, clamp=True):
 
     Used in Renyi, Hellinger, Bhattacharyya, Tsallis divergences.
 
-    If clamp is True (default), enforces that estimates are >= 0.
+    Enforces that estimates are >= 0.
 
     Returns divergence estimates with shape (num_alphas, num_Ks).
     '''
-    # We don't do argument checking here, because this is called repeatedly from
-    # estimate_divs and it'd slow things down.
-    # TODO: should we these be "private"?
+    return _get_alpha_div(alphas, Ks)(num_q, dim, rhos, nus)
 
-    N = rhos.shape[0]
-    M = num_q
+def _get_alpha_div(alphas, Ks):
     alphas = np.reshape(alphas, (-1, 1))
     Ks = np.reshape(Ks, (1, -1))
+
+    omas = 1 - alphas
 
     # We're estimating with alpha = alpha-1, beta = 1-alpha.
     # B constant in front:
     #   estimator's alpha = -beta, so volume of unit ball cancels out
     #   and then ratio of gamma functions
-    omas = 1 - alphas
     Bs = np.exp(gammaln(Ks) * 2 - gammaln(Ks + omas) - gammaln(Ks - omas))
 
-    # factors based on the sizes:
-    #   1 / [ (n-1)^(est alpha) * m^(est beta) ] = ((n-1) / m) ^ (1 - alpha)
-    consts = ((N - 1) / M) ** omas
+    return partial(_alpha_div, omas, Bs)
+
+def _alpha_div(omas, Bs, num_q, dim, rhos, nus):
+    N = rhos.shape[0]
 
     # the actual main estimate:
     #   rho^(- dim * est alpha) nu^(- dim * est beta)
     #   = (rho / nu) ^ (dim * (1 - alpha))
     # do some reshaping trickery to get broadcasting right
-    ratios = np.reshape(rhos / nus, (N, 1, Ks.size))
-    estimates = ratios ** (dim * omas.reshape(1, -1, 1))
+    estimates = (rhos / nus)[:, np.newaxis, :]
+    estimates = estimates ** (dim * omas.reshape(1, -1, 1))
     estimates = np.mean(estimates, axis=0)  # shape (n_alphas, n_Ks)
 
     estimates *= Bs
-    estimates *= consts
 
-    if clamp:
-        np.maximum(estimates, 0, out=estimates)
+    # factors based on the sizes:
+    #   1 / [ (n-1)^(est alpha) * m^(est beta) ] = ((n-1) / m) ^ (1 - alpha)
+    estimates *= ((N - 1) / num_q) ** omas
+
+    np.maximum(estimates, 0, out=estimates)
     return estimates
+
 alpha_div.self_value = 1
 alpha_div.needs_alpha = True
+alpha_div.chooser_fn = _get_alpha_div
 
 
 ################################################################################
