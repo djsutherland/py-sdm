@@ -335,10 +335,10 @@ def _try_params(cls, tuning_params, sigma_kms, labels, folds, svm_params,
         preds = clf.predict(test_km)
         assert not np.any(np.isnan(preds))
         loss = cls.tuning_loss(labels.value[test_idx], preds)
-        return tuning_params, loss, clf.fit_status_
+        status = 'convergence warning' if clf.fit_status_ else None
+        return tuning_params, loss, status
     except ValueError as e:
-        warnings.warn("Got exception: {}".format(e))
-        return tuning_params, 1e50, 0
+        return tuning_params, 1e50, e.args
         # using 1e50 because if *everything* errors, want to get the one that
         # failed the least often
         # TODO: count these like we count the fit_status_ errors
@@ -820,7 +820,6 @@ class BaseSDM(sklearn.base.BaseEstimator):
         # filter convergence warnings, count them up instead
         warnings.filterwarnings('ignore', category=ConvergenceWarning)
         ignore_conv = warnings.filters[0]
-        conv_warning_counter = itertools.count()
 
         # function that gets loss for a given set of params
         try_params = partial(_try_params, self.__class__,
@@ -829,27 +828,36 @@ class BaseSDM(sklearn.base.BaseEstimator):
                              sample_weight=sample_weight_d)
 
         # actually do it
+        problems = Counter()
         with get_pool(self.n_proc) as pool:
             for ps, val, status in pool.imap_unordered(try_params, param_grid):
                 idx = tuple(param_d[k].searchsorted(ps[k]) for k in param_names)
                 scores[idx] = val
                 if status:
-                    next(conv_warning_counter)
+                    problems[status] += 1
                 if self.progressbar:
                     tick_pbar()
 
         if self.progressbar:
             pbar.finish()
 
-
         warnings.filters.remove(ignore_conv)
-        n_conv = next(conv_warning_counter)
-        if n_conv == 0:
+        if problems:
+            for msg, count in iteritems(problems):
+                if msg == 'convergence warning':
+                    continue
+                self.status_fn("{} SVMs got error: {}".format(count, msg))
+
+            if problems['convergence warning']:
+                msg = '{} SVMs terminated early, after {:,} steps'
+                self.status_fn(msg.format(problems['convergence warning'],
+                                          self.tuning_svm_max_iter))
+            else:
+                msg = "All other SVMs finished within {:,} steps"
+                self.status_fn(msg.format(self.tuning_svm_max_iter))
+        else:
             self.status_fn('All SVMs finished within {:,} steps'.format(
                 self.tuning_svm_max_iter))
-        else:
-            self.status_fn('{} SVMs terminated early, after {:,} steps'.format(
-                next(conv_warning_counter), self.tuning_svm_max_iter))
 
         # figure out which ones were best
         assert not np.any(np.isnan(scores))
@@ -1720,12 +1728,19 @@ def do_cv(args):
     if args.input_format == 'matlab':
         with h5py.File(args.input_file, 'r') as f:
             bags = read_cell_array(f, f[args.bags_name])
-            cats = np.squeeze(f['cats'][...])
+            try:
+                cats = np.squeeze(f['cats'][...])
+            except KeyError:
+                cats = None
+
+            feats = Features(bags, categories=cats)
+
             if args.labels_name:
                 labels = np.squeeze(f[args.labels_name][...])
-            else:
+            elif cats is not None:
                 labels = cats
-            names = None
+            else:
+                raise ValueError("must provide a label name")
     else:
         assert args.input_format == 'python'
 
@@ -1733,18 +1748,13 @@ def do_cv(args):
             feats = Features.load_from_perbag(args.input_file)
         else:
             feats = Features.load_from_hdf5(args.input_file)
-        bags = feats.features
-        names = feats.names
-        cats = feats.categories
 
         if args.labels_name:
             labels = feats[args.labels_name]
         elif args.labels_name is None and classifier:
-            labels = cats
+            labels = feats.categories
         else:
             raise ValueError("must provide a label name when regressing")
-
-        del feats
 
     label_class_names = None
     if classifier and not is_categorical_type(labels):
@@ -1761,15 +1771,14 @@ def do_cv(args):
     else:
         label_str = 'labels from {:.2} to {:.2}'.format(
                 np.min(labels), np.max(labels))
-    status_fn('Loaded {} bags of dimension {} with {}.'.format(
-            len(bags), bags[0].shape[1], label_str))
+    status_fn('Loaded {} with {}.'.format(feats, label_str))
 
     clf = sdm_for_mode[args.svm_mode](status_fn=True, **opts_dict(args))
-    score, preds, folds, params = clf.crossvalidate(bags, labels,
+    score, preds, folds, params = clf.crossvalidate(feats, labels,
         num_folds=args.cv_folds, stratified_cv=args.stratified_cv,
         project_all=args.mode == 'transduct',
         ret_fold_info=True,
-        divs_cache=args.div_cache_file, cats=cats, names=names)
+        divs_cache=args.div_cache_file)
 
     status_fn('')
     status_fn('{score_name}: {score:{score_fmt}}'.format(score=score,
