@@ -133,18 +133,21 @@ def test_divs():
              'renyi:0.5', 'renyi:0.7', 'renyi:0.9', 'renyi:0.99']
     Ks = [1, 3, 5, 10]
     for name in ['gaussian-2d-mean0-std1,2', 'gaussian-20d-mean0-std1,2']:
-        feats = Features.load_from_hdf5(os.path.join(dir, name + '.h5'))
+        for dtype in [np.float64, np.float32]:
+            feats = Features.load_from_hdf5(
+                os.path.join(dir, name + '.h5'),
+                features_dtype=dtype)
 
-        with h5py.File(os.path.join(dir, name + '.divs.h5'), 'r') as f:
-            expected = load_divs(f, specs, Ks)
-            min_dist = f.attrs['min_dist']
+            with h5py.File(os.path.join(dir, name + '.divs.h5'), 'r') as f:
+                expected = load_divs(f, specs, Ks)
+                min_dist = f.attrs['min_dist']
 
-        tests = []
-        for args in argses:
-            tests.extend(check_div(feats, expected, specs, Ks, name,
-                                   min_dist=min_dist, **args))
-        for test in sorted(tests, key=lambda t: t[0].description):
-            yield test
+            tests = []
+            for args in argses:
+                tests.extend(check_div(feats, expected, specs, Ks, name,
+                                       min_dist=min_dist, **args))
+            for test in sorted(tests, key=lambda t: t[0].description):
+                yield test
 
 
 ################################################################################
