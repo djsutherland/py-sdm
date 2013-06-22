@@ -335,10 +335,10 @@ def _try_params(cls, tuning_params, sigma_kms, labels, folds, svm_params,
         preds = clf.predict(test_km)
         assert not np.any(np.isnan(preds))
         loss = cls.tuning_loss(labels.value[test_idx], preds)
-        return tuning_params, loss, clf.fit_status_
+        status = 'convergence warning' if clf.fit_status_ else None
+        return tuning_params, loss, status
     except ValueError as e:
-        warnings.warn("Got exception: {}".format(e))
-        return tuning_params, 1e50, 0
+        return tuning_params, 1e50, e.args
         # using 1e50 because if *everything* errors, want to get the one that
         # failed the least often
         # TODO: count these like we count the fit_status_ errors
@@ -820,7 +820,6 @@ class BaseSDM(sklearn.base.BaseEstimator):
         # filter convergence warnings, count them up instead
         warnings.filterwarnings('ignore', category=ConvergenceWarning)
         ignore_conv = warnings.filters[0]
-        conv_warning_counter = itertools.count()
 
         # function that gets loss for a given set of params
         try_params = partial(_try_params, self.__class__,
@@ -829,27 +828,36 @@ class BaseSDM(sklearn.base.BaseEstimator):
                              sample_weight=sample_weight_d)
 
         # actually do it
+        problems = Counter()
         with get_pool(self.n_proc) as pool:
             for ps, val, status in pool.imap_unordered(try_params, param_grid):
                 idx = tuple(param_d[k].searchsorted(ps[k]) for k in param_names)
                 scores[idx] = val
                 if status:
-                    next(conv_warning_counter)
+                    problems[status] += 1
                 if self.progressbar:
                     tick_pbar()
 
         if self.progressbar:
             pbar.finish()
 
-
         warnings.filters.remove(ignore_conv)
-        n_conv = next(conv_warning_counter)
-        if n_conv == 0:
+        if problems:
+            for msg, count in iteritems(problems):
+                if msg == 'convergence warning':
+                    continue
+                self.status_fn("{} SVMs got error: {}".format(count, msg))
+
+            if problems['convergence warning']:
+                msg = '{} SVMs terminated early, after {:,} steps'
+                self.status_fn(msg.format(problems['convergence warning'],
+                                          self.tuning_svm_max_iter))
+            else:
+                msg = "All other SVMs finished within {:,} steps"
+                self.status_fn(msg.format(self.tuning_svm_max_iter))
+        else:
             self.status_fn('All SVMs finished within {:,} steps'.format(
                 self.tuning_svm_max_iter))
-        else:
-            self.status_fn('{} SVMs terminated early, after {:,} steps'.format(
-                next(conv_warning_counter), self.tuning_svm_max_iter))
 
         # figure out which ones were best
         assert not np.any(np.isnan(scores))
