@@ -17,7 +17,7 @@ def pick_flann_algorithm(dim):
 
 
 def knn_search(K, x, y=None, min_dist=None, index=None, algorithm=None,
-               return_indices=False, **kwargs):
+               return_indices=False, dist_double=False, **kwargs):
     '''
     Calculates Euclidean distances to the first K closest elements of y
     for each x, which are row-instance data matrices.
@@ -27,6 +27,9 @@ def knn_search(K, x, y=None, min_dist=None, index=None, algorithm=None,
 
     If return_indices, also returns a matrix whose (i, j)th element is the
     identity of the (j+1)th nearest neighbor in y to the ith point in x.
+
+    FLANN returns squared Euclidean distances as float32. If dist_double, cast
+    to float64 before square-rooting for more numerical accuracy.
 
     By default, clamps minimum distance to min(1e-2, 1e-100 ** (1/dim));
     setting min_dist to a number changes this value. Use 0 for no clamping.
@@ -56,7 +59,9 @@ def knn_search(K, x, y=None, min_dist=None, index=None, algorithm=None,
     idx, dist = index.nn_index(x, K)
 
     idx = idx.astype(np.uint16)
-    dist = np.sqrt(dist.astype(np.float64))
+    if dist_double:
+        dist = dist.astype(np.float64)
+    np.sqrt(dist, out=dist)
 
     # protect against identical points
     if min_dist is None:
