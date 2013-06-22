@@ -713,7 +713,7 @@ def estimate_divs(features,
 
     outputs = _estimate_cross_divs(features, indices, rhos,
                                    mask, funcs, Ks, specs, n_meta_only,
-                                   progressbar)
+                                   progressbar, cores)
 
     # fill in the meta values
     for meta, info in iteritems(metas):

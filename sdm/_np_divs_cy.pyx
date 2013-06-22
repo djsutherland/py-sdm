@@ -2,6 +2,7 @@ from __future__ import division
 
 cimport cython
 from cython cimport view
+from cython.parallel import prange
 from libc.math cimport log
 
 from functools import partial
@@ -98,7 +99,7 @@ cdef void _alpha_div(FLOAT_T[:] omas, FLOAT_T[:, ::1] Bs,
 @cython.boundscheck(False)
 def _estimate_cross_divs(features, indices, rhos,
                          mask, funcs, Ks, specs, n_meta_only,
-                         progressbar):
+                         progressbar, cores):
     cdef int i, j, p, s, start, end, start_idx, end_idx, num_q
     cdef long[:] boundaries
     cdef FLOAT_T[:, ::1] neighbors, rho, nu
@@ -219,6 +220,10 @@ def _estimate_cross_divs(features, indices, rhos,
         # loop over contiguous sections where do_bag is True
         change_pts = np.hstack([0, np.diff(do_bag).nonzero()[0] + 1, n_bags])
         s = 0 if do_bag[0] else 1
+
+        # TODO: make this whole loop nogil, since most of it is anyway
+        # (this might require writing a little cython interface to flann
+        #  instead of using the ctypes one....)
         for start, end in izip(change_pts[s::2], change_pts[s+1::2]):
             boundaries = features._boundaries[start:end+1]
             feats = features._features[boundaries[0]:boundaries[-1]]
@@ -227,32 +232,36 @@ def _estimate_cross_divs(features, indices, rhos,
             neighbors = np.ascontiguousarray(
                 knn_search(max_K, feats, index=index)[:, Ks - 1])
 
-            # TODO: parallelize this bit?
-            with nogil:
-                for j in range(start, end):
-                    start_idx = boundaries[j]
-                    end_idx = boundaries[j+1]
+            for j in prange(start, end, num_threads=cores):
+                start_idx = boundaries[j]
+                end_idx = boundaries[j+1]
 
-                    rho = rhos_stacked[start_idx:end_idx]
-                    nu = neighbors[start_idx:end_idx]
+                # rho = rhos_stacked[start_idx:end_idx]
+                # nu = neighbors[start_idx:end_idx]
 
-                    if i == j:
-                        # kl, alpha have already been done above
-                        # nu and rho are the same, except with K off by one;
-                        # use rho for both
-                        if do_linear:
-                            _linear(linear_Bs, dim, num_q, rho,
-                                    outputs[j, i, linear_pos, :])
-                    else:
-                        if do_linear:
-                            _linear(linear_Bs, dim, num_q, nu,
-                                    outputs[j, i, linear_pos, :])
+                if i == j:
+                    # kl, alpha have already been done above
+                    # nu and rho are the same, except with K off by one;
+                    # use rho for both
+                    if do_linear:
+                        _linear(linear_Bs, dim, num_q,
+                                rhos_stacked[start_idx:end_idx],
+                                outputs[j, i, linear_pos, :])
+                else:
+                    if do_linear:
+                        _linear(linear_Bs, dim, num_q,
+                                neighbors[start_idx:end_idx],
+                                outputs[j, i, linear_pos, :])
 
-                        if do_kl:
-                            kl(dim, num_q, rho, nu, outputs[j, i, kl_pos, :])
+                    if do_kl:
+                        kl(dim, num_q,
+                           rhos_stacked[start_idx:end_idx],
+                           neighbors[start_idx:end_idx],
+                           outputs[j, i, kl_pos, :])
 
-                        if do_alpha:
-                            _alpha_div(alpha_omas, alpha_Bs,
-                                       dim, num_q, rho, nu,
-                                       alpha_pos, outputs[j, i, :, :])
+                    if do_alpha:
+                        _alpha_div(alpha_omas, alpha_Bs, dim, num_q,
+                                   rhos_stacked[start_idx:end_idx],
+                                   neighbors[start_idx:end_idx],
+                                   alpha_pos, outputs[j, i, :, :])
     return np.asarray(outputs)

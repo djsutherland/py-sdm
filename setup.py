@@ -25,8 +25,7 @@ except ImportError:
     from distutils.core import setup
     from distutils.extension import Extension
 
-def cython_ext(name):
-    import os
+def cython_ext(name, **k):
     ret = []
 
     try:
@@ -41,11 +40,12 @@ def cython_ext(name):
     else:
         ret.extend(cythonize("sdm/{}.pyx".format(name)))
 
-    ret.append(Extension("sdm.{}".format(name), ["sdm/{}.c".format(name)]))
+    ret.append(Extension("sdm.{}".format(name), ["sdm/{}.c".format(name)], **k))
     return ret
 
 ext_modules = []
-ext_modules.extend(cython_ext("_np_divs_cy"))
+ext_modules.extend(cython_ext("_np_divs_cy",
+    extra_compile_args=['-fopenmp'], extra_link_args=['-fopenmp']))
 
 setup(
     name='py-sdm',

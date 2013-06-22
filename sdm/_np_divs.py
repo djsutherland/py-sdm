@@ -63,7 +63,7 @@ def _alpha_div(omas, Bs, dim, num_q, rhos, nus):
 
 def _estimate_cross_divs(features, indices, rhos,
                          mask, funcs, Ks, specs, n_meta_only,
-                         progressbar):
+                         progressbar, cores):
     n_bags = len(features)
     max_K = np.max(Ks)
 
