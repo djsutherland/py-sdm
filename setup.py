@@ -9,9 +9,14 @@ except ImportError:
 try:
     import pyflann
 except ImportError:
-    import warnings
-    warnings.warn("The python FLANN bindings don't seem to be installed. "
-                  "These are highly recommended.", ImportWarning)
+    msg = """py-sdm requires the python bindings for FLANN. These are available
+from http://people.cs.ubc.ca/~mariusm/flann. Make sure to compile them with
+OpenMP support (ie using gcc rather than clang).
+
+(If you think you have FLANN installed, try running
+    python PREFIX/share/flann/python/setup.py install
+to get the bindings installed in your current python environment.)"""
+    raise ImportError(msg.strip().)
 
 try:
     from setuptools import setup
