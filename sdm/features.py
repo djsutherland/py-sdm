@@ -725,10 +725,14 @@ class Features(object):
             boundaries = np.hstack([[0], np.cumsum(n_pts)])
 
             # allocate space for features and extras
-            dtype = dtypes.pop()
-            if dtypes:
-                raise TypeError("different features have different dtypes")
-                # TODO: find a dtype that'll cover all of them
+            # TODO: go straight into a data array, save a copy...
+            if features_dtype is None:
+                dtype = dtypes.pop()
+                if dtypes:
+                    raise TypeError("different features have different dtypes")
+                    # TODO: find a dtype that'll cover all of them
+            else:
+                dtype = features_dtype
             features = np.empty((n_pts.sum(), dim), dtype=dtype)
 
             extras = {}
