@@ -41,7 +41,7 @@ def cython_ext(name, **k):
             msg = "{} extension needs to be compiled but cython isn't available"
             raise ImportError(msg.format(name))
     else:
-        ret.extend(cythonize("sdm/{}.pyx".format(name)))
+        cythonize("sdm/{}.pyx".format(name))
 
     ret.append(Extension("sdm.{}".format(name), ["sdm/{}.c".format(name)], **k))
     return ret
