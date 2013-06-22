@@ -232,36 +232,37 @@ def _estimate_cross_divs(features, indices, rhos,
             neighbors = np.ascontiguousarray(
                 knn_search(max_K, feats, index=index)[:, Ks - 1])
 
-            for j in prange(start, end, num_threads=cores):
-                start_idx = boundaries[j]
-                end_idx = boundaries[j+1]
+            with nogil:
+                for j in prange(start, end, num_threads=cores):
+                    start_idx = boundaries[j]
+                    end_idx = boundaries[j+1]
 
-                # rho = rhos_stacked[start_idx:end_idx]
-                # nu = neighbors[start_idx:end_idx]
+                    # rho = rhos_stacked[start_idx:end_idx]
+                    # nu = neighbors[start_idx:end_idx]
 
-                if i == j:
-                    # kl, alpha have already been done above
-                    # nu and rho are the same, except with K off by one;
-                    # use rho for both
-                    if do_linear:
-                        _linear(linear_Bs, dim, num_q,
-                                rhos_stacked[start_idx:end_idx],
-                                outputs[j, i, linear_pos, :])
-                else:
-                    if do_linear:
-                        _linear(linear_Bs, dim, num_q,
-                                neighbors[start_idx:end_idx],
-                                outputs[j, i, linear_pos, :])
+                    if i == j:
+                        # kl, alpha have already been done above
+                        # nu and rho are the same, except with K off by one;
+                        # use rho for both
+                        if do_linear:
+                            _linear(linear_Bs, dim, num_q,
+                                    rhos_stacked[start_idx:end_idx],
+                                    outputs[j, i, linear_pos, :])
+                    else:
+                        if do_linear:
+                            _linear(linear_Bs, dim, num_q,
+                                    neighbors[start_idx:end_idx],
+                                    outputs[j, i, linear_pos, :])
 
-                    if do_kl:
-                        kl(dim, num_q,
-                           rhos_stacked[start_idx:end_idx],
-                           neighbors[start_idx:end_idx],
-                           outputs[j, i, kl_pos, :])
+                        if do_kl:
+                            kl(dim, num_q,
+                               rhos_stacked[start_idx:end_idx],
+                               neighbors[start_idx:end_idx],
+                               outputs[j, i, kl_pos, :])
 
-                    if do_alpha:
-                        _alpha_div(alpha_omas, alpha_Bs, dim, num_q,
-                                   rhos_stacked[start_idx:end_idx],
-                                   neighbors[start_idx:end_idx],
-                                   alpha_pos, outputs[j, i, :, :])
+                        if do_alpha:
+                            _alpha_div(alpha_omas, alpha_Bs, dim, num_q,
+                                       rhos_stacked[start_idx:end_idx],
+                                       neighbors[start_idx:end_idx],
+                                       alpha_pos, outputs[j, i, :, :])
     return np.asarray(outputs)
