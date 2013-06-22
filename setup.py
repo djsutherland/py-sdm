@@ -32,9 +32,12 @@ def cython_ext(name, **k):
         from Cython.Build import cythonize
     except ImportError:
         import os
-        pyx_time = os.path.getmtime('sdm/{}.pyx'.format(name))
-        c_time = os.path.getmtime('sdm/{}.c'.format(name))
-        if pyx_time >= c_time:
+        try:
+            pyx_time = os.path.getmtime('sdm/{}.pyx'.format(name))
+            c_time = os.path.getmtime('sdm/{}.c'.format(name))
+            if pyx_time >= c_time:
+                raise ValueError
+        except (OSError, ValueError):
             msg = "{} extension needs to be compiled but cython isn't available"
             raise ImportError(msg.format(name))
     else:
