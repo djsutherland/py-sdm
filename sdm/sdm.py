@@ -1728,12 +1728,19 @@ def do_cv(args):
     if args.input_format == 'matlab':
         with h5py.File(args.input_file, 'r') as f:
             bags = read_cell_array(f, f[args.bags_name])
-            cats = np.squeeze(f['cats'][...])
+            try:
+                cats = np.squeeze(f['cats'][...])
+            except KeyError:
+                cats = None
+
+            feats = Features(bags, categories=cats)
+
             if args.labels_name:
                 labels = np.squeeze(f[args.labels_name][...])
-            else:
+            elif cats is not None:
                 labels = cats
-            names = None
+            else:
+                raise ValueError("must provide a label name")
     else:
         assert args.input_format == 'python'
 
@@ -1741,18 +1748,13 @@ def do_cv(args):
             feats = Features.load_from_perbag(args.input_file)
         else:
             feats = Features.load_from_hdf5(args.input_file)
-        bags = feats.features
-        names = feats.names
-        cats = feats.categories
 
         if args.labels_name:
             labels = feats[args.labels_name]
         elif args.labels_name is None and classifier:
-            labels = cats
+            labels = feats.categories
         else:
             raise ValueError("must provide a label name when regressing")
-
-        del feats
 
     label_class_names = None
     if classifier and not is_categorical_type(labels):
@@ -1769,15 +1771,14 @@ def do_cv(args):
     else:
         label_str = 'labels from {:.2} to {:.2}'.format(
                 np.min(labels), np.max(labels))
-    status_fn('Loaded {} bags of dimension {} with {}.'.format(
-            len(bags), bags[0].shape[1], label_str))
+    status_fn('Loaded {} with {}.'.format(feats, label_str))
 
     clf = sdm_for_mode[args.svm_mode](status_fn=True, **opts_dict(args))
-    score, preds, folds, params = clf.crossvalidate(bags, labels,
+    score, preds, folds, params = clf.crossvalidate(feats, labels,
         num_folds=args.cv_folds, stratified_cv=args.stratified_cv,
         project_all=args.mode == 'transduct',
         ret_fold_info=True,
-        divs_cache=args.div_cache_file, cats=cats, names=names)
+        divs_cache=args.div_cache_file)
 
     status_fn('')
     status_fn('{score_name}: {score:{score_fmt}}'.format(score=score,
