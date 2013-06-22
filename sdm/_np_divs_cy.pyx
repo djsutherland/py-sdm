@@ -98,8 +98,8 @@ cdef void _alpha_div(FLOAT_T[:] omas, FLOAT_T[:, ::1] Bs,
 
 @cython.boundscheck(False)
 def _estimate_cross_divs(features, indices, rhos,
-                         mask, funcs, Ks, specs, n_meta_only,
-                         progressbar, cores):
+                         mask, funcs, Ks, specs, int n_meta_only,
+                         bint progressbar, int cores):
     cdef int i, j, p, s, start, end, start_idx, end_idx, num_q
     cdef long[:] boundaries
     cdef FLOAT_T[:, ::1] neighbors, rho, nu
