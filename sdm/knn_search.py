@@ -58,7 +58,8 @@ def knn_search(K, x, y=None, min_dist=None, index=None, algorithm=None,
 
     idx, dist = index.nn_index(x, K)
 
-    idx = idx.astype(np.uint16)
+    if return_indices:
+        idx = idx.astype(np.uint16)
     if dist_double:
         dist = dist.astype(np.float64)
     np.sqrt(dist, out=dist)

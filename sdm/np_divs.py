@@ -34,7 +34,14 @@ from .utils import (eps, izip, lazy_range, strict_map, raw_input, identity,
                     iteritems, itervalues, get_status_fn)
 from .mp_utils import progress
 from .knn_search import knn_search, default_min_dist, pick_flann_algorithm
-from ._np_divs import _linear, kl, _alpha_div, _estimate_cross_divs
+from ._np_divs import _linear, kl, _alpha_div
+
+try:
+    from ._np_divs_cy import _estimate_cross_divs
+except ImportError:
+    warnings.warn("Cythonned divergence estimator not available, using the "
+                  "slow pure-Python version.", ImportWarning)
+    from ._np_divs import _estimate_cross_divs
 
 ################################################################################
 ### Estimators of various divergences based on nearest-neighbor distances.

@@ -73,7 +73,7 @@ def assert_close(got, expected, msg, atol=1e-8, rtol=1e-5):
 
 def load_divs(f, specs, Ks):
     specs = np.squeeze(strict_map(normalize_div_name, specs))
-    Ks = np.squeeze(Ks)
+    Ks = np.ravel(Ks)
 
     n_bags = next(itervalues(next(itervalues(f)))).shape[0]
 
@@ -116,7 +116,7 @@ def check_div(feats, expected, specs, Ks, name, min_dist=None, **args):
                   "(max diff {} = |{} - {}| at {},{})".format(
                       diff[i, j], calc[i, j], exp[i, j], i, j)
 
-            f = partial(assert_close, calc, exp, atol=5e-6, msg=msg)
+            f = partial(assert_close, calc, exp, atol=1e-5, msg=msg)
             f.description = \
                 "divs: {} - {}, K={} - {}".format(name, spec, K, argstr)
             yield f,

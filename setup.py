@@ -16,12 +16,36 @@ OpenMP support (ie using gcc rather than clang).
 (If you think you have FLANN installed, try running
     python PREFIX/share/flann/python/setup.py install
 to get the bindings installed in your current python environment.)"""
-    raise ImportError(msg.strip().)
+    raise ImportError(msg)
 
 try:
     from setuptools import setup
+    from setuptools.extension import Extension
 except ImportError:
     from distutils.core import setup
+    from distutils.extension import Extension
+
+def cython_ext(name):
+    import os
+    ret = []
+
+    try:
+        from Cython.Build import cythonize
+    except ImportError:
+        import os
+        pyx_time = os.path.getmtime('sdm/{}.pyx'.format(name))
+        c_time = os.path.getmtime('sdm/{}.c'.format(name))
+        if pyx_time >= c_time:
+            msg = "{} extension needs to be compiled but cython isn't available"
+            raise ImportError(msg.format(name))
+    else:
+        ret.extend(cythonize("sdm/{}.pyx".format(name)))
+
+    ret.append(Extension("sdm.{}".format(name), ["sdm/{}.c".format(name)]))
+    return ret
+
+ext_modules = []
+ext_modules.extend(cython_ext("_np_divs_cy"))
 
 setup(
     name='py-sdm',
@@ -44,6 +68,8 @@ setup(
         'scikit-image >= 0.6',
         'vlfeat-ctypes',
     ],
+    include_dirs=[numpy.get_include()],
+    ext_modules=ext_modules,
     entry_points={
         'console_scripts': [
             'extract_image_features = sdm.extract_image_features:main',
