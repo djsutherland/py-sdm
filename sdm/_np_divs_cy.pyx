@@ -18,7 +18,7 @@ from ._np_divs import (_linear as py_linear,
                        kl as py_kl,
                        _alpha_div as py_alpha_div)
 
-# TODO: use float32?
+
 FLOAT = np.float64
 ctypedef double FLOAT_T
 
@@ -32,8 +32,8 @@ cdef void _linear(FLOAT_T[:] Bs, int dim, int num_q,
     cdef int i, j
     cdef int num_p = nus.shape[0]
     cdef int num_Ks = results.shape[0]
-    cdef float mean
-    cdef float mdim = -dim
+    cdef FLOAT_T mean
+    cdef FLOAT_T mdim = -dim
 
     for j in range(num_Ks):
         mean = 0
@@ -52,9 +52,9 @@ cdef void kl(int dim, int num_q,
     cdef int i, j
     cdef int num_p = rhos.shape[0]
     cdef int num_Ks = results.shape[0]
-    cdef float mean
+    cdef FLOAT_T mean
 
-    cdef float const = log(num_q / float(num_p - 1))
+    cdef FLOAT_T const = log(num_q / (<FLOAT_T> (num_p - 1)))
 
     for j in range(num_Ks):
         mean = 0
@@ -73,7 +73,7 @@ cdef void _alpha_div(FLOAT_T[:] omas, FLOAT_T[:, ::1] Bs,
     cdef int num_alphas = omas.shape[0]
     cdef int num_p = rhos.shape[0]
     cdef int num_Ks = rhos.shape[1]
-    cdef float ratio, factor
+    cdef FLOAT_T ratio, factor
 
     for i in range(num_alphas):
         for j in range(num_Ks):
@@ -89,7 +89,7 @@ cdef void _alpha_div(FLOAT_T[:] omas, FLOAT_T[:, ::1] Bs,
                 results[poses[i], j] += ratio ** (dim * omas[i]) / num_p
 
     for i in range(num_alphas):
-        factor = (float(num_p - 1) / num_q) ** omas[i]
+        factor = ((<FLOAT_T>(num_p - 1)) / num_q) ** omas[i]
         for j in range(num_Ks):
             results[poses[i], j] *= factor * Bs[i, j]
             if results[poses[i], j] < 0.:
@@ -104,7 +104,8 @@ def _estimate_cross_divs(features, indices, rhos,
     cdef long[:] boundaries
     cdef FLOAT_T[:, ::1] neighbors, rho, nu
 
-    cdef FLOAT_T[:, ::1] rhos_stacked = np.ascontiguousarray(np.vstack(rhos))
+    cdef FLOAT_T[:, ::1] rhos_stacked = \
+        np.ascontiguousarray(np.vstack(rhos), dtype=FLOAT)
 
     cdef int n_bags = len(features)
     cdef int num_Ks = Ks.size
@@ -152,7 +153,7 @@ def _estimate_cross_divs(features, indices, rhos,
             Bs, the_dim = func.args
 
             assert Bs.shape == (Ks.size,)
-            linear_Bs = Bs
+            linear_Bs = np.asarray(Bs, dtype=FLOAT)
 
             assert the_dim == dim
 
@@ -176,11 +177,11 @@ def _estimate_cross_divs(features, indices, rhos,
             do_alpha = True
             omas, Bs, the_dim = func.args
 
-            alpha_omas = omas.ravel()
+            alpha_omas = np.asarray(omas.ravel(), dtype=FLOAT)
             alpha_num_alphas = alpha_omas.size
 
             assert Bs.shape == (alpha_num_alphas, Ks.size)
-            alpha_Bs = Bs
+            alpha_Bs = np.asarray(Bs, dtype=FLOAT)
 
             assert the_dim == dim
 
@@ -230,7 +231,8 @@ def _estimate_cross_divs(features, indices, rhos,
 
             # find the nearest neighbors in features[i] from each of these bags
             neighbors = np.ascontiguousarray(
-                knn_search(max_K, feats, index=index)[:, Ks - 1])
+                knn_search(max_K, feats, index=index)[:, Ks - 1],
+                dtype=FLOAT)
 
             with nogil:
                 for j in prange(start, end, num_threads=cores):
