@@ -115,14 +115,17 @@ def _estimate_cross_divs(features, indices, rhos,
         for start, end in izip(change_pts[s::2], change_pts[s+1::2]):
             boundaries = features._boundaries[start:end+1]
             feats = features._features[boundaries[0]:boundaries[-1]]
+            base = boundaries[0]
 
             # find the nearest neighbors in features[i] from each of these bags
             neighbors = knn_search(max_K, feats, index=index)[:, Ks - 1]
 
-            # TODO: parallelize this bit?
-            for j in lazy_range(start, end):
+            for j_sub, j in enumerate(lazy_range(start, end)):
                 rho = rhos[j]
-                nu = neighbors[boundaries[j]:boundaries[j+1]]
+
+                nu_start = boundaries[j_sub] - base
+                nu_end = boundaries[j_sub + 1] - base
+                nu = neighbors[nu_start:nu_end]
 
                 if i == j:
                     for func, info in iteritems(funcs):
