@@ -22,7 +22,7 @@ import warnings
 
 import numpy as np
 import scipy.io
-from scipy.special import gamma
+from scipy.special import gamma, gammaln
 
 from pyflann import FLANN, FLANNParameters
 
@@ -34,7 +34,93 @@ from .utils import (eps, izip, lazy_range, strict_map, raw_input, identity,
                     iteritems, itervalues, get_status_fn)
 from .mp_utils import progress
 from .knn_search import knn_search, default_min_dist, pick_flann_algorithm
-from ._np_divs import linear, kl, alpha_div, _estimate_cross_divs
+from ._np_divs import _linear, kl, _alpha_div, _estimate_cross_divs
+
+################################################################################
+### Estimators of various divergences based on nearest-neighbor distances.
+#
+# The standard interface for these functions is:
+#
+# Function attributes:
+#
+#   needs_alpha: whether this function needs an alpha parameter. Default false.
+#
+#   self_value: The value that this function should take when comparing a
+#               sample to itself: either a scalar constant or None (the
+#               default), in which case the function is still called with
+#               rhos = nus.
+#
+# Arguments:
+#
+#   alphas (if needs_alpha; array-like, scalar or 1d): the alpha values to use
+#
+#   Ks (array-like, scalar or 1d): the K values used
+#
+#   num_q (scalar): the number of points in the sample from q
+#
+#   dim (scalar): the dimension of the feature space
+#
+#   rhos: an array of within-bag nearest neighbor distances for a sample from p.
+#         rhos[i, j] should be the distance from the ith sample from p to its
+#         Ks[j]'th neighbor in the same sample. Shape: (num_p, num_Ks).
+#   nus: an array of nearest neighbor distances from samples from other dists.
+#        nus[i, j] should be the distance from the ith sample from p to its
+#        Ks[j]'th neighbor in the sample from q. Shape: (num_p, num_Ks).
+#
+# Returns an array of divergence estimates. If needs_alpha, should be of shape
+# (num_alphas, num_Ks); otherwise, of shape (num_Ks,).
+
+def linear(Ks, dim, num_q, rhos, nus):
+    r'''
+    Estimates the linear inner product \int p q between two distributions,
+    based on kNN distances.
+    '''
+    return _get_linear(Ks, dim)(num_q, rhos, nus)
+
+def _get_linear(Ks, dim):
+    # Estimated with alpha=0, beta=1:
+    #   B_{k,d,0,1} = (k - 1) / pi^(dim/2) * gamma(dim/2 + 1)
+    #   (using gamma(k) / gamma(k - 1) = k - 1)
+    Ks = np.reshape(Ks, (-1,))
+    Bs = (Ks - 1) / np.pi ** (dim / 2) * gamma(dim / 2 + 1)  # shape (num_Ks,)
+    return partial(_linear, Bs, dim)
+linear.self_value = None  # have to execute it
+linear.needs_alpha = False
+linear.chooser_fn = _get_linear
+
+# kl function is entirely in _np_divs (nothing to precompute)
+
+def alpha_div(alphas, Ks, dim, num_q, rhos, nus):
+    r'''
+    Estimate the alpha divergence between distributions:
+        \int p^\alpha q^(1-\alpha)
+    based on kNN distances.
+
+    Used in Renyi, Hellinger, Bhattacharyya, Tsallis divergences.
+
+    Enforces that estimates are >= 0.
+
+    Returns divergence estimates with shape (num_alphas, num_Ks).
+    '''
+    return _get_alpha_div(alphas, Ks)(num_q, dim, rhos, nus)
+
+def _get_alpha_div(alphas, Ks, dim):
+    alphas = np.reshape(alphas, (-1, 1))
+    Ks = np.reshape(Ks, (1, -1))
+
+    omas = 1 - alphas
+
+    # We're estimating with alpha = alpha-1, beta = 1-alpha.
+    # B constant in front:
+    #   estimator's alpha = -beta, so volume of unit ball cancels out
+    #   and then ratio of gamma functions
+    Bs = np.exp(gammaln(Ks) * 2 - gammaln(Ks + omas) - gammaln(Ks - omas))
+
+    return partial(_alpha_div, omas, Bs, dim)
+
+alpha_div.self_value = 1
+alpha_div.needs_alpha = True
+alpha_div.chooser_fn = _get_alpha_div
 
 
 ################################################################################
