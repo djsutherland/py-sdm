@@ -116,7 +116,7 @@ def check_div(feats, expected, specs, Ks, name, min_dist=None, **args):
                   "(max diff {} = |{} - {}| at {},{})".format(
                       diff[i, j], calc[i, j], exp[i, j], i, j)
 
-            f = partial(assert_close, calc, exp, atol=1e-5, msg=msg)
+            f = partial(assert_close, calc, exp, atol=5e-5, msg=msg)
             f.description = \
                 "divs: {} - {}, K={} - {}".format(name, spec, K, argstr)
             yield f,

@@ -22,11 +22,15 @@ from ._np_divs import (_linear as py_linear,
 FLOAT = np.float64
 ctypedef double FLOAT_T
 
+OUTPUT = np.float32
+ctypedef float OUTPUT_T
+
+
 @cython.boundscheck(False)
 @cython.cdivision(True)
 cdef void _linear(FLOAT_T[:] Bs, int dim, int num_q,
                   FLOAT_T[:, ::1] nus,
-                  FLOAT_T[:] results) nogil:
+                  OUTPUT_T[:] results) nogil:
     #   B / m * mean(nu ^ -dim)
     cdef int i, j
     cdef int num_p = nus.shape[0]
@@ -45,7 +49,7 @@ cdef void _linear(FLOAT_T[:] Bs, int dim, int num_q,
 @cython.cdivision(True)
 cdef void kl(int dim, int num_q,
              FLOAT_T[:, ::1] rhos, FLOAT_T[:, ::1] nus,
-             FLOAT_T[:] results) nogil:
+             OUTPUT_T[:] results) nogil:
     # dim * mean(log(nus) - log(rhos), axis=0) + log(num_q / (num_p - 1))
 
     cdef int i, j
@@ -67,7 +71,7 @@ cdef void kl(int dim, int num_q,
 cdef void _alpha_div(FLOAT_T[:] omas, FLOAT_T[:, ::1] Bs,
                      int dim, int num_q,
                      FLOAT_T[:, ::1] rhos, FLOAT_T[:, ::1] nus,
-                     int[:] poses, FLOAT_T[:, ::1] results) nogil:
+                     int[:] poses, OUTPUT_T[:, ::1] results) nogil:
     cdef int i, j, k
     cdef int num_alphas = omas.shape[0]
     cdef int num_p = rhos.shape[0]
@@ -112,8 +116,8 @@ def _estimate_cross_divs(features, indices, rhos,
     cdef int dim = features.dim
 
     cdef int num_funcs = len(specs) + n_meta_only
-    cdef FLOAT_T[:, :, :, ::1] outputs = np.empty(
-        (n_bags, n_bags, num_funcs, len(Ks)), dtype=FLOAT)
+    cdef OUTPUT_T[:, :, :, ::1] outputs = np.empty(
+        (n_bags, n_bags, num_funcs, len(Ks)), dtype=OUTPUT)
     outputs[:, :, :, :] = np.nan
 
     # TODO: should just call functions that need self up here with rhos
