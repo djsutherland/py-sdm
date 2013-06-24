@@ -98,16 +98,7 @@ def handle_blanks(features, blank_thresh=DEFAULT_BLANK_THRESH,
         feats = [
             f[np.sum(f, axis=1) >= blank_thresh, :] for f in features.features
         ]
-
-        args = dict((k, features.data[k]) for k in f._extra_names)
-        args['categories'] = features.categories
-        args['names'] = features.names
-
-        if inplace:
-            features.__init__(feats, **args)
-            return
-        else:
-            return Features(feats, **args)
+        return features._replace_bags(feats, inplace=inplace)
 
     handler = BLANK_HANDLERS[blank_handler](blank_thresh=blank_thresh)
     r = features._apply_transform(handler, fit_first=True, inplace=inplace)

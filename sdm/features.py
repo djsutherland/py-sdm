@@ -426,6 +426,24 @@ class Features(object):
     ############################################################################
     ### Transforming the features
 
+    def _replace_bags(self, bags, n_pts=None, inplace=False):
+        if n_pts is None:
+            n_pts = [b.shape[0] for b in bags]
+            bags = np.vstack(bags)
+        else:
+            bags = np.asarray(bags)
+        assert bags.ndim == 2
+
+        if inplace:
+            self._n_pts = np.asarray(n_pts)
+            self._boundaries = np.hstack([0], np.cumsum(self._n_pts))
+            self._features = bags
+            self._refresh_features()
+        else:
+            return self.__class__(
+                bags, n_pts=n_pts, categories=self.categories, names=self.names,
+                **dict((k, self.data[k]) for k in self._extra_names))
+
     def _apply_transform(self, transformer, fit_first, inplace=False,
                          dtype=None):
         '''
@@ -452,15 +470,9 @@ class Features(object):
             transformed = transformer.fit_transform(feats)
         else:
             transformed = transformer.transform(feats)
+        return self._replace_bags(
+            transformed, n_pts=self._n_pts, inplace=inplace)
 
-        if inplace:
-            self._features = transformed
-            self._refresh_features()
-        else:
-            return self.__class__(
-                transformed, n_pts=self._n_pts,
-                categories=self.categories, names=self.names,
-                **dict((k, self.data[k]) for k in self._extra_names))
 
     def pca(self, pca=None, unfit_pca=None,
             k=None, varfrac=DEFAULT_VARFRAC, randomize=False, whiten=False,
@@ -564,7 +576,7 @@ class Features(object):
         from sklearn.preprocessing import Normalizer
         normalizer = Normalizer(norm)
 
-        dtype = None if self._features.dtype.kind == 'f' else cast_dtype
+        dtype = None if self.dtype.kind == 'f' else cast_dtype
 
         return self._apply_transform(
             normalizer, fit_first=False, inplace=inplace, dtype=dtype)
