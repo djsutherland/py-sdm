@@ -581,6 +581,35 @@ class Features(object):
         return self._apply_transform(
             normalizer, fit_first=False, inplace=inplace, dtype=dtype)
 
+    def condense_kmeans(self, n_clusters, max_iter=20, inplace=False,
+                        cast_dtype=np.float32):
+        '''
+        Condenses the number of points in a sample set through k-means.
+        '''
+        from sklearn.cluster import MiniBatchKMeans
+
+        dtype = None if self.dtype.kind == 'f' else cast_dtype
+
+        # TODO: use full batch kmeans for small sizes?
+        # TODO: use elkan k-means from vlfeat instead?
+
+        # most of the work is parallelized by MKL. still, not super fast.
+        kmeans = MiniBatchKMeans(
+            n_clusters=n_clusters, init='random', compute_labels=False,
+            max_iter=max_iter)
+
+        new_bags = []
+        for bag in self.features:
+            if bag.shape[0] <= n_clusters:
+                new_bags.append(bag)
+            else:
+                if dtype is not None:
+                    bag = bag.astype(dtype)
+                kmeans.fit(bag)
+                new_bags.append(kmeans.cluster_centers_)
+
+        return self._replace_bags(new_bags, inplace=inplace)
+
     ############################################################################
     ### generic I/O helpers
 
