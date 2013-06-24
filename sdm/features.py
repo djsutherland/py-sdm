@@ -582,7 +582,7 @@ class Features(object):
             normalizer, fit_first=False, inplace=inplace, dtype=dtype)
 
     def condense_kmeans(self, n_clusters, max_iter=20, inplace=False,
-                        cast_dtype=np.float32):
+                        progressbar=False, cast_dtype=np.float32):
         '''
         Condenses the number of points in a sample set through k-means.
         '''
@@ -599,7 +599,11 @@ class Features(object):
             max_iter=max_iter)
 
         new_bags = []
-        for bag in self.features:
+        feats_iter = self.features
+        if progressbar:
+            from mp_utils import progress
+            feats_iter = progress()(feats_iter)
+        for bag in feats_iter:
             if bag.shape[0] <= n_clusters:
                 new_bags.append(bag)
             else:
