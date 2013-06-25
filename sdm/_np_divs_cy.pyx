@@ -1,14 +1,16 @@
 from __future__ import division
 
 cimport cython
-from cython cimport view
+from cython cimport view, integral
 from cython.parallel import prange
-from libc.math cimport log
+from libc.math cimport log, sqrt, fmax
 
 from functools import partial
 
 import numpy as np
 cimport numpy as np
+
+from cyflann.index cimport FLANNIndex
 
 from .utils import lazy_range, izip, iteritems
 from .mp_utils import progress
@@ -100,11 +102,11 @@ cdef void _alpha_div(FLOAT_T[:] omas, FLOAT_T[:, ::1] Bs,
 
 @cython.boundscheck(False)
 def _estimate_cross_divs(features, indices, rhos,
-                         mask, funcs, Ks, specs, int n_meta_only,
+                         mask, funcs, integral[:] Ks,
+                         specs, int n_meta_only,
                          bint progressbar, int cores, float min_dist):
     cdef int i, j, p, s, start, end, rho_start, rho_end, nu_start, nu_end, num_q
     cdef long[:] boundaries
-    cdef FLOAT_T[:, ::1] neighbors, rho, nu
 
     cdef FLOAT_T[:, ::1] rhos_stacked = \
         np.ascontiguousarray(np.vstack(rhos), dtype=FLOAT)
@@ -144,6 +146,7 @@ def _estimate_cross_divs(features, indices, rhos,
     cdef FLOAT_T[:] alpha_omas
     cdef FLOAT_T[:, ::1] alpha_Bs
     cdef int[:] alpha_pos
+    cdef FLANNIndex index
 
     for func, info in iteritems(funcs):
         assert isinstance(func, partial)
@@ -196,6 +199,19 @@ def _estimate_cross_divs(features, indices, rhos,
             msg = "cython code can't handle function {}"
             raise ValueError(msg.format(real_func))
 
+    cdef int total_pts = np.sum(features._n_pts)
+    cdef int[:, ::1] idx_out = np.empty((total_pts, max_K), dtype=np.int32)
+    cdef float[:, ::1] dists_out = np.empty((total_pts, max_K), dtype=np.float32)
+    cdef FLOAT_T[:, ::1] neighbors_full = np.empty((total_pts, num_Ks), dtype=FLOAT)
+    cdef FLOAT_T[:, ::1] neighbors
+    cdef float[:, ::1] feats
+    cdef int a, b, k
+    cdef FLOAT_T dist
+    cdef float[:, ::1] all_features = np.asarray(features._features,
+                                                 dtype=np.float32)
+    cdef long[:] all_boundaries = features._boundaries
+    cdef long[:] change_pts
+
     indices_loop = progress()(indices) if progressbar else indices
     for i, index in enumerate(indices_loop):
         # Loop over rows of the output array.
@@ -224,28 +240,26 @@ def _estimate_cross_divs(features, indices, rhos,
         change_pts = np.hstack([0, np.diff(do_bag).nonzero()[0] + 1, n_bags])
         s = 0 if do_bag[0] else 1
 
-        # TODO: make this whole loop nogil, since most of it is anyway
-        # (this might require writing a little cython interface to flann
-        #  instead of using the ctypes one....)
-        for start, end in izip(change_pts[s::2], change_pts[s+1::2]):
-            boundaries = features._boundaries[start:end+1]
-            feats = features._features[boundaries[0]:boundaries[-1]]
-
-            # find the nearest neighbors in features[i] from each of these bags
-            neighbors = np.ascontiguousarray(
-                    np.maximum(min_dist,
-                        np.sqrt(index.nn_index(feats, max_K)[1][:, Ks - 1])),
-                    dtype=FLOAT)
-
+        for k from s <= k < change_pts.size by 2:
             with nogil:
+                start = change_pts[k]
+                end = change_pts[k + 1]
+                boundaries = all_boundaries[start:end+1]
+                feats = all_features[boundaries[0]:boundaries[-1]]
+
+                # find the nearest neighbors in features[i] from each bag
+                index._nn_index(feats, max_K, idx_out, dists_out)
+                for a in range(feats.shape[0]):
+                    for b in range(num_Ks):
+                        dist = dists_out[a, Ks[b] - 1]
+                        neighbors_full[a, b] = fmax(sqrt(dist), min_dist)
+                neighbors = neighbors_full[:feats.shape[0], :]
+
                 for j in prange(start, end, num_threads=cores):
                     rho_start = boundaries[j - start]
                     rho_end = boundaries[j - start + 1]
                     nu_start = rho_start - boundaries[0]
                     nu_end = rho_end - boundaries[0]
-
-                    # rho = rhos_stacked[start_idx:end_idx]
-                    # nu = neighbors[start_idx:end_idx]
 
                     if i == j:
                         # kl, alpha have already been done above
