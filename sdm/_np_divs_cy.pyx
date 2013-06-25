@@ -12,7 +12,6 @@ cimport numpy as np
 
 from .utils import lazy_range, izip, iteritems
 from .mp_utils import progress
-from .knn_search import knn_search
 
 from ._np_divs import (_linear as py_linear,
                        kl as py_kl,
@@ -234,8 +233,9 @@ def _estimate_cross_divs(features, indices, rhos,
 
             # find the nearest neighbors in features[i] from each of these bags
             neighbors = np.ascontiguousarray(
-                knn_search(max_K, feats, index=index, min_dist=min_dist)
-                    [:, Ks - 1], dtype=FLOAT)
+                    np.maximum(index.nn_index(feats, max_K)[1][:, Ks - 1],
+                               min_dist),
+                    dtype=FLOAT)
 
             with nogil:
                 for j in prange(start, end, num_threads=cores):

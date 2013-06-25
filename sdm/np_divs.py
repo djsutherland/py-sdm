@@ -24,7 +24,7 @@ import numpy as np
 import scipy.io
 from scipy.special import gamma, gammaln
 
-from pyflann import FLANN, FLANNParameters
+from cyflann import FLANNIndex
 
 from .features import Features
 from .utils import (eps, izip, lazy_range, strict_map, raw_input, identity,
@@ -33,7 +33,7 @@ from .utils import (eps, izip, lazy_range, strict_map, raw_input, identity,
                     read_cell_array,
                     iteritems, itervalues, get_status_fn)
 from .mp_utils import progress
-from .knn_search import knn_search, default_min_dist, pick_flann_algorithm
+from .knn_search import default_min_dist, pick_flann_algorithm
 from ._np_divs import _linear, kl, _alpha_div
 
 try:
@@ -659,15 +659,6 @@ def estimate_divs(features,
         algorithm = pick_flann_algorithm(dim)
     flann_args['algorithm'] = algorithm
 
-    # workaround to check flann arguments are good, until
-    # https://github.com/mariusmuja/flann/pull/109
-    # makes it into a flann release
-    allow_params = set(k for k, typ in FLANNParameters._fields_)
-    if not allow_params.issuperset(flann_args):
-        bad = set(flann_args) - allow_params
-        msg = "The following are invalid keyword arguments for this function: "
-        raise TypeError(msg + ', '.join("'{}'".format(s) for s in bad))
-
     if min_dist is None:
         min_dist = default_min_dist(dim)
 
@@ -679,7 +670,7 @@ def estimate_divs(features,
     #       multiprocessing, save the indices to disk, and load them in master.
     #       (Or, patch flann so that indices become pickleable....)
     #       Is that worth it?
-    indices = [FLANN(**flann_args) for _ in lazy_range(n_bags)]
+    indices = [FLANNIndex(**flann_args) for _ in lazy_range(n_bags)]
 
     pbar = progress() if progressbar else identity
     for bag, index in izip(features.features, pbar(indices)):
@@ -691,7 +682,7 @@ def estimate_divs(features,
     # need to throw away the closet neighbor, which will always be self
     # this means that K=1 corresponds to column 1 in the array
     pbar = progress() if progressbar else identity
-    rhos = [knn_search(max_K + 1, bag, index=idx, min_dist=min_dist)[:, Ks]
+    rhos = [np.maximum(min_dist, idx.nn_index(bag, max_K + 1)[1][:, Ks])
             for bag, idx in izip(features.features, pbar(indices))]
     if progressbar:
         pbar.finish()

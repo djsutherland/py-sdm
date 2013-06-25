@@ -4,7 +4,6 @@ import numpy as np
 
 from .utils import lazy_range, izip, iteritems
 from .mp_utils import progress
-from .knn_search import knn_search
 
 
 def _linear(Bs, dim, num_q, rhos, nus):
