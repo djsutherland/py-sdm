@@ -5,7 +5,7 @@ from .utils import is_integer
 
 import numpy as np
 
-from pyflann import FLANN
+from cyflann import FLANNIndex
 
 
 def default_min_dist(dim):
@@ -54,7 +54,7 @@ def knn_search(K, x, y=None, min_dist=None, index=None, algorithm=None,
     if index is None:
         if algorithm is None:
             algorithm = pick_flann_algorithm(dim)
-        index = FLANN(algorithm=algorithm, **kwargs)
+        index = FLANNIndex(algorithm=algorithm, **kwargs)
         index.build_index(y)
 
     idx, dist = index.nn_index(x, K)
