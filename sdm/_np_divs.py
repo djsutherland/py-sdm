@@ -63,7 +63,7 @@ def _alpha_div(omas, Bs, dim, num_q, rhos, nus):
 
 def _estimate_cross_divs(features, indices, rhos,
                          mask, funcs, Ks, specs, n_meta_only,
-                         progressbar, cores):
+                         progressbar, cores, min_dist):
     n_bags = len(features)
     max_K = np.max(Ks)
 
@@ -118,8 +118,8 @@ def _estimate_cross_divs(features, indices, rhos,
             base = boundaries[0]
 
             # find the nearest neighbors in features[i] from each of these bags
-            neighbors = knn_search(max_K, feats, index=index,
-                                   min_dist=min_dist)[:, Ks - 1]
+            neighbors = np.maximum(index.nn_index(feats, max_K)[1][:, Ks - 1],
+                                   min_dist)
 
             for j_sub, j in enumerate(lazy_range(start, end)):
                 rho = rhos[j]

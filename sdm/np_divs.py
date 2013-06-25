@@ -681,12 +681,8 @@ def estimate_divs(features,
     #       Is that worth it?
     indices = [FLANN(**flann_args) for _ in lazy_range(n_bags)]
 
-    if progressbar:
-        pbar = progress()
-        indices_loop = pbar(indices)
-    else:
-        indices_loop = indices
-    for bag, index in izip(features.features, indices_loop):
+    pbar = progress() if progressbar else identity
+    for bag, index in izip(features.features, pbar(indices)):
         index.build_index(bag)
     if progressbar:
         pbar.finish()
@@ -694,11 +690,9 @@ def estimate_divs(features,
     status_fn('\nGetting within-bag distances...')
     # need to throw away the closet neighbor, which will always be self
     # this means that K=1 corresponds to column 1 in the array
-    if progressbar:
-        pbar = progress()
-        indices_loop = pbar(indices)
+    pbar = progress() if progressbar else identity
     rhos = [knn_search(max_K + 1, bag, index=idx, min_dist=min_dist)[:, Ks]
-            for bag, idx in izip(features.features, indices_loop)]
+            for bag, idx in izip(features.features, pbar(indices))]
     if progressbar:
         pbar.finish()
 
