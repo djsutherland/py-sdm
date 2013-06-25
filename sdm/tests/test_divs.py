@@ -129,7 +129,7 @@ def test_divs():
               for status_fn in [None]]  # , True]]
     # TODO: test a custom status_fn also
 
-    specs = ['hellinger', 'kl', 'l2',
+    specs = ['hellinger', 'kl', 'l2', 'linear',
              'renyi:0.5', 'renyi:0.7', 'renyi:0.9', 'renyi:0.99']
     Ks = [1, 3, 5, 10]
     for name in ['gaussian-2d-mean0-std1,2', 'gaussian-20d-mean0-std1,2']:
