@@ -72,7 +72,7 @@ def assert_close(got, expected, msg, atol=1e-8, rtol=1e-5):
 
 
 def load_divs(f, specs, Ks):
-    specs = np.squeeze(strict_map(normalize_div_name, specs))
+    specs = np.asarray(strict_map(normalize_div_name, specs))
     Ks = np.ravel(Ks)
 
     n_bags = next(itervalues(next(itervalues(f)))).shape[0]
