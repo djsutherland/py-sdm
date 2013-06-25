@@ -3,6 +3,7 @@ from __future__ import division
 cimport cython
 from cython cimport view, integral
 from cython.parallel import prange
+from libc.stdlib cimport malloc, free
 from libc.math cimport log, sqrt, fmax
 
 from functools import partial
@@ -11,7 +12,9 @@ import numpy as np
 cimport numpy as np
 from numpy cimport uint8_t
 
-from cyflann.index cimport FLANNIndex
+from cyflann.flann cimport flann_index_t, FLANNParameters, \
+                           flann_find_nearest_neighbors_index_float
+from cyflann.index cimport FLANNIndex, FLANNParameters as CyFLANNParameters
 
 from .utils import lazy_range, izip, iteritems
 from .mp_utils import progress
@@ -21,24 +24,17 @@ from ._np_divs import (_linear as py_linear,
                        _alpha_div as py_alpha_div)
 
 
-FLOAT = np.float64
-ctypedef double FLOAT_T
-
-OUTPUT = np.float32
-ctypedef float OUTPUT_T
-
-
 @cython.boundscheck(False)
 @cython.cdivision(True)
-cdef void _linear(FLOAT_T[:] Bs, int dim, int num_q,
-                  FLOAT_T[:, ::1] nus,
-                  OUTPUT_T[:] results) nogil:
+cdef void _linear(float[:] Bs, int dim, int num_q,
+                  float[:, ::1] nus,
+                  float[:] results) nogil:
     #   B / m * mean(nu ^ -dim)
     cdef int i, j
     cdef int num_p = nus.shape[0]
     cdef int num_Ks = results.shape[0]
-    cdef FLOAT_T mean
-    cdef FLOAT_T mdim = -dim
+    cdef float mean
+    cdef float mdim = -dim
 
     for j in range(num_Ks):
         mean = 0
@@ -50,16 +46,16 @@ cdef void _linear(FLOAT_T[:] Bs, int dim, int num_q,
 @cython.boundscheck(False)
 @cython.cdivision(True)
 cdef void kl(int dim, int num_q,
-             FLOAT_T[:, ::1] rhos, FLOAT_T[:, ::1] nus,
-             OUTPUT_T[:] results) nogil:
+             float[:, ::1] rhos, float[:, ::1] nus,
+             float[:] results) nogil:
     # dim * mean(log(nus) - log(rhos), axis=0) + log(num_q / (num_p - 1))
 
     cdef int i, j
     cdef int num_p = rhos.shape[0]
     cdef int num_Ks = results.shape[0]
-    cdef FLOAT_T mean
+    cdef float mean
 
-    cdef FLOAT_T const = log(num_q / (<FLOAT_T> (num_p - 1)))
+    cdef float const = log(num_q / (<float> (num_p - 1)))
 
     for j in range(num_Ks):
         mean = 0
@@ -70,15 +66,15 @@ cdef void kl(int dim, int num_q,
 
 @cython.boundscheck(False)
 @cython.cdivision(True)
-cdef void _alpha_div(FLOAT_T[:] omas, FLOAT_T[:, ::1] Bs,
+cdef void _alpha_div(float[:] omas, float[:, ::1] Bs,
                      int dim, int num_q,
-                     FLOAT_T[:, ::1] rhos, FLOAT_T[:, ::1] nus,
-                     int[:] poses, OUTPUT_T[:, ::1] results) nogil:
+                     float[:, ::1] rhos, float[:, ::1] nus,
+                     int[:] poses, float[:, ::1] results) nogil:
     cdef int i, j, k
     cdef int num_alphas = omas.shape[0]
     cdef int num_p = rhos.shape[0]
     cdef int num_Ks = rhos.shape[1]
-    cdef FLOAT_T ratio, factor
+    cdef float ratio, factor
 
     for i in range(num_alphas):
         for j in range(num_Ks):
@@ -94,49 +90,43 @@ cdef void _alpha_div(FLOAT_T[:] omas, FLOAT_T[:, ::1] Bs,
                 results[poses[i], j] += ratio ** (dim * omas[i]) / num_p
 
     for i in range(num_alphas):
-        factor = ((<FLOAT_T>(num_p - 1)) / num_q) ** omas[i]
+        factor = ((<float>(num_p - 1)) / num_q) ** omas[i]
         for j in range(num_Ks):
             results[poses[i], j] *= factor * Bs[i, j]
             if results[poses[i], j] < 0.:
                 results[poses[i], j] = 0.
 
 
-@cython.boundscheck(False)
+################################################################################
+
+
+# @cython.boundscheck(False) # XXX
 def _estimate_cross_divs(features, indices, rhos,
-                         uint8_t[:, ::1] mask, funcs, integral[:] Ks,
+                         np.ndarray mask, funcs, integral[:] Ks,
                          specs, int n_meta_only,
                          bint progressbar, int cores, float min_dist):
-    cdef int i, j, p, start, end, rho_start, rho_end, nu_start, nu_end, num_q
-    cdef long[:] boundaries
+    cdef int a, i, j, k
+    cdef int num_p, num_q, i_start, i_end, j_start, j_end
 
-    cdef FLOAT_T[:, ::1] rhos_stacked = \
-        np.ascontiguousarray(np.vstack(rhos), dtype=FLOAT)
+    cdef float[:, ::1] rhos_stacked = \
+        np.ascontiguousarray(np.vstack(rhos), dtype=np.float32)
+    cdef float[:, ::1] all_features = \
+        np.asarray(features._features, dtype=np.float32)
+    cdef long[:] boundaries = features._boundaries
 
     cdef int n_bags = len(features)
     cdef int num_Ks = Ks.size
     cdef int max_K = np.max(Ks)
     cdef int dim = features.dim
 
+    ############################################################################
+    ### Handle the funcs we have.
+    # Hard-coded to only allow calling alpha, kl, linear here, for speed.
+
     cdef int num_funcs = len(specs) + n_meta_only
-    cdef OUTPUT_T[:, :, :, ::1] outputs = np.empty(
-        (n_bags, n_bags, num_funcs, len(Ks)), dtype=OUTPUT)
-    outputs[:, :, :, :] = np.nan
 
-    # TODO: should just call functions that need self up here with rhos
-    #       instead of computing nus and then throwing them out below
-    any_run_self = False
-    for func, info in iteritems(funcs):
-        self_val = getattr(func, 'self_value', None)
-        if self_val is not None:
-            for i in range(n_bags):
-                for p in info.pos:
-                    outputs[i, i, p, :] = self_val
-        else:
-            any_run_self = True
-
-    # hard-code to only allow calling alpha, kl, linear here for speed
     cdef bint do_linear = False
-    cdef FLOAT_T[:] linear_Bs
+    cdef float[:] linear_Bs
     cdef int linear_pos
 
     cdef bint do_kl = False
@@ -144,10 +134,9 @@ def _estimate_cross_divs(features, indices, rhos,
 
     cdef bint do_alpha = False
     cdef int alpha_num_alphas
-    cdef FLOAT_T[:] alpha_omas
-    cdef FLOAT_T[:, ::1] alpha_Bs
+    cdef float[:] alpha_omas
+    cdef float[:, ::1] alpha_Bs
     cdef int[:] alpha_pos
-    cdef FLANNIndex index
 
     for func, info in iteritems(funcs):
         assert isinstance(func, partial)
@@ -159,7 +148,7 @@ def _estimate_cross_divs(features, indices, rhos,
             Bs, the_dim = func.args
 
             assert Bs.shape == (Ks.size,)
-            linear_Bs = np.asarray(Bs, dtype=FLOAT)
+            linear_Bs = np.asarray(Bs, dtype=np.float32)
 
             assert the_dim == dim
 
@@ -183,11 +172,11 @@ def _estimate_cross_divs(features, indices, rhos,
             do_alpha = True
             omas, Bs, the_dim = func.args
 
-            alpha_omas = np.asarray(omas.ravel(), dtype=FLOAT)
+            alpha_omas = np.asarray(omas.ravel(), dtype=np.float32)
             alpha_num_alphas = alpha_omas.size
 
             assert Bs.shape == (alpha_num_alphas, Ks.size)
-            alpha_Bs = np.asarray(Bs, dtype=FLOAT)
+            alpha_Bs = np.asarray(Bs, dtype=np.float32)
 
             assert the_dim == dim
 
@@ -200,92 +189,99 @@ def _estimate_cross_divs(features, indices, rhos,
             msg = "cython code can't handle function {}"
             raise ValueError(msg.format(real_func))
 
-    cdef int total_pts = np.sum(features._n_pts)
-    cdef int[:, ::1] idx_out = np.empty((total_pts, max_K), dtype=np.int32)
-    cdef float[:, ::1] dists_out = np.empty((total_pts, max_K), dtype=np.float32)
-    cdef FLOAT_T[:, ::1] neighbors_full = np.empty((total_pts, num_Ks), dtype=FLOAT)
-    cdef FLOAT_T[:, ::1] neighbors
-    cdef float[:, ::1] feats
-    cdef int a, b, k
-    cdef FLOAT_T dist
-    cdef float[:, ::1] all_features = np.asarray(features._features,
-                                                 dtype=np.float32)
-    cdef long[:] all_boundaries = features._boundaries
-    cdef long[:] num_pts = features._n_pts
-    cdef long[:] change_pts
-    cdef uint8_t[:] do_bag
+    ############################################################################
 
-    indices_loop = progress()(indices) if progressbar else indices
-    for i, index in enumerate(indices_loop):
-        # Loop over rows of the output array.
-        #
-        # We want to search from most(?) of the other bags to this one, as
-        # determined by mask and to avoid repeating nus.
-        #
-        # But we don't want to waste memory copying almost all of the features.
-        #
-        # So instead we'll run a separate NN search for each contiguous
-        # subarray of the features. If they're too small, of course, this hurts
-        # the parallelizability.
-        #
-        # TODO: is there a better scheme than this? use a custom version of
-        #       nanoflann or something?
+    # use params with cores=1
+    cdef FLANNParameters params = (<CyFLANNParameters> indices[0].params)._this
+    params.cores = 1
 
-        num_q = num_pts[i]
+    # figure out which matrix elements we need to do
+    nonzero_i, nonzero_j = mask.nonzero()
+    cdef int[:] mask_is = nonzero_i.astype(np.int32), \
+                mask_js = nonzero_j.astype(np.int32)
 
-        # make a boolean array of whether we want to do the ith bag
-        do_bag = mask[i, :]
-        if not any_run_self:
-            do_bag = do_bag.copy()
-            do_bag[i] = False
+    # the results variable
+    cdef float[:, :, :, ::1] outputs = np.empty(
+        (n_bags, n_bags, num_funcs, len(Ks)), dtype=np.float32)
+    outputs[:, :, :, :] = np.nan
 
-        # loop over contiguous sections where do_bag is True
-        change_pts = np.hstack([0, np.diff(do_bag).nonzero()[0] + 1, n_bags])
+    # temporay working variables
+    cdef int max_pts = np.max(features._n_pts)
+    cdef int[:, ::1] idx_out = np.empty((max_pts, max_K), dtype=np.int32)
+    cdef float[:, ::1] dists_out = np.empty((max_pts, max_K), dtype=np.float32)
+    cdef float[:, ::1] neighbors = np.empty((max_pts, num_Ks), dtype=np.float32)
+
+    # make a C array of pointers to indices, so we can get it w/o the GIL
+    cdef flann_index_t * index_array = <flann_index_t *> malloc(
+                n_bags * sizeof(flann_index_t))
+    if not index_array:
+        raise MemoryError()
+    try:
+        # populate the index_array
+        for i in range(n_bags):
+            index_array[i] = (<FLANNIndex> indices[i])._this
+
+
+        if progressbar:
+            pbar = progress()
+        # TODO: tick the pbar
 
         with nogil:
-            for k in range(0 if do_bag[0] else 1, change_pts.shape[0], 2):
-                start = change_pts[k]
-                end = change_pts[k + 1]
-                boundaries = all_boundaries[start:end+1]
-                feats = all_features[boundaries[0]:boundaries[-1]]
+            for job_i in range(mask_is.shape[0]):
+                i = mask_is[job_i]
+                j = mask_js[job_i]
 
-                # find the nearest neighbors in features[i] from each bag
-                index._nn_index(feats, max_K, idx_out, dists_out)
-                for a in range(feats.shape[0]):
-                    for b in range(num_Ks):
-                        dist = dists_out[a, Ks[b] - 1]
-                        neighbors_full[a, b] = fmax(sqrt(dist), min_dist)
-                neighbors = neighbors_full[:feats.shape[0], :]
+                i_start = boundaries[i]
+                i_end = boundaries[i + 1]
+                num_p = i_end - i_start
 
-                for j in prange(start, end, num_threads=cores):
-                    rho_start = boundaries[j - start]
-                    rho_end = boundaries[j - start + 1]
-                    nu_start = rho_start - boundaries[0]
-                    nu_end = rho_end - boundaries[0]
+                if i == j:
+                    if do_linear:
+                        _linear(linear_Bs, dim, num_p,
+                                rhos_stacked[i_start:i_end],
+                                outputs[i, j, linear_pos, :])
+                    if do_kl:
+                        outputs[i, j, kl_pos, :] = 0
 
-                    if i == j:
-                        # kl, alpha have already been done above
-                        # nu and rho are the same, except with K off by one;
-                        # use rho for both
-                        if do_linear:
-                            _linear(linear_Bs, dim, num_q,
-                                    rhos_stacked[rho_start:rho_end],
-                                    outputs[j, i, linear_pos, :])
-                    else:
-                        if do_linear:
-                            _linear(linear_Bs, dim, num_q,
-                                    neighbors[nu_start:nu_end],
-                                    outputs[j, i, linear_pos, :])
+                    if do_alpha:
+                        for k in range(alpha_pos.shape[0]):
+                            outputs[i, j, alpha_pos[k], :] = 1
+                else:
+                    j_start = boundaries[j]
+                    j_end = boundaries[j + 1]
+                    num_q = j_end - j_start
 
-                        if do_kl:
-                            kl(dim, num_q,
-                               rhos_stacked[rho_start:rho_end],
-                               neighbors[nu_start:nu_end],
-                               outputs[j, i, kl_pos, :])
+                    # do the nearest neighbor search from p to q
+                    flann_find_nearest_neighbors_index_float(
+                        index_id=index_array[j],
+                        testset=&all_features[i_start, 0],
+                        trows=num_p,
+                        indices=&idx_out[0, 0],
+                        dists=&dists_out[0, 0],
+                        nn=max_K,
+                        flann_params=&params)
+                    for a in range(num_p):
+                        for k in range(num_Ks):
+                            neighbors[a, k] = fmax(min_dist,
+                                       sqrt(dists_out[a, Ks[k] - 1]))
 
-                        if do_alpha:
-                            _alpha_div(alpha_omas, alpha_Bs, dim, num_q,
-                                       rhos_stacked[rho_start:rho_end],
-                                       neighbors[nu_start:nu_end],
-                                       alpha_pos, outputs[j, i, :, :])
-    return np.asarray(outputs)
+                    if do_linear:
+                        _linear(linear_Bs, dim, num_q,
+                                neighbors[:num_q, :],
+                                outputs[i, j, linear_pos, :])
+
+                    if do_kl:
+                        kl(dim, num_q,
+                           rhos_stacked[i_start:i_end],
+                           neighbors[:num_q, :],
+                           outputs[i, j, kl_pos, :])
+
+                    if do_alpha:
+                        _alpha_div(alpha_omas, alpha_Bs, dim, num_q,
+                                   rhos_stacked[i_start:i_end],
+                                   neighbors[:num_q, :],
+                                   alpha_pos, outputs[i, j, :, :])
+
+        return np.asarray(outputs)
+    finally:
+        free(index_array)
