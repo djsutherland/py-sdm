@@ -670,11 +670,13 @@ def estimate_divs(features,
     #       multiprocessing, save the indices to disk, and load them in master.
     #       (Or, patch flann so that indices become pickleable....)
     #       Is that worth it?
-    indices = [FLANNIndex(**flann_args) for _ in lazy_range(n_bags)]
+    def _make_index(bag):
+        idx = FLANNIndex(**flann_args)
+        idx.build_index(bag)
+        return idx
 
     pbar = progress() if progressbar else identity
-    for bag, index in izip(features.features, pbar(indices)):
-        index.build_index(bag)
+    indices = [_make_index(bag) for bag in pbar(features.features)]
     if progressbar:
         pbar.finish()
 
@@ -877,6 +879,7 @@ def reconcile_file_order(f, names=None, cats=None, write=False):
     cats: a string array, an array of integers, or None
     write: if true, add any additional info to the file once they seem the same
     '''
+    # TODO: remove support for integer categories
 
     have_names = names is not None
     have_cats = cats is not None
@@ -884,19 +887,25 @@ def reconcile_file_order(f, names=None, cats=None, write=False):
     if not have_names and not have_cats:
         raise ValueError("reconcile_file_order needs names or cats...")
 
-    have_f_names = 'names' in f.attrs
-    have_f_cats = 'cats' in f.attrs
+    if '_meta' in f:
+        meta_group = f['_meta']
+
+        have_f_names = 'names' in meta_group
+        have_f_cats = 'cats' in meta_group
+    else:
+        meta_group = None
+        have_f_names = have_f_cats = False
 
     if have_names:
         import h5py
         names = np.asarray(names, dtype=h5py.special_dtype(vlen=bytes))
     if have_f_names:
-        f_names = f.attrs['names']
+        f_names = meta_group['names'][()]
 
     if have_cats:
         cats, cats_is_str = _convert_cats(cats)
     if have_f_cats:
-        f_cats, f_cats_is_str = _convert_cats(f.attrs['cats'])
+        f_cats, f_cats_is_str = _convert_cats(meta_group['cats'][()])
 
     # check name agreement, if both sides have it
     if have_names and have_f_names:
@@ -916,11 +925,13 @@ def reconcile_file_order(f, names=None, cats=None, write=False):
     # Everything agrees to as much as we can check it.
     # Now it's time to write anything we have that the file doesn't.
     if write:
+        if meta_group is None:
+            meta_group = f.create_group('meta')
         if have_names and not have_f_names:
-            f.attrs['names'] = names
+            meta_group['names'] = names
         if (have_cats and
                 (not have_f_cats or (cats_is_str and not f_cats_is_str))):
-            f.attrs['cats'] = cats
+            meta_group['cats'] = cats
 
 
 # TODO: track flann algorithms used here? or just whether they're exact?
@@ -935,14 +946,17 @@ def check_h5_settings(f, n, dim, min_dist=None,
            for divs in div_group.values()):
         raise ValueError("existing divs have wronge shape")
 
-    if f.attrs:
+    if '_meta' in f:
+        meta_group = f['_meta']
         def check(name, value):
-            if np.any(f.attrs[name] != value):
+            if np.any(meta_group[name][()] != value):
                 raise ValueError("attribute '{}' differs in file".format(name))
     elif write:
+        meta_group = f.require_group('_meta')
         def check(name, value):
-            f.attrs[name] = value
+            meta_group[name] = value
     else:
+        meta_group = None
         def check(name, value):
             pass
 
@@ -950,8 +964,8 @@ def check_h5_settings(f, n, dim, min_dist=None,
     check('min_dist', default_min_dist(dim) if min_dist is None else min_dist)
 
     for x in ['names', 'cats']:
-        if x in f.attrs:
-            if np.shape(f.attrs[x]) != (n,):
+        if meta_group is not None and x in meta_group:
+            if meta_group[x].shape != (n,):
                 raise ValueError("'{}'' has wrong shape in file".format(x))
     if names is not None or cats is not None:
         reconcile_file_order(f, names=names, cats=cats, write=write)
@@ -1002,7 +1016,7 @@ def check_h5_file_agreement(filename, features, args, interactive=True):
     import h5py
     with h5py.File(filename) as f:
         # output file already exists; make sure args agree
-        if not f.attrs.keys() and not f.keys():
+        if not f.keys():
             return
 
         check_h5_settings(f, n=len(features),
