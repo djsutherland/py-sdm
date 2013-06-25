@@ -233,8 +233,8 @@ def _estimate_cross_divs(features, indices, rhos,
 
             # find the nearest neighbors in features[i] from each of these bags
             neighbors = np.ascontiguousarray(
-                    np.maximum(index.nn_index(feats, max_K)[1][:, Ks - 1],
-                               min_dist),
+                    np.maximum(min_dist,
+                        np.sqrt(index.nn_index(feats, max_K)[1][:, Ks - 1])),
                     dtype=FLOAT)
 
             with nogil:
