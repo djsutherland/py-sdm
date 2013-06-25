@@ -950,7 +950,7 @@ def check_h5_settings(f, n, dim, min_dist=None,
     Checks that the hdf5 div cache file has settings that agree with the
     passed settings. If write, adds them to the file if not present.
     """
-    if any(divs.shape == (n, n)
+    if any(divs.shape != (n, n)
            for div_group in f.values()
            for divs in div_group.values()):
         raise ValueError("existing divs have wronge shape")
