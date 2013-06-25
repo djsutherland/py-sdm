@@ -697,7 +697,7 @@ def estimate_divs(features,
     if progressbar:
         pbar = progress()
         indices_loop = pbar(indices)
-    rhos = [knn_search(max_K + 1, bag, index=idx)[:, Ks]
+    rhos = [knn_search(max_K + 1, bag, index=idx, min_dist=min_dist)[:, Ks]
             for bag, idx in izip(features.features, indices_loop)]
     if progressbar:
         pbar.finish()
@@ -713,7 +713,7 @@ def estimate_divs(features,
 
     outputs = _estimate_cross_divs(features, indices, rhos,
                                    mask, funcs, Ks, specs, n_meta_only,
-                                   progressbar, cores)
+                                   progressbar, cores, min_dist)
 
     # fill in the meta values
     for meta, info in iteritems(metas):

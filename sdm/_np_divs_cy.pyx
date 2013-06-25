@@ -102,7 +102,7 @@ cdef void _alpha_div(FLOAT_T[:] omas, FLOAT_T[:, ::1] Bs,
 @cython.boundscheck(False)
 def _estimate_cross_divs(features, indices, rhos,
                          mask, funcs, Ks, specs, int n_meta_only,
-                         bint progressbar, int cores):
+                         bint progressbar, int cores, float min_dist):
     cdef int i, j, p, s, start, end, rho_start, rho_end, nu_start, nu_end, num_q
     cdef long[:] boundaries
     cdef FLOAT_T[:, ::1] neighbors, rho, nu
@@ -234,8 +234,8 @@ def _estimate_cross_divs(features, indices, rhos,
 
             # find the nearest neighbors in features[i] from each of these bags
             neighbors = np.ascontiguousarray(
-                knn_search(max_K, feats, index=index)[:, Ks - 1],
-                dtype=FLOAT)
+                knn_search(max_K, feats, index=index, min_dist=min_dist)
+                    [:, Ks - 1], dtype=FLOAT)
 
             with nogil:
                 for j in prange(start, end, num_threads=cores):

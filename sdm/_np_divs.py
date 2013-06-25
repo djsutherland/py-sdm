@@ -118,7 +118,8 @@ def _estimate_cross_divs(features, indices, rhos,
             base = boundaries[0]
 
             # find the nearest neighbors in features[i] from each of these bags
-            neighbors = knn_search(max_K, feats, index=index)[:, Ks - 1]
+            neighbors = knn_search(max_K, feats, index=index,
+                                   min_dist=min_dist)[:, Ks - 1]
 
             for j_sub, j in enumerate(lazy_range(start, end)):
                 rho = rhos[j]
