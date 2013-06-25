@@ -9,6 +9,7 @@ from functools import partial
 
 import numpy as np
 cimport numpy as np
+from numpy cimport uint8_t
 
 from cyflann.index cimport FLANNIndex
 
@@ -102,10 +103,10 @@ cdef void _alpha_div(FLOAT_T[:] omas, FLOAT_T[:, ::1] Bs,
 
 @cython.boundscheck(False)
 def _estimate_cross_divs(features, indices, rhos,
-                         mask, funcs, integral[:] Ks,
+                         uint8_t[:, ::1] mask, funcs, integral[:] Ks,
                          specs, int n_meta_only,
                          bint progressbar, int cores, float min_dist):
-    cdef int i, j, p, s, start, end, rho_start, rho_end, nu_start, nu_end, num_q
+    cdef int i, j, p, start, end, rho_start, rho_end, nu_start, nu_end, num_q
     cdef long[:] boundaries
 
     cdef FLOAT_T[:, ::1] rhos_stacked = \
@@ -210,7 +211,9 @@ def _estimate_cross_divs(features, indices, rhos,
     cdef float[:, ::1] all_features = np.asarray(features._features,
                                                  dtype=np.float32)
     cdef long[:] all_boundaries = features._boundaries
+    cdef long[:] num_pts = features._n_pts
     cdef long[:] change_pts
+    cdef uint8_t[:] do_bag
 
     indices_loop = progress()(indices) if progressbar else indices
     for i, index in enumerate(indices_loop):
@@ -228,20 +231,19 @@ def _estimate_cross_divs(features, indices, rhos,
         # TODO: is there a better scheme than this? use a custom version of
         #       nanoflann or something?
 
-        num_q = features._n_pts[i]
+        num_q = num_pts[i]
 
         # make a boolean array of whether we want to do the ith bag
-        do_bag = mask[i]
+        do_bag = mask[i, :]
         if not any_run_self:
             do_bag = do_bag.copy()
             do_bag[i] = False
 
         # loop over contiguous sections where do_bag is True
         change_pts = np.hstack([0, np.diff(do_bag).nonzero()[0] + 1, n_bags])
-        s = 0 if do_bag[0] else 1
 
-        for k from s <= k < change_pts.size by 2:
-            with nogil:
+        with nogil:
+            for k in range(0 if do_bag[0] else 1, change_pts.shape[0], 2):
                 start = change_pts[k]
                 end = change_pts[k + 1]
                 boundaries = all_boundaries[start:end+1]

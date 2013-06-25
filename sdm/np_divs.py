@@ -699,7 +699,8 @@ def estimate_divs(features,
             mask = real_mask + real_mask.T
 
     outputs = _estimate_cross_divs(features, indices, rhos,
-                                   mask, funcs, Ks, specs, n_meta_only,
+                                   mask.view(np.uint8), funcs, Ks,
+                                   specs, n_meta_only,
                                    progressbar, cores, min_dist)
 
     # fill in the meta values
