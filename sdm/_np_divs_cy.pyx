@@ -2,7 +2,7 @@ from __future__ import division
 
 cimport cython
 from cython cimport view, integral
-from cython.parallel import prange
+from cython.parallel import prange, threadid
 from libc.stdlib cimport malloc, free
 from libc.math cimport log, sqrt, fmax
 
@@ -100,7 +100,7 @@ cdef void _alpha_div(float[:] omas, float[:, ::1] Bs,
 ################################################################################
 
 
-# @cython.boundscheck(False) # XXX
+@cython.boundscheck(False)
 def _estimate_cross_divs(features, indices, rhos,
                          np.ndarray mask, funcs, integral[:] Ks,
                          specs, int n_meta_only,
@@ -207,9 +207,19 @@ def _estimate_cross_divs(features, indices, rhos,
 
     # temporay working variables
     cdef int max_pts = np.max(features._n_pts)
-    cdef int[:, ::1] idx_out = np.empty((max_pts, max_K), dtype=np.int32)
-    cdef float[:, ::1] dists_out = np.empty((max_pts, max_K), dtype=np.float32)
-    cdef float[:, ::1] neighbors = np.empty((max_pts, num_Ks), dtype=np.float32)
+
+    # work buffer for each thread; first axis is for a thread.
+    # done since cython doesn't currently support thread-local memoryviews :|
+    cdef int[:, :, ::1] idx_out = \
+        np.empty((cores, max_pts, max_K), dtype=np.int32)
+    cdef float[:, :, ::1] dists_out = \
+        np.empty((cores, max_pts, max_K), dtype=np.float32)
+    cdef float[:, :, ::1] neighbors = \
+        np.empty((cores, max_pts, num_Ks), dtype=np.float32)
+    cdef int tid, job_i
+
+    if progressbar:
+        pbar = progress()
 
     # make a C array of pointers to indices, so we can get it w/o the GIL
     cdef flann_index_t * index_array = <flann_index_t *> malloc(
@@ -221,13 +231,11 @@ def _estimate_cross_divs(features, indices, rhos,
         for i in range(n_bags):
             index_array[i] = (<FLANNIndex> indices[i])._this
 
-
-        if progressbar:
-            pbar = progress()
-        # TODO: tick the pbar
+        # TODO: tick the pbar less often?
 
         with nogil:
-            for job_i in range(mask_is.shape[0]):
+            for job_i in prange(mask_is.shape[0], num_threads=cores):
+                tid = threadid()
                 i = mask_is[job_i]
                 j = mask_js[job_i]
 
@@ -256,30 +264,30 @@ def _estimate_cross_divs(features, indices, rhos,
                         index_id=index_array[j],
                         testset=&all_features[i_start, 0],
                         trows=num_p,
-                        indices=&idx_out[0, 0],
-                        dists=&dists_out[0, 0],
+                        indices=&idx_out[tid, 0, 0],
+                        dists=&dists_out[tid, 0, 0],
                         nn=max_K,
                         flann_params=&params)
                     for a in range(num_p):
                         for k in range(num_Ks):
-                            neighbors[a, k] = fmax(min_dist,
-                                       sqrt(dists_out[a, Ks[k] - 1]))
+                            neighbors[tid, a, k] = fmax(min_dist,
+                                       sqrt(dists_out[tid, a, Ks[k] - 1]))
 
                     if do_linear:
                         _linear(linear_Bs, dim, num_q,
-                                neighbors[:num_p, :],
+                                neighbors[tid, :num_p, :],
                                 outputs[i, j, linear_pos, :])
 
                     if do_kl:
                         kl(dim, num_q,
                            rhos_stacked[i_start:i_end],
-                           neighbors[:num_p, :],
+                           neighbors[tid, :num_p, :],
                            outputs[i, j, kl_pos, :])
 
                     if do_alpha:
                         _alpha_div(alpha_omas, alpha_Bs, dim, num_q,
                                    rhos_stacked[i_start:i_end],
-                                   neighbors[:num_p, :],
+                                   neighbors[tid, :num_p, :],
                                    alpha_pos, outputs[i, j, :, :])
 
         return np.asarray(outputs)
