@@ -7,46 +7,47 @@ except ImportError:
     # friends get too eager about updating numpy/scipy.
 
 try:
-    import pyflann
-except ImportError:
-    msg = """py-sdm requires the python bindings for FLANN. These are available
-from http://people.cs.ubc.ca/~mariusm/flann. Make sure to compile them with
-OpenMP support (ie using gcc rather than clang).
-
-(If you think you have FLANN installed, try running
-    python PREFIX/share/flann/python/setup.py install
-to get the bindings installed in your current python environment.)"""
-    raise ImportError(msg)
-
-try:
     from setuptools import setup
-    from setuptools.extension import Extension
 except ImportError:
     from distutils.core import setup
-    from distutils.extension import Extension
+from distutils.extension import Extension
 
-def cython_ext(name, **k):
+setup_args = {}
+
+# Handle the _np_divs_cy cython extension. It has enough specific handling that
+# it's not worth breaking out into a function.
+name = "_np_divs_cy"
+try:
+    from Cython.Distutils import build_ext
+except ImportError:
+    import os
     try:
-        from Cython.Build import cythonize
-    except ImportError:
-        import os
-        try:
-            pyx_time = os.path.getmtime('sdm/{}.pyx'.format(name))
-            c_time = os.path.getmtime('sdm/{}.c'.format(name))
-            if pyx_time >= c_time:
-                raise ValueError
-        except (OSError, ValueError):
-            msg = "{} extension needs to be compiled but cython isn't available"
-            raise ImportError(msg.format(name))
+        pyx_time = os.path.getmtime('sdm/{}.pyx'.format(name))
+        c_time = os.path.getmtime('sdm/{}.c'.format(name))
+        if pyx_time >= c_time:
+            raise ValueError
+    except (OSError, ValueError):
+        msg = "{} extension needs to be compiled but cython isn't available"
+        raise ImportError(msg.format(name))
     else:
-        cythonize("sdm/{}.pyx".format(name))
+        source_file = "sdm/{}.c".format(name)
+else:
+    try:
+        import cyflann
+    except ImportError:
+        msg = \
+"""The Cython extension requires cyflann to be installed before compilation.
+Install cyflann (e.g. `pip install cyflann`), and then try again."""
+        raise ImportError(msg)
 
-    return Extension("sdm.{}".format(name), ["sdm/{}.c".format(name)], **k)
+    source_file = "sdm/{}.pyx".format(name)
+    setup_args['cmdclass'] = {'build_ext': build_ext}
 
 ext_modules = [
-    cython_ext("_np_divs_cy",
-               extra_compile_args=['-fopenmp'], extra_link_args=['-fopenmp']),
+    Extension("sdm.{}".format(name), [source_file],
+              extra_compile_args=['-fopenmp'], extra_link_args=['-fopenmp'])
 ]
+
 
 setup(
     name='py-sdm',
@@ -64,6 +65,7 @@ setup(
         'progressbar',
         'scikit-learn >= 0.13',
         'nose',
+        'cyflann',
 
         # only for image feat extraction; should be "extras"
         'scikit-image >= 0.6',
@@ -79,6 +81,7 @@ setup(
             'sdm = sdm.sdm:main',
         ],
     },
+    **setup_args
 )
 # TODO: use "extras" to make some of the dependencies optional
 #       but figure out how to make it work with distribute, etc...
