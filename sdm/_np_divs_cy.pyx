@@ -267,19 +267,19 @@ def _estimate_cross_divs(features, indices, rhos,
 
                     if do_linear:
                         _linear(linear_Bs, dim, num_q,
-                                neighbors[:num_q, :],
+                                neighbors[:num_p, :],
                                 outputs[i, j, linear_pos, :])
 
                     if do_kl:
                         kl(dim, num_q,
                            rhos_stacked[i_start:i_end],
-                           neighbors[:num_q, :],
+                           neighbors[:num_p, :],
                            outputs[i, j, kl_pos, :])
 
                     if do_alpha:
                         _alpha_div(alpha_omas, alpha_Bs, dim, num_q,
                                    rhos_stacked[i_start:i_end],
-                                   neighbors[:num_q, :],
+                                   neighbors[:num_p, :],
                                    alpha_pos, outputs[i, j, :, :])
 
         return np.asarray(outputs)
