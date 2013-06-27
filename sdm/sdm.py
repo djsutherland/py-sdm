@@ -553,7 +553,10 @@ class BaseSDM(sklearn.base.BaseEstimator):
         self.status_fn('Training final SVM')
         params = self._svm_params(tuning=False)
         clf = self.svm_class(**params)
-        clf.fit(train_km, train_y, sample_weight=sample_weight)
+        if self.oneclass:
+            clf.fit(train_km, sample_weight=sample_weight)
+        else:
+            clf.fit(train_km, train_y, sample_weight=sample_weight)
         self.svm_ = clf
 
         if ret_km:
@@ -1355,7 +1358,12 @@ class OneClassSDM(BaseSDM):
 
     def fit(self, X, sample_weight=None, divs=None, divs_cache=None,
             ret_km=False):
-        y = np.zeros(len(X))  # fake labels so superclass doesn't flip out
+        if X is not None:
+            y = np.zeros(len(X))  # fake labels so superclass doesn't flip out
+        elif divs is not None:
+            y = np.zeros(divs.shape[0])
+        else:
+            raise ValueError("need to pass either X or divs to fit")
         return super(OneClassSDM, self).fit(
                 X, y, sample_weight=sample_weight, ret_km=ret_km,
                 divs=divs, divs_cache=divs_cache)

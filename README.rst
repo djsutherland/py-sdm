@@ -34,25 +34,38 @@ CentOS, and Ubuntu). All of the code except for the actual SVM wrappers
 if you use n_proc=1; if you try to use multiprocessing there it will complain
 and crash.
 
-The `Enthought Python Distribution <http://www.enthought.com/epd>`_, which
-has an academic license, includes numpy, scipy, h5py, and PIL -- the hardest to
-install of the dependencies. It also includes scikit-image and scikit-learn, but
-we need newer versions than it ships with.
+If you want to run with more than about a thousand objects, make sure that your
+numpy and scipy are linked to a fast BLAS/LAPACK implementation like MKL, ACML,
+or OpenBLAS.
+
+The easiest way to accomplish that is to use a pre-packaged distribution. I use
+`Anaconda <https://store.continuum.io/cshop/anaconda/>`_. If you're affiliated
+with an academic institution, you can get the MKL Optimizations add-on for free
+that links numpy to Intel's fast MKL library. Anaconda (or EPD) also let you
+avoid having to compile scipy (which takes a long time) and install non-python
+libraries like hdf5.
+
+Other notes:
 
 * `numpy <http://numpy.org>`_ and `scipy <http://scipy.org>`_ are not included
   in the pip requirements, to avoid over-eager reinstallation with
-  ``pip install -U``. If you're going to run on largeish datasets, the PCA and
-  PSD projection stages will be faster if your numpy is linked to a fast
-  BLAS/LAPACK like MKL (true of EPD).
+  ``pip install -U``.
 
-* `FLANN <http://people.cs.ubc.ca/~mariusm/index.php/FLANN/FLANN>`_,
-  including the Python interface, is highly recommended for much faster nearest
-  neighbor searches. This isn't in pip but is in homebrew, ubuntu's apt, etc.
+* `FLANN <http://people.cs.ubc.ca/~mariusm/index.php/FLANN/FLANN>`_
+  is used for fast nearest-neighbor searches. This isn't in pip but is in
+  homebrew, ubuntu's apt, etc.
 
 * `vlfeat-ctypes <https://github.com/dougalsutherland/vlfeat-ctypes>`_, a
   minimal ctypes interface to the `vlfeat <http://www.vlfeat.org>`_ computer
   vision algorithm library. This *is* installed by pip automatically, but
-  make sure to run ``python -m vlfeat.download`` to download the library binary.
+  make sure to run ``python -m vlfeat.download`` to download the library binary
+  if you want to extract image features.
+
+If you do use Anaconda, the following should be sufficient to get an environment
+set up, after installing FLANN::
+
+    conda create -n py-sdm accelerate h5py scikit-image nose distribute cython
+    pip install cyflann
 
 
 Actual installation
