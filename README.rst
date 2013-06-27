@@ -52,8 +52,15 @@ Other notes:
   ``pip install -U``.
 
 * `FLANN <http://people.cs.ubc.ca/~mariusm/index.php/FLANN/FLANN>`_
-  is used for fast nearest-neighbor searches. This isn't in pip but is in
-  homebrew, ubuntu's apt, etc.
+  is used for fast nearest-neighbor searches.
+  *NOTE*: this version of py-sdm *REQUIRES* you to either use a version of
+  FLANN compiled without OpenMP support, or my
+  `conditional-openmp <https://github.com/dougalsutherland/flann/tree/conditional-openmp>`_
+  version. This is because we parallelize calls to FLANN through OpenMP, and
+  if FLANN is also trying to do that it'll segfault.
+  On OSX you get this from Homebrew/science with "brew install flann", since
+  the default clang compiler doesn't support OpenMP. Otherwise, make sure you
+  install from my fork above.
 
 * `vlfeat-ctypes <https://github.com/dougalsutherland/vlfeat-ctypes>`_, a
   minimal ctypes interface to the `vlfeat <http://www.vlfeat.org>`_ computer
