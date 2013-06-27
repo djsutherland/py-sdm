@@ -1,4 +1,4 @@
-This is a pure-Python implementation of the nonparametric divergence estimators
+This is a Python implementation of the nonparametric divergence estimators
 described by
 
 Barnabas Poczos, Liang Xiong, Jeff Schneider (2011).
@@ -15,6 +15,7 @@ http://arxiv.org/abs/1202.0302
 Code by Dougal J. Sutherland <dsutherl@cs.cmu.edu>
 based partially on code by Liang Xiong <lxiong@cs.cmu.edu>.
 
+Homepage: https://github.com/dougalsutherland/py-sdm/
 
 
 Installation
