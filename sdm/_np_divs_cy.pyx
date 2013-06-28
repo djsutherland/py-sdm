@@ -2,7 +2,7 @@ from __future__ import division
 
 cimport cython
 from cython cimport view, integral
-from cython.parallel import prange, threadid
+from cython.parallel import parallel, prange, threadid
 from libc.stdlib cimport malloc, free
 from libc.math cimport log, sqrt, fmax
 
@@ -220,7 +220,8 @@ def _estimate_cross_divs(features, indices, rhos,
     cdef long job_i, n_jobs = mask_is.shape[0]
 
     cdef object pbar
-    cdef long done_count
+    cdef long jobs_since_last_tick_val
+    cdef long * jobs_since_last_tick = &jobs_since_last_tick_val
     cdef uint8_t[:] is_done
     if progressbar:
         is_done = np.empty(n_jobs, dtype=np.uint8)
@@ -237,22 +238,14 @@ def _estimate_cross_divs(features, indices, rhos,
         for i in range(n_bags):
             index_array[i] = (<FLANNIndex> indices[i])._this
 
-        # TODO: tick the pbar less often?
-
         with nogil:
-            for job_i in prange(n_jobs, num_threads=cores):
+            for job_i in prange(n_jobs, num_threads=cores, schedule='guided'):
                 tid = threadid()
                 i = mask_is[job_i]
                 j = mask_js[job_i]
 
-                if progressbar and tid == 0 and job_i % 997 == 0:
-                    done_count = 0
-                    for k in range(n_jobs):
-                        if is_done[k]:
-                            done_count = done_count + 1
-
-                    with gil:
-                        pbar.update(done_count)
+                if progressbar and tid == 0:
+                    handle_pbar(pbar, jobs_since_last_tick, is_done)
 
                 i_start = boundaries[i]
                 i_end = boundaries[i + 1]
@@ -314,3 +307,21 @@ def _estimate_cross_divs(features, indices, rhos,
         return np.asarray(outputs)
     finally:
         free(index_array)
+
+
+@cython.boundscheck(False)
+cdef bint handle_pbar(object pbar, long * jobs_since_last_tick,
+                      uint8_t[:] is_done) nogil except 1:
+    jobs_since_last_tick[0] += 1
+
+    cdef long done_count = 0
+
+    # TODO: tweak this number?
+    if jobs_since_last_tick[0] >= 50:
+        for k in range(is_done.shape[0]):
+            if is_done[k]:
+                done_count = done_count + 1
+
+        with gil:
+            pbar.update(done_count)
+        jobs_since_last_tick[0] = 0
