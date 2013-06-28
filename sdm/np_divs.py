@@ -670,8 +670,11 @@ def estimate_divs(features,
     #       multiprocessing, save the indices to disk, and load them in master.
     #       (Or, patch flann so that indices become pickleable....)
     #       Is that worth it?
+    from numpy.random import RandomState
+    rn_gen = RandomState()
+    rn_gen.seed()
     def _make_index(bag):
-        idx = FLANNIndex(**flann_args)
+        idx = FLANNIndex(random_seed=rn_gen.randint(2**30), **flann_args)
         idx.build_index(bag)
         return idx
 
