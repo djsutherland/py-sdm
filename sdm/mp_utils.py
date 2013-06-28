@@ -142,7 +142,10 @@ def progress(counter=True, **kwargs):
         widgets = kwargs.pop('widgets')
     except KeyError:
         if counter:
-            widgets = [' ', pb.SimpleProgress(), ' (', pb.Percentage(), ') ']
+            class CommaProgress(pb.Widget):
+                def update(self, pbar):
+                    return '{:,} of {:,}'.format(pbar.currval, pbar.maxval)
+            widgets = [' ', CommaProgress(), ' (', pb.Percentage(), ') ']
         else:
             widgets = [' ', pb.Percentage(), ' ']
         widgets.extend([pb.Bar(), ' ', pb.ETA()])

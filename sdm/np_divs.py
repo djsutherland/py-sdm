@@ -943,9 +943,9 @@ def check_h5_settings(f, n, dim, min_dist=None,
     passed settings. If write, adds them to the file if not present.
     """
     if any(divs.shape != (n, n)
-           for div_group in f.values()
+           for name, div_group in f.items() if name != '_meta'
            for divs in div_group.values()):
-        raise ValueError("existing divs have wronge shape")
+        raise ValueError("existing divs have wrong shape")
 
     if '_meta' in f:
         meta_group = f['_meta']

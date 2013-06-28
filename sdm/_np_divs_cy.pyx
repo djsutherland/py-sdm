@@ -216,10 +216,16 @@ def _estimate_cross_divs(features, indices, rhos,
         np.empty((cores, max_pts, max_K), dtype=np.float32)
     cdef float[:, :, ::1] neighbors = \
         np.empty((cores, max_pts, num_Ks), dtype=np.float32)
-    cdef int tid, job_i
+    cdef int tid
+    cdef long job_i, n_jobs = mask_is.shape[0]
 
+    cdef object pbar
+    cdef long done_count
+    cdef uint8_t[:] is_done
     if progressbar:
-        pbar = progress()
+        is_done = np.empty(n_jobs, dtype=np.uint8)
+        pbar = progress(maxval=n_jobs)
+        pbar.start()
 
     # make a C array of pointers to indices, so we can get it w/o the GIL
     cdef flann_index_t * index_array = <flann_index_t *> malloc(
@@ -234,10 +240,19 @@ def _estimate_cross_divs(features, indices, rhos,
         # TODO: tick the pbar less often?
 
         with nogil:
-            for job_i in prange(mask_is.shape[0], num_threads=cores):
+            for job_i in prange(n_jobs, num_threads=cores):
                 tid = threadid()
                 i = mask_is[job_i]
                 j = mask_js[job_i]
+
+                if progressbar and tid == 0 and job_i % 997 == 0:
+                    done_count = 0
+                    for k in range(n_jobs):
+                        if is_done[k]:
+                            done_count = done_count + 1
+
+                    with gil:
+                        pbar.update(done_count)
 
                 i_start = boundaries[i]
                 i_end = boundaries[i + 1]
@@ -289,6 +304,12 @@ def _estimate_cross_divs(features, indices, rhos,
                                    rhos_stacked[i_start:i_end],
                                    neighbors[tid, :num_p, :],
                                    alpha_pos, outputs[i, j, :, :])
+
+                if progressbar:
+                    is_done[job_i] = 1
+
+        if progressbar:
+            pbar.finish()
 
         return np.asarray(outputs)
     finally:
