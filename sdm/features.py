@@ -100,6 +100,8 @@ class Features(object):
             for bag in bags:
                 a = np.asarray(bag, order='C')
 
+                if a.ndim == 1:
+                    a = a[None, :]
                 if a.ndim != 2:
                     raise TypeError("each bag must be n_pts x dim")
 
