@@ -72,7 +72,7 @@ Other notes:
 If you do use Anaconda, the following should be sufficient to get an environment
 set up, after installing FLANN::
 
-    conda create -n py-sdm accelerate h5py scikit-image nose distribute cython
+    conda create -n py-sdm accelerate h5py scikit-image nose cython distribute pip
     pip install cyflann
 
 
