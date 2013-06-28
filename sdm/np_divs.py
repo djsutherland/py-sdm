@@ -666,10 +666,7 @@ def estimate_divs(features,
 
     status_fn('Building indices...')
     # Build indices for each bag. Do this one-at-a-time for now.
-    # TODO: can probably multithread this? If not, can at least do it in
-    #       multiprocessing, save the indices to disk, and load them in master.
-    #       (Or, patch flann so that indices become pickleable....)
-    #       Is that worth it?
+    # TODO: should probably multithread this
     from numpy.random import RandomState
     rn_gen = RandomState()
     rn_gen.seed()
