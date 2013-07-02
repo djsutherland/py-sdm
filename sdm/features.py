@@ -606,14 +606,15 @@ class Features(object):
             fn = self._condense_kmeans_sklearn
 
         do = fn(n_clusters=n_clusters, max_iter=max_iter, algorithm=algorithm)
-        new_bags = [do(bag) for bag in feats_iter]
+        new_bags = [bag if bag.shape[0] <= n_clusters else do(bag)
+                    for bag in feats_iter]
         return self._replace_bags(new_bags, inplace=inplace)
 
     def _condense_kmeans_vlfeat(self, n_clusters, max_iter=20,
                                 algorithm='lloyd'):
         from vlfeat import vl_kmeans
         return partial(vl_kmeans, num_centers=n_clusters, algorithm=algorithm,
-                     max_iter=max_iter, num_rep=1, initialization='random')
+                       max_iter=max_iter, num_rep=1, initialization='random')
 
     def _condense_kmeans_sklearn(self, n_clusters, max_iter=20,
                                  algorithm='minibatch'):
