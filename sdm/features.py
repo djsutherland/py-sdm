@@ -2,6 +2,7 @@ from __future__ import division, print_function
 
 from collections import Counter
 from contextlib import closing
+from functools import partial
 import os
 import sys
 
@@ -582,37 +583,52 @@ class Features(object):
             normalizer, fit_first=False, inplace=inplace, dtype=dtype)
 
     def condense_kmeans(self, n_clusters, max_iter=20, inplace=False,
-                        progressbar=False, cast_dtype=np.float32):
+                        progressbar=False, cast_dtype=np.float32,
+                        library='vlfeat', algorithm='lloyd'):
         '''
         Condenses the number of points in a sample set through k-means.
         '''
-        from sklearn.cluster import MiniBatchKMeans
 
-        dtype = None if self.dtype.kind == 'f' else cast_dtype
+        feats_iter = iter(self.features)
 
-        # TODO: use full batch kmeans for small sizes?
-        # TODO: use elkan k-means from vlfeat instead?
+        if self.dtype.kind != 'f':
+            feats_iter = (np.asarray(b, dtype=cast_dtype) for b in feats_iter)
+
+        if progressbar:
+            from .mp_utils import progress
+            feats_iter = progress(maxval=len(self))(feats_iter)
+
+        if library == 'vlfeat':
+            fn = self._condense_kmeans_vlfeat
+        elif library == 'sklearn':
+            fn = self._condense_kmeans_sklearn
+
+        do = fn(n_clusters=n_clusters, max_iter=max_iter, algorithm=algorithm)
+        new_bags = [do(bag) for bag in feats_iter]
+        return self._replace_bags(new_bags, inplace=inplace)
+
+    def _condense_kmeans_vlfeat(self, n_clusters, max_iter=20,
+                                algorithm='lloyd'):
+        from vlfeat import vl_kmeans
+        return partial(vl_kmeans, num_centers=n_clusters, algorithm=algorithm,
+                     max_iter=max_iter, num_rep=1, initialization='random')
+
+    def _condense_kmeans_sklearn(self, n_clusters, max_iter=20,
+                                 algorithm='minibatch'):
+        if algorithm == 'minibatch':
+            from sklearn.cluster import MiniBatchKMeans
+            cls = partial(MiniBatchKMeans, compute_labels=False)
+        elif algorithm in ('batch', 'lloyd'):
+            from sklearn.cluster import KMeans
+            cls = partial(KMeans, n_init=1, n_jobs=1)
 
         # most of the work is parallelized by MKL. still, not super fast.
-        kmeans = MiniBatchKMeans(
-            n_clusters=n_clusters, init='random', compute_labels=False,
-            max_iter=max_iter)
+        kmeans = cls(n_clusters=n_clusters, init='random', max_iter=max_iter)
 
-        new_bags = []
-        feats_iter = self.features
-        if progressbar:
-            from mp_utils import progress
-            feats_iter = progress()(feats_iter)
-        for bag in feats_iter:
-            if bag.shape[0] <= n_clusters:
-                new_bags.append(bag)
-            else:
-                if dtype is not None:
-                    bag = bag.astype(dtype)
-                kmeans.fit(bag)
-                new_bags.append(kmeans.cluster_centers_)
-
-        return self._replace_bags(new_bags, inplace=inplace)
+        def do(bag):
+            kmeans.fit(bag)
+            return kmeans.cluster_centers_
+        return do
 
     ############################################################################
     ### generic I/O helpers
