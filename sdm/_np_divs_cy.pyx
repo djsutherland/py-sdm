@@ -2,9 +2,10 @@ from __future__ import division
 
 cimport cython
 from cython cimport view, integral
-from cython.parallel import parallel, prange, threadid
+from cython.parallel import prange, threadid
 from libc.stdlib cimport malloc, free
 from libc.math cimport log, sqrt, fmax
+from cpython.exc cimport PyErr_CheckSignals
 
 from functools import partial
 
@@ -244,8 +245,11 @@ def _estimate_cross_divs(features, indices, rhos,
                 i = mask_is[job_i]
                 j = mask_js[job_i]
 
-                if progressbar and tid == 0:
-                    handle_pbar(pbar, jobs_since_last_tick, is_done)
+                if tid == 0:
+                    with gil:
+                        PyErr_CheckSignals()  # allow ^C to interrupt us
+                    if progressbar:
+                        handle_pbar(pbar, jobs_since_last_tick, is_done)
 
                 i_start = boundaries[i]
                 i_end = boundaries[i + 1]
@@ -317,10 +321,10 @@ cdef bint handle_pbar(object pbar, long * jobs_since_last_tick,
     cdef long done_count = 0
 
     # TODO: tweak this number?
-    if jobs_since_last_tick[0] >= 50:
+    if jobs_since_last_tick[0] >= 20:
         for k in range(is_done.shape[0]):
             if is_done[k]:
-                done_count = done_count + 1
+                done_count += 1
 
         with gil:
             pbar.update(done_count)

@@ -815,6 +815,8 @@ def main():
             bags, specs=args.div_funcs, Ks=Ks,
             cores=args.cores,
             min_dist=args.min_dist,
+            status_fn=True,
+            progressbar=True,
             return_opts=True,
             **args.flann_args)
 
