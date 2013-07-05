@@ -956,6 +956,8 @@ class Features(object):
                 print("WARNING: {} missing values for {}. using {} instead"
                         .format(n_bags - with_extras[name], name, d),
                       file=sys.stderr)
+            else:
+                extra_defaults[name] = None
             the_extras[name] = np.empty(n_bags, dtype=dt)
 
         for i, extra_d in enumerate(extras):
