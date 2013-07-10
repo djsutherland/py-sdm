@@ -221,12 +221,19 @@ def square_psd(mat, destroy=False, ret_test_transformer=False):
     return np.dot(mat, mat.T)
 
 
+def identity_psd(mat, destroy=False, ret_test_transformer=False):
+    if ret_test_transformer:
+        return mat, np.eye(mat.shape[0])
+    return mat
+
+
 psdizers = {
     'project': project_psd,
     'clip': project_psd,
     'shift': shift_psd,
     'flip': flip_psd,
     'square': square_psd,
+    'identity': identity_psd,
 }
 
 
