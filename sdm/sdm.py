@@ -931,6 +931,8 @@ class BaseSDM(sklearn.base.BaseEstimator):
                 folds = StratifiedKFold(labels, n_folds=num_folds)
             else:
                 folds = KFold(n=num_bags, n_folds=num_folds, shuffle=True)
+        else:
+            num_folds = len(folds)
 
         old_save_bags = self.save_bags
         self.save_bags = False  # avoid keeping copies around
