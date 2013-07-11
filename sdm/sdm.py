@@ -202,7 +202,8 @@ def flip_psd(mat, destroy=False, negatives_likely=True,
     return mat
 
 
-def square_psd(mat, destroy=False, ret_test_transformer=False):
+def square_psd(mat, destroy=False, negatives_likely=True,
+               ret_test_transformer=False):
     '''
     Turns a real matrix into a symmetric psd one through S -> S S^T. Equivalent
     to squaring the eigenvalues in a spectral decomposition, or to using the
@@ -221,7 +222,8 @@ def square_psd(mat, destroy=False, ret_test_transformer=False):
     return np.dot(mat, mat.T)
 
 
-def identity_psd(mat, destroy=False, ret_test_transformer=False):
+def identity_psd(mat, destroy=False, negatives_likely=True,
+                 ret_test_transformer=False):
     if ret_test_transformer:
         return mat, np.eye(mat.shape[0])
     return mat
