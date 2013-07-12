@@ -578,7 +578,7 @@ def normalize_div_name(name):
 
 def estimate_divs(features,
                   mask=None,
-                  specs=['renyi:.9'],
+                  specs=['kl'],
                   Ks=[3],
                   cores=None,
                   algorithm=None,
