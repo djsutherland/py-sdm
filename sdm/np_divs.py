@@ -578,7 +578,7 @@ def normalize_div_name(name):
 
 def estimate_divs(features,
                   mask=None,
-                  specs=['renyi:.9'],
+                  specs=['kl'],
                   Ks=[3],
                   cores=None,
                   algorithm=None,
@@ -684,8 +684,9 @@ def estimate_divs(features,
     # need to throw away the closet neighbor, which will always be self
     # this means that K=1 corresponds to column 1 in the array
     pbar = progress() if progressbar else identity
-    rhos = [np.maximum(min_dist, np.sqrt(idx.nn_index(bag, max_K + 1)[1][:, Ks]))
-            for bag, idx in izip(features.features, pbar(indices))]
+    rhos = [
+        np.maximum(min_dist, np.sqrt(idx.nn_index(bag, max_K + 1)[1][:, Ks]))
+        for bag, idx in izip(features.features, pbar(indices))]
     if progressbar:
         pbar.finish()
 

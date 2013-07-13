@@ -50,7 +50,7 @@ DEFAULT_SVM_ITER_TUNING = 1000
 DEFAULT_SVM_SHRINKING = True
 DEFAULT_SVM_PROBABILITY = False
 
-DEFAULT_DIV_FUNC = 'renyi:0.9'
+DEFAULT_DIV_FUNC = 'kl'
 DEFAULT_SIGMA_VALS = tuple(2.0 ** np.arange(-4, 11, 2))
 DEFAULT_C_VALS = tuple(2.0 ** np.arange(-9, 19, 3))
 DEFAULT_NU_VALS = (0.1, 0.2, 0.3, 0.5, 0.7)
@@ -202,7 +202,8 @@ def flip_psd(mat, destroy=False, negatives_likely=True,
     return mat
 
 
-def square_psd(mat, destroy=False, ret_test_transformer=False):
+def square_psd(mat, destroy=False, negatives_likely=True,
+               ret_test_transformer=False):
     '''
     Turns a real matrix into a symmetric psd one through S -> S S^T. Equivalent
     to squaring the eigenvalues in a spectral decomposition, or to using the
@@ -221,12 +222,20 @@ def square_psd(mat, destroy=False, ret_test_transformer=False):
     return np.dot(mat, mat.T)
 
 
+def identity_psd(mat, destroy=False, negatives_likely=True,
+                 ret_test_transformer=False):
+    if ret_test_transformer:
+        return mat, np.eye(mat.shape[0])
+    return mat
+
+
 psdizers = {
     'project': project_psd,
     'clip': project_psd,
     'shift': shift_psd,
     'flip': flip_psd,
     'square': square_psd,
+    'identity': identity_psd,
 }
 
 
@@ -931,6 +940,8 @@ class BaseSDM(sklearn.base.BaseEstimator):
                 folds = StratifiedKFold(labels, n_folds=num_folds)
             else:
                 folds = KFold(n=num_bags, n_folds=num_folds, shuffle=True)
+        else:
+            num_folds = len(folds)
 
         old_save_bags = self.save_bags
         self.save_bags = False  # avoid keeping copies around
