@@ -82,6 +82,19 @@ def register_write_ndarray(output_object):
     output_object.register(np.ndarray, _write_ndarray_out)
 
 
+def register_np_writes(output_object):
+    def r(typ, f_name):
+        output_object.register(typ, getattr(output_object.__class__, f_name))
+    # TODO: should int16, etc get saved as an int, pickled, or (probably best)
+    #       made into a custom-width format and saved like that?
+    r(np.bool_, 'write_bool')
+    r(np.bool8, 'write_bool')
+    r(np.int32, 'write_int')
+    r(np.int64, 'write_long')
+    r(np.float32, 'write_float')
+    r(np.float64, 'write_double')
+
+
 ################################################################################
 
 
