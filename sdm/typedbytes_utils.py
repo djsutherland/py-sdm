@@ -1,16 +1,41 @@
 from cStringIO import StringIO
 from contextlib import closing
 import errno
-from functools import partial
+import os
+from shutil import copyfileobj
 import struct
+import tempfile
 
 import numpy as np
 import numpy.lib.format as npy
+
+import cyflann
 
 try:
     import ctypedbytes as tb
 except:
     import typedbytes as tb
+
+
+# reads the format you get from http://stackoverflow.com/a/15172498/344821
+class SequenceFileInput(tb.Input):
+    def read(self):
+        # TODO: check the lengths?
+        try:
+            key_length = self.read_int()
+        except struct.error:
+            return None
+
+        try:
+            key = self._read()
+            assert self.file.read(1) == b'\t'
+            val_length = self.read_int()
+            val = self._read()
+            assert self.file.read(1) == b'\n'
+        except (StopIteration, struct.error):
+            raise struct.error("EOF before complete pair read")
+
+        return key, val
 
 
 ################################################################################
@@ -86,6 +111,9 @@ def register_write_ndarray(output_object):
     output_object.register(np.ndarray, _write_ndarray_out)
 
 
+################################################################################
+### Typedbytes handling of numpy scalar types
+
 def register_np_writes(output_object):
     def r(typ, f_name):
         output_object.register(typ, getattr(output_object.__class__, f_name))
@@ -101,24 +129,71 @@ def register_np_writes(output_object):
 
 
 ################################################################################
+### Typedbytes handling of cyflann.FLANNIndex
+#
+# flann indices are serialized in typedbytes as:
+#   - the one-byte type code FLANN_CODE
+#   - an int giving the total size
+#   - a numpy array of points (size, then the .npy bytes)
+#   - a bytestring (size, then the save_index() bytes)
+FLANN_CODE = 0xab
+
+DEFAULT_TEMPDIR = None
+_not_passed = object()
+
+def flann_from_typedbytes(inp, tempdir=_not_passed):
+    if tempdir is _not_passed:
+        tempdir = DEFAULT_TEMPDIR
+
+    register_read_ndarray(inp)
+    length = inp.read_int()
+    pts = inp.read()
+    index_bytes = inp.read_bytestring()
+
+    with tempfile.NamedTemporaryFile(dir=tempdir) as f:
+        f.write(index_bytes)
+        f.flush()
+        del index_bytes
+        index = cyflann.FLANNIndex()
+        index.load_index(f.name, pts)
+
+    return index
+
+def register_read_flann(input_object):
+    register_read_ndarray(input_object)
+    input_object.register(FLANN_CODE, flann_from_typedbytes)
 
 
-# reads the format you get from http://stackoverflow.com/a/15172498/344821
-class SequenceFileInput(tb.Input):
-    def read(self):
-        # TODO: check the lengths?
-        try:
-            key_length = self.read_int()
-        except struct.error:
-            return None
+def flann_to_typedbytes(out, index, tempdir=_not_passed):
+    if tempdir is _not_passed:
+        tempdir = DEFAULT_TEMPDIR
 
-        try:
-            key = self._read()
-            assert self.file.read(1) == b'\t'
-            val_length = self.read_int()
-            val = self._read()
-            assert self.file.read(1) == b'\n'
-        except (StopIteration, struct.error):
-            raise struct.error("EOF before complete pair read")
+    npy_size = _npy_size(index.data)
 
-        return key, val
+    with tempfile.NamedTemporaryFile(dir=tempdir) as f:
+        index.save_index(f.name)
+        f.seek(0, os.SEEK_END)
+        index_size = f.tell()
+        f.seek(0)
+
+        out.file.write(struct.pack('>B', FLANN_CODE))
+        out.file.write(struct.pack('>i', npy_size + index_size))
+
+        out.write(index.data)
+
+        out.file.write(struct.pack('>i', index_size))
+        copyfileobj(f, out.file)
+
+def register_write_flann(output_object):
+    register_write_ndarray(output_object)
+    output_object.register(cyflann.FLANNIndex, flann_to_typedbytes)
+
+
+################################################################################
+
+def register_read(inp):
+    register_read_flann(inp)  # does read_ndarray itself
+
+def register_write(out):
+    register_write_flann(out)  # does write_ndarray itself
+    register_np_writes(out)
