@@ -930,9 +930,8 @@ class Features(object):
         # loading them in. So we do the vstacking thing.
 
         bags = []
-        extras = []  # starts as a list of dictionaries. will change to a dict
-                     # of arrays after we load them all in.
-        extra_types = defaultdict(Counter)
+        extras = []  # a list of dictionaries. will replace with a dict of
+                     # arrays after we load them all in.
 
         for cat, fname in bag_names:
             npz_path = os.path.join(path, cat, fname + '.npz')
@@ -946,23 +945,27 @@ class Features(object):
                         else:
                             feats = v[()]
                     else:
-                        dt = v.dtype if all(s == 1 for s in v.shape) else object
-                        extra_types[k][dt] += 1
                         extra[k] = v[()]
                 bags.append(feats)
                 extras.append(extra)
 
         categories, names = zip(*bag_names)
-        obj = cls._postprocess(categories, names, bags, extras, extra_types)
+        obj = cls._postprocess(categories, names, bags, extras)
 
         return cls._maybe_load_attrs(obj, path, load_attrs=load_attrs)
 
     @classmethod
-    def _postprocess(cls, categories, names, bags, extras, extra_types):
+    def _postprocess(cls, categories, names, bags, extras):
         # post-process the extras
         n_bags = len(bags)
+        extra_types = defaultdict(Counter)
         the_extras = {}
         extra_defaults = {}
+
+        for extra in extras:
+            for k, v in iteritems(extra):
+                dt = v.dtype if all(s == 1 for s in v.shape) else object
+                extra_types[k][dt] += 1
 
         for name, dt_counts in iteritems(extra_types):
             if len(dt_counts) == 1:
@@ -1062,6 +1065,11 @@ class Features(object):
                     ))
 
     @classmethod
+    def _proc_from_typedbytes(cls, val, features_dtype=None):
+        bag = np.asarray(val.pop('features'), dtype=features_dtype)
+        return bag, dict((k, np.asarray(v)) for k, v in iteritems(val))
+
+    @classmethod
     def _load_typedbytes(cls, f, features_dtype=None, cats=None, pairs=None):
         from . import typedbytes_utils as tbu
 
@@ -1073,7 +1081,6 @@ class Features(object):
         names = []
         bags = []
         extras = []
-        extra_types = defaultdict(Counter)
 
         while True:
             key = inp.read()
@@ -1094,20 +1101,15 @@ class Features(object):
             else:
                 # loading this one
                 val = inp.read()
-                bag = np.asarray(val.pop('features'), dtype=features_dtype)
+                bag, extra = cls._proc_from_typedbytes(
+                        val, features_dtype=features_dtype)
 
                 categories.append(cat)
                 names.append(name)
                 bags.append(bag)
-
-                extra = {}
-                for k, v in iteritems(val):
-                    extra[k] = v = np.asarray(v)
-                    dt = v.dtype if all(s == 1 for s in v.shape) else object
-                    extra_types[k][dt] += 1
                 extras.append(extra)
 
-        return cls._postprocess(categories, names, bags, extras, extra_types)
+        return cls._postprocess(categories, names, bags, extras)
 
     @classmethod
     def load_from_typedbytes(cls, path, load_attrs=False, features_dtype=None,
