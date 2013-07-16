@@ -1,15 +1,19 @@
 from __future__ import division, print_function
 
-from collections import Counter
+from collections import Counter, defaultdict
 from contextlib import closing
 from functools import partial
+from glob import glob
+import operator as op
 import os
+import cPickle as pickle
+import shutil
 import sys
 
 import numpy as np
 
-from .utils import (izip, iterkeys, iteritems, lazy_range, strict_zip,
-                    str_types, is_integer_type)
+from .utils import (imap, izip, iterkeys, iteritems, lazy_range, strict_zip,
+                    reduce, str_types, is_integer_type)
 
 _default_category = 'none'
 _do_nothing_sentinel = object()
@@ -281,7 +285,7 @@ class Features(object):
         if np.isscalar(key):
             return self.data[key]
         else:
-            return Features.from_data(self.data[key], copy=False)
+            return type(self).from_data(self.data[key], copy=False)
 
     def __add__(self, oth):
         if isinstance(oth, Features):
@@ -306,7 +310,7 @@ class Features(object):
             names.insert(0, self.names)
             names = np.hstack(names)
 
-            return Features(feats, n_pts=n_pts, categories=cats, names=names)
+            return type(self)(feats, n_pts=n_pts, categories=cats, names=names)
 
         return NotImplemented
 
@@ -656,24 +660,35 @@ class Features(object):
 
     def save(self, path, format='hdf5', **attrs):
         '''
-        Saves into an output file. Calls save_as_hdf5 if format=='hdf5'
-        (the default), or save_as_perbag if format=='perbag'.
+        Saves into an output file. Default format is 'hdf5'; other options are
+        'perbag' or 'typedbytes'.
         '''
         if format == 'hdf5':
             return self.save_as_hdf5(path, **attrs)
         elif format == 'perbag':
             return self.save_as_perbag(path, **attrs)
+        elif format == 'typedbytes':
+            return self.save_as_typedbytes(path, **attrs)
         else:
             raise TypeError("unknown save format '{}'".format(format))
 
     @classmethod
     def load(cls, path, **kwargs):
         '''
-        Loads from either an hdf5 file or a perbag directory. Calls
-        load_from_hdf5 if path is a file or load_from_perbag if a directory.
+        Loads from an hdf5 file or a perbag/typedbytes directory.
+
+        If path is a directory:
+            if it contains any data_*.tb files, calls load_from_typedbytes
+            otherwise calls load_from_perbag
+        otherwise, calls load_from_hdf5.
+
+        See any of those functions for documentation of the arguments.
         '''
         if os.path.isdir(path):
-            return cls.load_from_perbag(path, **kwargs)
+            if glob(os.path.join(path, 'data_*.tb')):
+                return cls.load_from_typedbytes(path, **kwargs)
+            else:
+                return cls.load_from_perbag(path, **kwargs)
         else:
             return cls.load_from_hdf5(path, **kwargs)
 
@@ -852,7 +867,6 @@ class Features(object):
         Also saves any extra attributes passed as keyword arguments in
             path/attrs.pkl
         '''
-        import pickle
         if not os.path.exists(path):
             os.makedirs(path)
 
@@ -918,8 +932,7 @@ class Features(object):
         bags = []
         extras = []  # starts as a list of dictionaries. will change to a dict
                      # of arrays after we load them all in.
-        extra_types = {}
-        with_extras = Counter()
+        extra_types = defaultdict(Counter)
 
         for cat, fname in bag_names:
             npz_path = os.path.join(path, cat, fname + '.npz')
@@ -934,29 +947,36 @@ class Features(object):
                             feats = v[()]
                     else:
                         dt = v.dtype if all(s == 1 for s in v.shape) else object
-                        if k not in extra_types:
-                            extra_types[k] = dt
-                        elif extra_types[k] != dt:
-                            msg = "different {}s have different dtypes"
-                            raise TypeError(msg.format(k))
-                            # TODO: find a dtype that'll cover all of them
+                        extra_types[k][dt] += 1
                         extra[k] = v[()]
-                        with_extras[k] += 1
                 bags.append(feats)
                 extras.append(extra)
 
+        categories, names = zip(*bag_names)
+        obj = cls._postprocess(categories, names, bags, extras, extra_types)
+
+        return cls._maybe_load_attrs(obj, path, load_attrs=load_attrs)
+
+    @classmethod
+    def _postprocess(cls, categories, names, bags, extras, extra_types):
         # post-process the extras
         n_bags = len(bags)
         the_extras = {}
         extra_defaults = {}
 
-        for name, dt in iteritems(extra_types):
-            if with_extras[name] != n_bags:
+        for name, dt_counts in iteritems(extra_types):
+            if len(dt_counts) == 1:
+                dt = next(iter(iterkeys(dt_counts)))
+            else:
+                # TODO: reconcile similar types?
+                dt = object
+
+            num_seen = sum(extra_types[name].values())
+            if num_seen != n_bags:
                 dt, d = cls._missing_extras(dt)
                 extra_defaults[name] = d
-                print("WARNING: {} missing values for {}. using {} instead"
-                        .format(n_bags - with_extras[name], name, d),
-                      file=sys.stderr)
+                msg = "WARNING: {} missing values for {}. using {} instead"
+                print(msg.format(n_bags - num_seen, name, d), file=sys.stderr)
             else:
                 extra_defaults[name] = None
             the_extras[name] = np.empty(n_bags, dtype=dt)
@@ -965,11 +985,11 @@ class Features(object):
             for name, default in iteritems(extra_defaults):
                 the_extras[name][i] = extra_d.get(name, default)
 
-        categories, names = zip(*bag_names)
-        obj = cls(bags, categories=categories, names=names, **the_extras)
+        return cls(bags, categories=categories, names=names, **the_extras)
 
+    @classmethod
+    def _maybe_load_attrs(cls, obj, path, load_attrs):
         if load_attrs:
-            import pickle
             try:
                 with open(os.path.join(path, 'attrs.pkl'), 'rb') as f:
                     attrs = pickle.load(f)
@@ -978,3 +998,167 @@ class Features(object):
             return obj, attrs
         else:
             return obj
+
+    ############################################################################
+    ### Stuff relating to typedbytes feature file
+
+    def save_as_typedbytes(self, path, **attrs):
+        '''
+        Save into a directory of Hadoop typedbytes file.
+
+        They're split to have about 500MB of data each (ignoring the extras),
+        named like "data_0_to_349.tb", "data_350_to_581.tb", etc, where the two
+        numbers are the first and last index contained.
+            TODO: allow customizing this, giving explicit splits, ...
+
+        The keys in the files are "name/category".
+        Each value is a mapping, with elements:
+            "features": a numpy array (the content of np.save/np.load; see
+                        sdm.typedbytes_utils)
+            any extras: the value (a scalar, numpy array, ...)
+                        Note that any scalars which have an exact representation
+                        in the typedbytes format will be written as such; others
+                        will be pickled.
+
+        strings, and the values are a mapping. The mapping contains a key
+        "feats" with values a numpy array (defined in sdm.typedbytes_utils);
+        any extras are also included in the map.
+
+        Also saves any extra attributes passed as keyword arguments in
+            path/attrs.pkl
+
+        Requires the "ctypedbytes" or "typedbytes" library (in pip).
+        '''
+        from . import typedbytes_utils as tbu
+        if os.path.exists(path):
+            shutil.rmtree(path)
+        os.makedirs(path)
+
+        with open(os.path.join(path, 'attrs.pkl'), 'wb') as f:
+            pickle.dump(attrs, f)
+
+        # assign the bags into files
+        running_bytes = self._boundaries * (self.dtype.itemsize * self.dim)
+        amt_per_file = 500 * 2**20
+        starting_bags = np.diff(running_bytes // amt_per_file).astype(bool)
+        starting_bags[0] = True
+        starting_bags = np.hstack([starting_bags, True])
+        bag_boundaries, = starting_bags.nonzero()
+
+        skip_set = frozenset(['category', 'name'])
+        for start, end in izip(bag_boundaries[:-1], bag_boundaries[1:]):
+            fname = 'data_{}_to_{}.tb'.format(start, end - 1)
+            with open(os.path.join(path, fname), 'wb') as f:
+                out = tbu.tb.PairedOutput(f)
+                tbu.register_np_writes(out)
+                tbu.register_write_ndarray(out)
+
+                for idx in range(start, end):
+                    bag = self[idx]
+                    out.write((
+                        "{}/{}".format(bag['category'], bag['name']),
+                        dict((k, v) for k, v in izip(bag.dtype.names, bag)
+                             if k not in skip_set)
+                    ))
+
+    @classmethod
+    def _load_typedbytes(cls, f, features_dtype=None, cats=None, pairs=None):
+        from . import typedbytes_utils as tbu
+
+        inp = tbu.tb.Input(f)
+        tbu.register_read_ndarray(inp)
+        tbu.check_seekable(inp)
+
+        categories = []
+        names = []
+        bags = []
+        extras = []
+        extra_types = defaultdict(Counter)
+
+        while True:
+            key = inp.read()
+            if key is None:
+                break
+
+            cat, name = key.split('/', 1)
+            if ((cats is not None and cat not in cats) or
+                    (pairs is not None and (cat, name) not in pairs)):
+                # skipping this one
+                type_byte = f.read(1)
+                val_length, = inp.read_int()
+
+                if f._file_seekable:
+                    f.seek(val_length, os.SEEK_CUR)
+                else:
+                    f.read(val_length)
+            else:
+                # loading this one
+                val = inp.read()
+                bag = np.asarray(val.pop('features'), dtype=features_dtype)
+
+                categories.append(cat)
+                names.append(name)
+                bags.append(bag)
+
+                extra = {}
+                for k, v in iteritems(val):
+                    extra[k] = v = np.asarray(v)
+                    dt = v.dtype if all(s == 1 for s in v.shape) else object
+                    extra_types[k][dt] += 1
+                extras.append(extra)
+
+        return cls._postprocess(categories, names, bags, extras, extra_types)
+
+    @classmethod
+    def load_from_typedbytes(cls, path, load_attrs=False, features_dtype=None,
+                             cats=None, pairs=None, subsample_fn=None,
+                             names_only=False):
+        '''
+        Reads a Features instance from a directory of typedbytes files created
+        by save_as_typedbytes().
+
+        If load_attrs, also returns a dictionary of meta values loaded from the
+        `attrs.pkl` file, if it exists.
+
+        features_dtype specifies the datatype to load features as.
+
+        If cats is passed, only load those with a category in cats (as checked
+        by the `in` operator, aka the __contains__ special method).
+
+        If pairs is passed, tuples of (category, name) are checked with the `in`
+        operator. If cats is also passed, that check applies first.
+
+        subsample_fn is applied to a list of (category, name) pairs, and returns
+        another list of that format. functools.partial(random.sample, k=100) can
+        be used to subsample 100 bags unifornmly at random, for example.
+
+        If names_only is passed, the list of (category, name) pairs is returned
+        instead of any data. load_attrs is also ignored.
+
+        Note that for this type (as opposed to HDF5/perbag), we have to actually
+        walk over all the data to get the categories and names for names_only or
+        a subsample_fn. To not double the I/O, we just load it all. If you're
+        trying to save on memory, you could modify this method to do so....
+        '''
+
+        # load everything
+        def load_files():
+            for fname in glob(os.path.join(path, 'data_*.tb')):
+                with open(fname, 'rb') as f:
+                    yield cls._load_typedbytes(f, features_dtype=features_dtype,
+                                               cats=cats, pairs=pairs)
+        feats = reduce(op.add, load_files())
+
+        if subsample_fn is not None or names_only:
+            bag_names = zip(feats.categories, feats.names)
+
+            if subsample_fn is not None:
+                idx_map = dict(imap(reversed, enumerate(bag_names)))
+                bag_names = subsample_fn(bag_names)
+                which = [idx_map[bag_name] for bag_name in bag_names]
+                feats = feats[which]
+
+            if names_only:
+                return bag_names
+
+        return cls._maybe_load_attrs(feats, path, load_attrs=load_attrs)

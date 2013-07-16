@@ -24,6 +24,7 @@ if sys.version_info.major == 2:
     iterkeys = methodcaller('iterkeys')
     itervalues = methodcaller('itervalues')
     iteritems = methodcaller('iteritems')
+    reduce = reduce
 else:
     izip = zip
     imap = map
@@ -34,6 +35,7 @@ else:
     iterkeys = methodcaller('keys')
     itervalues = methodcaller('values')
     iteritems = methodcaller('items')
+    from functools import reduce
 
     @functools.wraps(map)
     def strict_zip(*args, **kwargs):

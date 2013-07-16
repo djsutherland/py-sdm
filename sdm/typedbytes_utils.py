@@ -44,6 +44,11 @@ def _file_is_seekable(f):
     else:
         return True
 
+def check_seekable(the_obj):
+    if not hasattr(the_obj, '_file_seekable'):
+        the_obj._file_seekable = _file_is_seekable(the_obj.file)
+
+
 def read_ndarray(f, file_is_seekable=None):
     length, = struct.unpack('>i', f.read(4))
     if length < 0:
@@ -61,12 +66,11 @@ def read_ndarray(f, file_is_seekable=None):
             return np.load(sio)
 
 def _read_ndarray_in(self):
-    return read_ndarray(self.file,
-                        file_is_seekable=getattr(self, '_file_seekable', None))
+    seekable = getattr(self, '_file_seekable', None)
+    return read_ndarray(self.file, file_is_seekable=seekable)
 
 def register_read_ndarray(input_object):
-    if not hasattr(input_object, '_file_seekable'):
-        input_object._file_seekable = _file_is_seekable(input_object.file)
+    check_seekable(input_object)
     input_object.register(NUMPY_CODE, _read_ndarray_in)
 
 
