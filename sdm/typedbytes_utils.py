@@ -47,6 +47,7 @@ NUMPY_CODE = 0xaa
 
 
 def _npy_size(ary):
+    assert not ary.dtype.hasobject
     magic_len = npy.MAGIC_LEN
 
     # TODO: could calculate this directly
