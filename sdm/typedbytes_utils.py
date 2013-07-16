@@ -134,7 +134,7 @@ def register_np_writes(output_object):
 # flann indices are serialized in typedbytes as:
 #   - the one-byte type code FLANN_CODE
 #   - an int giving the total size
-#   - a numpy array of points (size, then the .npy bytes)
+#   - a numpy array of points (npy type code, size, then the .npy bytes)
 #   - a bytestring (size, then the save_index() bytes)
 FLANN_CODE = 0xab
 
@@ -177,7 +177,9 @@ def flann_to_typedbytes(out, index, tempdir=_not_passed):
         f.seek(0)
 
         out.file.write(struct.pack('>B', FLANN_CODE))
-        out.file.write(struct.pack('>i', npy_size + index_size))
+        out.file.write(struct.pack('>i',
+            (1 + 4 + npy_size) + (4 + index_size)))
+        # npy code, npy size int, npy, index size, index
 
         out.write(index.data)
 
