@@ -576,6 +576,138 @@ def normalize_div_name(name):
 ################################################################################
 ### The main dealio
 
+class _DivEstimator(object):
+    def __init__(self, features, mask=None, specs=['kl'], Ks=[3],
+                 cores=None, algorithm=None, min_dist=None,
+                 status_fn=True, progressbar=None, **flann_args):
+        if progressbar is None:
+            progressbar = status_fn is True
+        self.status_fn = status_fn = get_status_fn(status_fn)
+        self.progressbar = progressbar
+
+        if not isinstance(features, Features):
+            raise TypeError("features should be a Features instance")
+        n_bags = len(features)
+        dim = features.dim
+        self.features = features
+
+        if mask is None:
+            mask = np.ones((n_bags, n_bags), dtype=bool)
+        else:
+            mask = np.asarray(mask)
+            if mask.shape != (n_bags, n_bags):
+                msg = "mask should be n x n, not {}"
+                raise TypeError(msg.format(mask.shape))
+            elif mask.dtype.kind != 'b':
+                msg = "mask should be a boolean array, not {}"
+                raise TypeError(msg.format(mask.dtype))
+        self.mask = mask
+
+        self.Ks = Ks = np.array(np.squeeze(Ks), ndmin=1)
+        if Ks.ndim != 1:
+            msg = "Ks should be 1-dim, got shape {}"
+            raise TypeError(msg.format(Ks.shape))
+        if not is_integer_type(Ks):
+            msg = "Ks should be of integer type, not {}"
+            raise TypeError(msg.format(Ks.dtype))
+        if Ks.min() < 1:
+            raise ValueError("Ks should be positive; got {}".format(Ks.min()))
+        if Ks.max() >= features._n_pts.min():
+            msg = "asked for K = {}, but there's a bag with only {} points"
+            raise ValueError(msg.format(Ks.max(), features._n_pts.min()))
+        self.max_K = Ks.max()
+
+        self.funcs, self.metas, self.n_meta_only = _parse_specs(specs, Ks, dim)
+        self.specs = specs
+
+        if cores is None:
+            from multiprocessing import cpu_count
+            cores = cpu_count()
+        flann_args['cores'] = cores
+
+        if algorithm is None:
+            algorithm = pick_flann_algorithm(dim)
+        flann_args['algorithm'] = algorithm
+
+        self.flann_args = flann_args
+
+        if min_dist is None:
+            min_dist = default_min_dist(dim)
+        self.min_dist = min_dist
+
+        status_fn('kNN processing: K = {} on {!r}'.format(self.max_K, features))
+
+    def full_est(self):
+        self.build_indices()
+        self.get_rhos()
+        self.get_cross_divs()
+        self.finalize()
+        return self.outputs
+
+    def build_indices(self):
+        self.status_fn('Building indices...')
+        # Build indices for each bag. Do this one-at-a-time for now.
+        # TODO: should probably multithread this
+        def _make_index(bag):
+            idx = FLANNIndex(**self.flann_args)
+            idx.build_index(bag)
+            return idx
+
+        pbar = progress() if self.progressbar else identity
+        self.indices = [_make_index(b) for b in pbar(self.features.features)]
+        if self.progressbar:
+            pbar.finish()
+
+    def get_rhos(self):
+        self.status_fn('\nGetting within-bag distances...')
+        # need to throw away the closet neighbor, which will always be self
+        # this means that K=1 corresponds to column 1 in the array
+        Ks = self.Ks
+        max_K = self.max_K
+        min_dist = self.min_dist
+        maximum = np.maximum
+        pbar = progress() if self.progressbar else identity
+        self.rhos = [
+            maximum(min_dist, np.sqrt(idx.nn_index(bag, max_K + 1)[1][:, Ks]))
+            for bag, idx in izip(self.features.features, pbar(self.indices))]
+        if self.progressbar:
+            pbar.finish()
+
+    def get_cross_divs(self):
+        self.status_fn('\nGetting cross-bag distances and divergences...')
+        # If anything needs its transpose also, then we just compute everything
+        # with the transpose; we'll nan out the unnecessary bits later.
+        # TODO: only compute the things we need transposed...
+        mask = self.mask
+        self.should_mask = False
+        if any(req.needs_transpose for f in self.metas
+                                   for req in f.needs_results):
+            if np.any(mask != mask.T):
+                mask = mask + mask.T
+                self.should_mask = True
+
+        self.outputs = _estimate_cross_divs(
+            self.features, self.indices, self.rhos,
+            mask.view(np.uint8), self.funcs, self.Ks,
+            self.specs, self.n_meta_only,
+            self.progressbar, self.flann_args['cores'], self.min_dist)
+
+    def finalize(self):
+        for meta, info in iteritems(self.metas):
+            required = [self.outputs[:, :, [i], :] for i in info.deps]
+            r = meta(self.rhos, required)
+            if r.ndim == 3:
+                r = r[:, :, np.newaxis, :]
+            self.outputs[:, :, info.pos, :] = r
+
+        if self.n_meta_only:
+            self.outputs = np.ascontiguousarray(
+                self.outputs[:, :, :-self.n_meta_only, :])
+
+        if self.should_mask:
+            self.outputs[~self.mask] = np.nan
+
+
 def estimate_divs(features,
                   mask=None,
                   specs=['kl'],
@@ -616,109 +748,11 @@ def estimate_divs(features,
     '''
     # TODO: document how progressbar works
     # TODO: other kinds of callbacks for showing progress bars
-
-    if progressbar is None:
-        progressbar = status_fn is True
-    status_fn = get_status_fn(status_fn)
-
-    if not isinstance(features, Features):
-        raise TypeError("features should be a Features instance")
-    n_bags = len(features)
-    dim = features.dim
-
-    if mask is None:
-        mask = np.ones((n_bags, n_bags), dtype=bool)
-    else:
-        mask = np.asarray(mask)
-        if mask.shape != (n_bags, n_bags):
-            raise TypeError("mask should be n x n, not {}".format(mask.shape))
-        elif mask.dtype.kind != 'b':
-            msg = "mask should be a boolean array, not {}"
-            raise TypeError(msg.format(mask.dtype))
-
-    Ks = np.array(np.squeeze(Ks), ndmin=1)
-    if Ks.ndim != 1:
-        raise TypeError("Ks should be 1-dim, got shape {}".format(Ks.shape))
-    if not is_integer_type(Ks):
-        raise TypeError("Ks should be of integer type, not {}".format(Ks.dtype))
-    if Ks.min() < 1:
-        raise ValueError("Ks should be positive; got {}".format(Ks.min()))
-    if Ks.max() >= features._n_pts.min():
-        msg = "asked for K = {}, but there's a bag with only {} points"
-        raise ValueError(msg.format(Ks.max(), features._n_pts.min()))
-    max_K = Ks.max()
-
-    funcs, metas, n_meta_only = _parse_specs(specs, Ks, dim)
-
-    if cores is None:
-        from multiprocessing import cpu_count
-        cores = cpu_count()
-    flann_args['cores'] = cores
-
-    if algorithm is None:
-        algorithm = pick_flann_algorithm(dim)
-    flann_args['algorithm'] = algorithm
-
-    if min_dist is None:
-        min_dist = default_min_dist(dim)
-
-    status_fn('kNN processing: K = {} on {!r}'.format(max_K, features))
-
-    status_fn('Building indices...')
-    # Build indices for each bag. Do this one-at-a-time for now.
-    # TODO: should probably multithread this
-    from numpy.random import RandomState
-    rn_gen = RandomState()
-    rn_gen.seed()
-    def _make_index(bag):
-        idx = FLANNIndex(random_seed=rn_gen.randint(2**30), **flann_args)
-        idx.build_index(bag)
-        return idx
-
-    pbar = progress() if progressbar else identity
-    indices = [_make_index(bag) for bag in pbar(features.features)]
-    if progressbar:
-        pbar.finish()
-
-    status_fn('\nGetting within-bag distances...')
-    # need to throw away the closet neighbor, which will always be self
-    # this means that K=1 corresponds to column 1 in the array
-    pbar = progress() if progressbar else identity
-    rhos = [
-        np.maximum(min_dist, np.sqrt(idx.nn_index(bag, max_K + 1)[1][:, Ks]))
-        for bag, idx in izip(features.features, pbar(indices))]
-    if progressbar:
-        pbar.finish()
-
-    status_fn('\nGetting cross-bag distances and divergences...')
-    # If anything needs its transpose also, then we just compute everything
-    # with the transpose; we'll nan out the unnecessary bits later.
-    # TODO: only compute the things we need transposed...
-    real_mask = mask
-    if any(req.needs_transpose for f in metas for req in f.needs_results):
-        if np.any(mask != mask.T):
-            mask = real_mask + real_mask.T
-
-    outputs = _estimate_cross_divs(features, indices, rhos,
-                                   mask.view(np.uint8), funcs, Ks,
-                                   specs, n_meta_only,
-                                   progressbar, cores, min_dist)
-
-    # fill in the meta values
-    for meta, info in iteritems(metas):
-        required = [outputs[:, :, [i], :] for i in info.deps]
-        r = meta(rhos, required)
-        if r.ndim == 3:
-            r = r[:, :, np.newaxis, :]
-        outputs[:, :, info.pos, :] = r
-
-    if n_meta_only:
-        outputs = np.ascontiguousarray(outputs[:, :, :-n_meta_only, :])
-
-    if real_mask is not mask:
-        outputs[~mask] = np.nan
-
-    return outputs
+    est = _DivEstimator(features=features, mask=mask, specs=specs, Ks=Ks,
+                        cores=cores, algorithm=algorithm, min_dist=min_dist,
+                        status_fn=status_fn, progressbar=progressbar,
+                        **flann_args)
+    return est.full_est()
 
 
 ################################################################################
