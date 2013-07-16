@@ -1009,9 +1009,8 @@ class Features(object):
         '''
         Save into a directory of Hadoop typedbytes file.
 
-        They're split to have about 500MB of data each (ignoring the extras),
-        named like "data_0_to_349.tb", "data_350_to_581.tb", etc, where the two
-        numbers are the first and last index contained.
+        They're split to have about 500MB of data each, named like "data_0.tb",
+        "data_350.tb", etc, where the number is the first index contained.
             TODO: allow customizing this, giving explicit splits, ...
 
         The keys in the files are "name/category".
@@ -1022,10 +1021,6 @@ class Features(object):
                         Note that any scalars which have an exact representation
                         in the typedbytes format will be written as such; others
                         will be pickled.
-
-        strings, and the values are a mapping. The mapping contains a key
-        "feats" with values a numpy array (defined in sdm.typedbytes_utils);
-        any extras are also included in the map.
 
         Also saves any extra attributes passed as keyword arguments in
             path/attrs.pkl
@@ -1040,29 +1035,29 @@ class Features(object):
         with open(os.path.join(path, 'attrs.pkl'), 'wb') as f:
             pickle.dump(attrs, f)
 
-        # assign the bags into files
-        running_bytes = self._boundaries * (self.dtype.itemsize * self.dim)
+        def output_file(idx):
+            f = open(os.path.join(path, 'data_{}.tb'.format(idx)), 'wb')
+            out = tbu.tb.PairedOutput(f)
+            tbu.register_write(out)
+            return out
+
         amt_per_file = 500 * 2**20
-        starting_bags = np.diff(running_bytes // amt_per_file).astype(bool)
-        starting_bags[0] = True
-        starting_bags = np.hstack([starting_bags, True])
-        bag_boundaries, = starting_bags.nonzero()
-
         skip_set = frozenset(['category', 'name'])
-        for start, end in izip(bag_boundaries[:-1], bag_boundaries[1:]):
-            fname = 'data_{}_to_{}.tb'.format(start, end - 1)
-            with open(os.path.join(path, fname), 'wb') as f:
-                out = tbu.tb.PairedOutput(f)
-                tbu.register_np_writes(out)
-                tbu.register_write_ndarray(out)
 
-                for idx in range(start, end):
-                    bag = self[idx]
-                    out.write((
-                        "{}/{}".format(bag['category'], bag['name']),
-                        dict((k, v) for k, v in izip(bag.dtype.names, bag)
-                             if k not in skip_set)
-                    ))
+        out = output_file(0)
+        try:
+            for idx, bag in enumerate(self):
+                if out.file.tell() >= amt_per_file:
+                    out.close()
+                    out = output_file(idx)
+
+                out.write((
+                    "{}/{}".format(bag['category'], bag['name']),
+                    dict((k, v) for k, v in izip(bag.dtype.names, bag)
+                         if k not in skip_set)
+                ))
+        finally:
+            out.close()
 
     @classmethod
     def _proc_from_typedbytes(cls, val, features_dtype=None):
