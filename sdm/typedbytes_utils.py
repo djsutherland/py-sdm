@@ -97,6 +97,7 @@ def register_np_writes(output_object):
     r(np.int64, 'write_long')
     r(np.float32, 'write_float')
     r(np.float64, 'write_double')
+    r(np.string_, 'write_string')
 
 
 ################################################################################
