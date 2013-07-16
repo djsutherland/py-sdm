@@ -148,7 +148,7 @@ def flann_from_typedbytes(inp, tempdir=_not_passed):
 
     register_read_ndarray(inp)
     length = inp.read_int()
-    pts = inp.read()
+    pts = inp._read()
     index_bytes = inp.read_bytestring()
 
     with tempfile.NamedTemporaryFile(dir=tempdir) as f:
