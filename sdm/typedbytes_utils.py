@@ -171,11 +171,13 @@ def flann_to_typedbytes(out, index, tempdir=_not_passed):
 
     npy_size = _npy_size(index.data)
 
-    with tempfile.NamedTemporaryFile(dir=tempdir) as f:
-        index.save_index(f.name)
-        f.seek(0, os.SEEK_END)
-        index_size = f.tell()
-        f.seek(0)
+    # do a little dance with this tempfile to avoid buffering issues
+    with tempfile.NamedTemporaryFile(dir=tempdir, delete=False) as f:
+        tempname = f.name
+
+    try:
+        index.save_index(tempname)
+        index_size = os.path.getsize(tempname)
 
         out.file.write(struct.pack('>B', FLANN_CODE))
         out.file.write(struct.pack('>i',
@@ -185,7 +187,10 @@ def flann_to_typedbytes(out, index, tempdir=_not_passed):
         out.write(index.data)
 
         out.file.write(struct.pack('>i', index_size))
-        copyfileobj(f, out.file)
+        with open(tempname, 'rb') as f:
+            copyfileobj(f, out.file)
+    finally:
+        os.remove(tempname)
 
 def register_write_flann(output_object):
     register_write_ndarray(output_object)
