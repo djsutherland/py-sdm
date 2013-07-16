@@ -37,6 +37,10 @@ class SequenceFileInput(tb.Input):
 
         return key, val
 
+    def reads(self):
+        return iter(self.read, None)
+    __iter__ = reads
+
 
 ################################################################################
 ### Typedbytes handling for numpy arrays.
