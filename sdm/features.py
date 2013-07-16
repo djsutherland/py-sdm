@@ -285,8 +285,9 @@ class Features(object):
 
     def __add__(self, oth):
         if isinstance(oth, Features):
-            common_extras = dict((k, np.vstack((self[k], oth[k])))
-                                 for k in self._extra_names & oth._extra_names)
+            common_extras = dict(
+                    (k, np.hstack((getattr(self, k), getattr(oth, k))))
+                    for k in self._extra_names & oth._extra_names)
             return Features(
                 np.vstack((self._features, oth._features)),
                 n_pts=np.hstack((self._n_pts, oth._n_pts)),
