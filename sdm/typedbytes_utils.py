@@ -34,30 +34,12 @@ def _npy_size(ary):
     return magic_len + header_len + data_len
 
 
-def _file_is_seekable(f):
-    try:
-        f.tell()
-    except IOError as e:
-        if e.errno == errno.ESPIPE and e.strerror == 'Illegal seek':
-            return False
-        raise
-    else:
-        return True
-
-def check_seekable(the_obj):
-    if not hasattr(the_obj, '_file_seekable'):
-        the_obj._file_seekable = _file_is_seekable(the_obj.file)
-
-
-def read_ndarray(f, file_is_seekable=None):
+def read_ndarray(f):
     length, = struct.unpack('>i', f.read(4))
     if length < 0:
         raise ValueError(r"bad length value {}".format(length))
 
-    if file_is_seekable is None:
-        file_is_seekable = _file_is_seekable(f)
-
-    if file_is_seekable:
+    if f.seekable():
         return np.load(f)
     else:
         with closing(StringIO()) as sio:
@@ -66,11 +48,9 @@ def read_ndarray(f, file_is_seekable=None):
             return np.load(sio)
 
 def _read_ndarray_in(self):
-    seekable = getattr(self, '_file_seekable', None)
-    return read_ndarray(self.file, file_is_seekable=seekable)
+    return read_ndarray(self.file)
 
 def register_read_ndarray(input_object):
-    check_seekable(input_object)
     input_object.register(NUMPY_CODE, _read_ndarray_in)
 
 
@@ -97,6 +77,7 @@ def register_np_writes(output_object):
     r(np.int64, 'write_long')
     r(np.float32, 'write_float')
     r(np.float64, 'write_double')
+    r(np.string_, 'write_string')
 
 
 ################################################################################
