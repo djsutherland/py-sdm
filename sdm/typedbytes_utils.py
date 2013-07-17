@@ -71,6 +71,8 @@ def _file_is_seekable(f):
         if e.errno == errno.ESPIPE and e.strerror == 'Illegal seek':
             return False
         raise
+    except AttributeError:
+        return False
     else:
         return True
 
