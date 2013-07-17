@@ -233,7 +233,7 @@ def flann_to_typedbytes(out, index, tempdir=_not_passed):
             (1 + 4 + npy_size) + (4 + index_size)))
         # npy code, npy size int, npy, index size, index
 
-        out.write(index.data)
+        out._write(index.data)
 
         out.file.write(struct.pack('>i', index_size))
         with open(tempname, 'rb') as f:
