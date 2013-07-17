@@ -47,6 +47,29 @@ class TypedbytesSequenceFileStreamingInput(tb.Input):
         return iter(self.read, None)
     __iter__ = reads
 
+try:
+    from hadoop.io import InputStream, SequenceFile
+except ImportError:
+    class SequenceFileLikeReader(object):
+        def __init__(self, filelike):
+            from hadoop.io import SequenceFile
+            # ^ fail with a reasonable error message
+else:
+    class FileLikeInputStream(InputStream.FileInputStream):
+        '''
+        hadoop.io.FileInputStream for a filelike object, which *must* be
+        seekable because the interface assumes it.
+        '''
+        def __init__(self, filelike):
+            self._fd = filelike
+            curr_pos = filelike.tell()
+            filelike.seek(0, os.SEEK_END)
+            self._length = filelike.tell()
+            filelike.seek(curr_pos)
+
+    class SequenceFileLikeReader(SequenceFile.Reader):
+        def getStream(self, filelike):
+            return InputStream.DataInputStream(FileLikeInputStream(filelike))
 
 class TypedbytesSequenceFileInput(object):
     '''
@@ -57,14 +80,20 @@ class TypedbytesSequenceFileInput(object):
     '''
 
     def __init__(self, path, start=0, length=0):
-        from hadoop.io import SequenceFile
-        self.reader = SequenceFile.Reader(path)
+        self.reader = SequenceFileLikeReader(path)
+        self._file_seekable = True
+        self.registrations = []
 
     def _get_reader(self, f):
         # ctypedbytes segfaults on these pseudo-file-likes
         inp = typedbytes.Input(f)
         register_read(inp)
+        for args, kwargs in self.registrations:
+            inp.register(*args, **kwargs)
         return inp
+
+    def register(self, *args, **kwargs):
+        self.registrations.append((args, kwargs))
 
     def read(self):
         raw_key = self.reader.nextRawKey()
