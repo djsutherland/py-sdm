@@ -65,7 +65,7 @@ else:
         def __init__(self, path, start=0, length=0):
             self.reader = SequenceFile.Reader(path)
 
-        def _get_reader(self, f):
+        def _get_tb_input(self, f):
             inp = typedbytes.Input(f)
             register_read(inp)
             return inp
@@ -76,8 +76,8 @@ else:
                 return None
             raw_val = self.reader.nextRawValue()
 
-            key, = self._get_reader(raw_key).reads()
-            val, = self._get_reader(raw_val).reads()
+            key, = self._get_tb_input(raw_key).reads()
+            val, = self._get_tb_input(raw_val).reads()
             return key, val
 
         def reads(self):
