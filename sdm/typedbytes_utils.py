@@ -5,13 +5,13 @@ import os
 from shutil import copyfileobj
 import struct
 import tempfile
-import warnings
 
 import numpy as np
 import numpy.lib.format as npy
 
 import cyflann
 
+import typedbytes
 try:
     import ctypedbytes as tb
 except:
@@ -47,42 +47,38 @@ class TypedbytesSequenceFileStreamingInput(tb.Input):
         return iter(self.read, None)
     __iter__ = reads
 
-try:
-    from hadoop.io import SequenceFile
-except ImportError as e:
-    msg = """Couldn't import python-hadoop: {}
-If you want to read raw sequence files, install it from
-https://github.com/matteobertozzi/Hadoop/tree/master/python-hadoop"""
-    warnings.warn(msg)
-else:
-    import typedbytes  # ctypedbytes segfaults on these pseudo-file-likes
 
-    class TypedbytesSequenceFileInput(object):
-        '''
-        Reads a raw hadoop SequenceFile containing typedbytes keys and values.
-        '''
+class TypedbytesSequenceFileInput(object):
+    '''
+    Reads a raw hadoop SequenceFile containing typedbytes keys and values.
 
-        def __init__(self, path, start=0, length=0):
-            self.reader = SequenceFile.Reader(path)
+    Requires the python-hadoop library:
+        https://github.com/matteobertozzi/Hadoop/tree/master/python-hadoop
+    '''
 
-        def _get_reader(self, f):
-            inp = typedbytes.Input(f)
-            register_read(inp)
-            return inp
+    def __init__(self, path, start=0, length=0):
+        from hadoop.io import SequenceFile
+        self.reader = SequenceFile.Reader(path)
 
-        def read(self):
-            raw_key = self.reader.nextRawKey()
-            if raw_key is None:
-                return None
-            raw_val = self.reader.nextRawValue()
+    def _get_reader(self, f):
+        # ctypedbytes segfaults on these pseudo-file-likes
+        inp = typedbytes.Input(f)
+        register_read(inp)
+        return inp
 
-            key, = self._get_reader(raw_key).reads()
-            val, = self._get_reader(raw_val).reads()
-            return key, val
+    def read(self):
+        raw_key = self.reader.nextRawKey()
+        if raw_key is None:
+            return None
+        raw_val = self.reader.nextRawValue()
 
-        def reads(self):
-            return iter(self.read, None)
-        __iter__ = reads
+        key, = self._get_reader(raw_key).reads()
+        val, = self._get_reader(raw_val).reads()
+        return key, val
+
+    def reads(self):
+        return iter(self.read, None)
+    __iter__ = reads
 
 
 ################################################################################
