@@ -79,8 +79,8 @@ class TypedbytesSequenceFileInput(object):
         https://github.com/matteobertozzi/Hadoop/tree/master/python-hadoop
     '''
 
-    def __init__(self, path, start=0, length=0):
-        self.reader = SequenceFileLikeReader(path)
+    def __init__(self, file_obj):
+        self.reader = SequenceFileLikeReader(file_obj)
         self._file_seekable = True
         self.registrations = []
 
