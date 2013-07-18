@@ -45,7 +45,8 @@ Install cyflann (e.g. `pip install cyflann`), and then try again."""
 
 ext_modules = [
     Extension("sdm.{}".format(name), [source_file],
-              extra_compile_args=['-fopenmp'], extra_link_args=['-fopenmp'])
+              extra_compile_args=['-fopenmp'],
+              extra_link_args=['-fopenmp', '-lflann'])
 ]
 
 
