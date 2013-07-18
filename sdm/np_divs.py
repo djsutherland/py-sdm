@@ -38,9 +38,10 @@ from ._np_divs import _linear, kl, _alpha_div
 
 try:
     from ._np_divs_cy import _estimate_cross_divs
-except ImportError:
-    warnings.warn("Cythonned divergence estimator not available, using the "
-                  "slow pure-Python version.", ImportWarning)
+except ImportError as e:
+    msg = ("Cythonned divergence estimator not available, using the slow "
+           "pure-Python version:\n{}".format(e))
+    warnings.warn(msg)
     from ._np_divs import _estimate_cross_divs
 
 ################################################################################
