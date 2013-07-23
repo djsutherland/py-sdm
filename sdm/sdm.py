@@ -10,13 +10,11 @@ from __future__ import division, print_function
 
 from collections import Counter
 from functools import partial, reduce
-import itertools
 from operator import mul
 import os
 import random
 import warnings
 
-import h5py
 import numpy as np
 import scipy.io
 import scipy.linalg
@@ -286,6 +284,7 @@ def split_km(km, train_idx, test_idx):
 
 def get_divs_cache(bags, div_func, K, cache_filename=None, min_dist=None,
                    n_proc=None, status_fn=True, progressbar=None):
+    import h5py
     # TODO: support loading subsets of the file, or reordered, based on names
     # TODO: support flann arguments
 
@@ -1697,6 +1696,7 @@ def opts_dict(args):
 
 
 def do_predict(args):
+    import h5py
     status_fn = get_status_fn(True)
 
     status_fn('Reading inputs...')
@@ -1739,6 +1739,7 @@ def do_predict(args):
 
 
 def do_cv(args):
+    import h5py
     status_fn = get_status_fn(True)
 
     classifier = args.svm_mode in ('SVC', 'NuSVC')
