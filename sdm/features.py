@@ -444,7 +444,7 @@ class Features(object):
 
         if inplace:
             self._n_pts = np.asarray(n_pts)
-            self._boundaries = np.hstack([0], np.cumsum(self._n_pts))
+            self._boundaries = np.hstack([[0], np.cumsum(self._n_pts)])
             self._features = bags
             self._refresh_features()
         else:
