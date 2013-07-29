@@ -141,6 +141,7 @@ def progress(counter=True, **kwargs):
     try:
         widgets = kwargs.pop('widgets')
     except KeyError:
+        # TODO: make work when maxval is unknown
         if counter:
             class CommaProgress(pb.Widget):
                 def update(self, pbar):
