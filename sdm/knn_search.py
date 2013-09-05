@@ -55,7 +55,7 @@ def knn_search(K, x, y=None, min_dist=None, index=None, algorithm=None,
         if algorithm is None:
             algorithm = pick_flann_algorithm(dim)
         index = FLANNIndex(algorithm=algorithm, **kwargs)
-        index.build_index(y)
+        index.build_index(x if y is None else x)
 
     idx, dist = index.nn_index(x, K)
 
