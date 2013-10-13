@@ -54,7 +54,7 @@ Other notes:
 
 * `FLANN <http://people.cs.ubc.ca/~mariusm/index.php/FLANN/FLANN>`_
   is used for fast nearest-neighbor searches,
-  through the `cyflann <https://github.com/dougalsutherland/cyflann`_ library.
+  through the `cyflann <https://github.com/dougalsutherland/cyflann>`_ library.
   *NOTE*: this version of py-sdm *REQUIRES* you to either use a development version of
   FLANN compiled without OpenMP support (which may slow some things down), or my
   `conditional-openmp <https://github.com/dougalsutherland/flann/tree/conditional-openmp>`_
@@ -65,7 +65,7 @@ Other notes:
   Also, the currently-released version of flann, 1.8.4,
   usually doesn't work with cyflann out of the box
   because of a problem with its pkg-config files
-  ([fixed six months ago](https://github.com/mariusmuja/flann/commit/0fba4ec67ccf367a55c27388226ba2675396933f) but not yet in a release).
+  (`fixed six months ago <https://github.com/mariusmuja/flann/commit/0fba4ec67ccf367a55c27388226ba2675396933f>`_ but not yet in a release).
 
 * `vlfeat-ctypes <https://github.com/dougalsutherland/vlfeat-ctypes>`_, a
   minimal ctypes interface to the `vlfeat <http://www.vlfeat.org>`_ computer
