@@ -53,15 +53,19 @@ Other notes:
   ``pip install -U``.
 
 * `FLANN <http://people.cs.ubc.ca/~mariusm/index.php/FLANN/FLANN>`_
-  is used for fast nearest-neighbor searches.
-  *NOTE*: this version of py-sdm *REQUIRES* you to either use a version of
-  FLANN compiled without OpenMP support, or my
+  is used for fast nearest-neighbor searches,
+  through the `cyflann <https://github.com/dougalsutherland/cyflann`_ library.
+  *NOTE*: this version of py-sdm *REQUIRES* you to either use a development version of
+  FLANN compiled without OpenMP support (which may slow some things down), or my
   `conditional-openmp <https://github.com/dougalsutherland/flann/tree/conditional-openmp>`_
-  version. This is because we parallelize calls to FLANN through OpenMP, and
-  if FLANN is also trying to do that it'll segfault.
-  On OSX you get this from Homebrew/science with "brew install flann", since
-  the default clang compiler doesn't support OpenMP. Otherwise, make sure you
-  install from my fork above.
+  version.
+  The OpenMP problem is because we parallelize calls to FLANN through OpenMP,
+  and if FLANN is also trying to do that it'll segfault
+  (even if it only asks for one thread).
+  Also, the currently-released version of flann, 1.8.4,
+  usually doesn't work with cyflann out of the box
+  because of a problem with its pkg-config files
+  ([fixed six months ago](https://github.com/mariusmuja/flann/commit/0fba4ec67ccf367a55c27388226ba2675396933f) but not yet in a release).
 
 * `vlfeat-ctypes <https://github.com/dougalsutherland/vlfeat-ctypes>`_, a
   minimal ctypes interface to the `vlfeat <http://www.vlfeat.org>`_ computer
