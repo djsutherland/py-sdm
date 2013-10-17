@@ -55,7 +55,10 @@ setup(
     version='0.1.0dev',
     author='Dougal J. Sutherland',
     author_email='dougal@gmail.com',
-    packages=['sdm'],
+    packages=['sdm', 'sdm.tests'],
+    package_data={
+        'sdm.tests': ['data/*'],
+    },
     url='https://github.com/dougalsutherland/py-sdm',
     description='An implementation of nonparametric divergence estimators and '
                 'their use in SVMs.',
