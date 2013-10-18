@@ -85,6 +85,7 @@ setup(
             'sdm = sdm.sdm:main',
         ],
     },
+    zip_safe=False,
     **setup_args
 )
 # TODO: use "extras" to make some of the dependencies optional
