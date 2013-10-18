@@ -34,11 +34,12 @@ except ImportError:
 else:
     try:
         import cyflann
-    except ImportError:
+    except ImportError as e:
         msg = \
 """The Cython extension requires cyflann to be installed before compilation.
-Install cyflann (e.g. `pip install cyflann`), and then try again."""
-        raise ImportError(msg)
+Install cyflann (e.g. `pip install cyflann`), and then try again:
+{}"""
+        raise ImportError(msg.format(e))
 
     source_file = "sdm/{}.pyx".format(name)
     setup_args['cmdclass'] = {'build_ext': build_ext}
