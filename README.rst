@@ -48,7 +48,7 @@ manager (part of Anaconda). There are currently only builds on 64-bit OSX and
 
     # add my binstar.org channel
     conda config --add channels defaults
-    conda config --add channels http://binstar.org/dougal
+    conda config --add channels http://conda.binstar.org/dougal
 
     # install
     conda install py-sdm
