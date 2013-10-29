@@ -44,14 +44,9 @@ libraries like hdf5. If so, ``conda install accelerate`` install them all.
 
 It's also easiest to install py-sdm through binaries with the conda package
 manager (part of Anaconda). There are currently only builds on 64-bit OSX and
-64-bit Linux. To do so::
+64-bit Linux, with Python 2.7. To do so::
 
-    # add my binstar.org channel
-    conda config --add channels defaults
-    conda config --add channels http://conda.binstar.org/dougal
-
-    # install
-    conda install py-sdm
+    conda install -c http://conda.binstar.org/dougal py-sdm
 
 If you don't want to use binaries, there are various complications. See
 ``INSTALL.rst`` for details.
