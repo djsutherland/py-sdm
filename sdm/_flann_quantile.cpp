@@ -61,6 +61,10 @@ int __flann_quantile_search(flann_index_t index_ptr,
     typedef typename Distance::ElementType ElementType;
     typedef typename Distance::ResultType DistanceType;
 
+    if (neighborcount == 0 && weightcount == 0) {
+        return 0;
+    }
+
     try {
         init_flann_parameters(flann_params);
         if (index_ptr==NULL) {
@@ -84,17 +88,26 @@ int __flann_quantile_search(flann_index_t index_ptr,
 
         SearchParams search_params = create_search_params(flann_params);
 
-        WeightType max_weight_target = weight_targets[weight_idx[weightcount - 1]];
         int min_neighbors = neighborcount == 0 ? 0 :
                 *std::max_element(n_neighbors, n_neighbors + neighborcount);
 
         // do the actual search
-        int count = index->quantileSearch(
-                Matrix<ElementType>(testset, tcount, index->veclen()),
-                weights_v, indices_v, dists_v,
-                max_weight_target, min_neighbors, false, search_params);
-        // always want the one-past-weight result to simplify copying-out code
-        // below.
+        int count;
+        if (weightcount > 0) {
+            WeightType max_weight_target =
+                    weight_targets[weight_idx[weightcount - 1]];
+            count = index->quantileSearch(
+                    Matrix<ElementType>(testset, tcount, index->veclen()),
+                    weights_v, indices_v, dists_v,
+                    max_weight_target, min_neighbors, false, search_params);
+            // always want the one-past-weight result to simplify copying-out code
+            // TODO: fix count if we swapped that?
+        } else {
+            index->knnSearch(
+                    Matrix<ElementType>(testset, tcount, index->veclen()),
+                    indices_v, dists_v, min_neighbors, search_params);
+            count = min_neighbors * tcount;
+        }
 
         // copy results out
         Matrix<int> m_indices(indices, tcount, weightcount + neighborcount);

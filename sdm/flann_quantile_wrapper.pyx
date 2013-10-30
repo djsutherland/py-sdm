@@ -47,8 +47,6 @@ def quantile_search(FLANNIndex index, double[:] weights, qpts,
     if weight_targets.ndim != 1:
         msg = "weight_targets should be 1d, is {}d"
         raise TypeError(msg.format(weight_targets.ndim))
-    if weight_targets.shape[0] == 0:
-        raise TypeError("need at least one weight_target")
 
     cdef total_weight = 0, max_weight = 0
     for i in range(weights.shape[0]):
