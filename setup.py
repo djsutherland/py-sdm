@@ -14,40 +14,43 @@ from distutils.extension import Extension
 
 setup_args = {}
 
-# Handle the _np_divs_cy cython extension. It has enough specific handling that
-# it's not worth breaking out into a function.
-name = "_np_divs_cy"
-try:
-    from Cython.Distutils import build_ext
-except ImportError:
-    import os
+def cyflann_ext(name):
     try:
-        pyx_time = os.path.getmtime('sdm/{}.pyx'.format(name))
-        c_time = os.path.getmtime('sdm/{}.c'.format(name))
-        if pyx_time >= c_time:
-            raise ValueError
-    except (OSError, ValueError):
-        msg = "{} extension needs to be compiled but cython isn't available"
-        raise ImportError(msg.format(name))
+        from Cython.Distutils import build_ext
+    except ImportError:
+        import os
+        try:
+            pyx_time = os.path.getmtime('sdm/{}.pyx'.format(name))
+            c_time = os.path.getmtime('sdm/{}.c'.format(name))
+            if pyx_time >= c_time:
+                raise ValueError
+        except (OSError, ValueError):
+            msg = "{} extension needs to be compiled but cython isn't available"
+            raise ImportError(msg.format(name))
+        else:
+            return "sdm/{}.c".format(name)
     else:
-        source_file = "sdm/{}.c".format(name)
-else:
-    try:
-        import cyflann
-    except ImportError as e:
-        msg = \
+        try:
+            import cyflann
+        except ImportError as e:
+            msg = \
 """The Cython extension requires cyflann to be installed before compilation.
 Install cyflann (e.g. `pip install cyflann`), and then try again:
 {}"""
-        raise ImportError(msg.format(e))
+            raise ImportError(msg.format(e))
 
-    source_file = "sdm/{}.pyx".format(name)
-    setup_args['cmdclass'] = {'build_ext': build_ext}
+        setup_args['cmdclass'] = {'build_ext': build_ext}
+        return "sdm/{}.pyx".format(name)
 
+# TODO: fix flann include paths, etc
 ext_modules = [
-    Extension("sdm.{}".format(name), [source_file],
+    Extension("sdm.flann_quantile_wrapper",
+              [cyflann_ext("flann_quantile_wrapper"), "sdm/_flann_quantile.cpp"],
+              extra_link_args=['-lflann']),
+    Extension("sdm._np_divs_cy",
+              [cyflann_ext("_np_divs_cy")],
               extra_compile_args=['-fopenmp'],
-              extra_link_args=['-fopenmp', '-lflann'])
+              extra_link_args=['-fopenmp', '-lflann']),
 ]
 
 
