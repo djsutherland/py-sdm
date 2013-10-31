@@ -110,7 +110,7 @@ def alpha_div(alphas, Ks, dim, num_q, rhos, nus):
 
     Returns divergence estimates with shape (num_alphas, num_Ks).
     '''
-    return _get_alpha_div(alphas, Ks)(num_q, dim, rhos, nus)
+    return _get_alpha_div(alphas, Ks, dim)(num_q, rhos, nus)
 
 def _get_alpha_div(alphas, Ks, dim):
     alphas = np.reshape(alphas, (-1, 1))
