@@ -58,13 +58,51 @@ def _alpha_div(omas, Bs, dim, num_q, rhos, nus):
     return estimates
 
 
+def _jensen_shannon_core(Ks, dim, min_i, digamma_vals, num_q, rhos, nus):
+    # We need to calculate the mean over points in X of
+    # d * log radius of largest ball with no more than M/(n+m-1) weight
+    #         where X points have weight 1 / (2 (n-1))
+    #           and Y points have weight 1 / (2 m)
+    # - digamma(# of neighbors in that ball)
+
+    # NOTE: this is a stupidly slow implementation. the cython one should
+    #       be much better.
+    num_p = rhos.shape[0]
+
+    p_wt = 1 / (2 * (num_p - 1))
+    q_wt = 1 / (2 * num_q)
+
+    alphas = Ks / (num_p + num_q - 1)
+
+    est = np.zeros(Ks.size)
+
+    max_k = rhos.shape[1]
+    combo = np.empty(max_k * 2, dtype=[('dist', np.float32), ('weight', float)])
+    # could vectorize this loop if searchsorted worked axis-wise
+    for rho, nu, in izip(rhos, nus):
+        combo['dist'][:max_k] = rho
+        combo['dist'][max_k:] = nu
+        combo['weight'][:max_k] = p_wt
+        combo['weight'][max_k:] = q_wt
+        combo.sort()
+        quantiles = np.cumsum(combo['weight'])
+
+        i = quantiles.searchsorted(alphas, side='right')  # number pts in ball
+        assert i.min() >= min_i
+
+        est += np.log(combo['dist'][i - 1]) - digamma_vals[i - min_i]
+    return est / num_p
+
+
 ################################################################################
 
 def _estimate_cross_divs(features, indices, rhos,
-                         mask, funcs, Ks, specs, n_meta_only,
+                         mask, funcs, Ks, max_K, save_all_Ks,
+                         specs, n_meta_only,
                          progressbar, cores, min_dist):
     n_bags = len(features)
-    max_K = np.max(Ks)
+    K_indices = Ks - 1
+    which_Ks = slice(None, None) if save_all_Ks else K_indices
 
     outputs = np.empty((n_bags, n_bags, len(specs) + n_meta_only, len(Ks)),
                        dtype=np.float32)
@@ -81,6 +119,19 @@ def _estimate_cross_divs(features, indices, rhos,
             outputs[all_bags, all_bags, pos, :] = self_val
         else:
             any_run_self = True
+
+    # Keep track of whether each function needs rho_sub or just rho
+    # TODO: this could be faster....
+    if save_all_Ks:
+        _needs_sub = {}
+        def needs_sub(func):
+            r = _needs_sub.get(func, None)
+            if r is None:
+                _needs_sub[func] = r = not getattr(func, 'needs_all_ks', False)
+            return r
+    else:
+        def needs_sub(func):
+            return False
 
     indices_loop = progress()(indices) if progressbar else indices
     for i, index in enumerate(indices_loop):
@@ -118,7 +169,7 @@ def _estimate_cross_divs(features, indices, rhos,
 
             # find the nearest neighbors in features[i] from each of these bags
             neighbors = np.maximum(min_dist,
-                    np.sqrt(index.nn_index(feats, max_K)[1][:, Ks - 1]))
+                    np.sqrt(index.nn_index(feats, max_K)[1][:, which_Ks]))
 
             for j_sub, j in enumerate(lazy_range(start, end)):
                 rho = rhos[j]
@@ -127,12 +178,24 @@ def _estimate_cross_divs(features, indices, rhos,
                 nu_end = boundaries[j_sub + 1] - base
                 nu = neighbors[nu_start:nu_end]
 
+                if save_all_Ks:
+                    rho_sub = rho[:, K_indices]
+                    nu_sub = nu[:, K_indices]
+
                 if i == j:
                     for func, info in iteritems(funcs):
+                        o = (j, i, info.pos, slice(None))
                         if getattr(func, 'self_value', None) is None:
-                            outputs[j, i, info.pos, :] = func(num_q, rho, rho)
                             # otherwise, already set it above
+                            if needs_sub(func):
+                                outputs[o] = func(num_q, rho_sub, rho_sub)
+                            else:
+                                outputs[o] = func(num_q, rho, rho)
                 else:
                     for func, info in iteritems(funcs):
-                        outputs[j, i, info.pos, :] = func(num_q, rho, nu)
+                        o = (j, i, info.pos, slice(None))
+                        if needs_sub(func):
+                            outputs[o] = func(num_q, rho_sub, nu_sub)
+                        else:
+                            outputs[o] = func(num_q, rho, nu)
     return outputs

@@ -150,6 +150,34 @@ def test_divs():
                 yield test
 
 
+def test_with_and_without_js():
+    dir = os.path.join(os.path.dirname(__file__), 'data')
+    name = 'gaussian-2d-mean0-std1,2'
+    feats = Features.load_from_hdf5(os.path.join(dir, name + '.h5'))
+
+    specs = ['hellinger']
+    Ks = [3, 5]
+
+    with h5py.File(os.path.join(dir, name + '.divs.h5'), 'r') as f:
+        expected = load_divs(f, specs, Ks)
+        min_dist = f.attrs['min_dist']
+
+    est = partial(estimate_divs, feats, Ks=Ks, min_dist=min_dist,
+                  status_fn=None)
+
+    with capture_output(True, True, merge=False):
+        ds = est(specs=specs + ['js'])
+        oth_with = ds[:, :, :-1, :]
+        js_with = ds[:, :, -1, :]
+
+        js_without = est(specs=['js'])[:, :, 0, :]
+
+    assert_close(oth_with, expected, atol=5e-5,
+                 msg="others ({}) broke with JS".format(', '.join(specs)))
+    assert_close(js_with, js_without, atol=5e-5,
+                 msg="JS different with/without others")
+
+
 ################################################################################
 
 if __name__ == '__main__':

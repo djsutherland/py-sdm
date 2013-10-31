@@ -22,7 +22,7 @@ import warnings
 
 import numpy as np
 import scipy.io
-from scipy.special import gamma, gammaln
+from scipy.special import gamma, gammaln, psi
 
 from cyflann import FLANNIndex
 
@@ -34,7 +34,7 @@ from .utils import (eps, izip, lazy_range, strict_map, raw_input, identity,
                     iteritems, itervalues, get_status_fn)
 from .mp_utils import progress
 from .knn_search import default_min_dist, pick_flann_algorithm
-from ._np_divs import _linear, kl, _alpha_div
+from ._np_divs import _linear, kl, _alpha_div, _jensen_shannon_core
 
 try:
     from ._np_divs_cy import _estimate_cross_divs
@@ -43,6 +43,7 @@ except ImportError as e:
            "pure-Python version:\n{}".format(e))
     warnings.warn(msg)
     from ._np_divs import _estimate_cross_divs
+
 
 ################################################################################
 ### Estimators of various divergences based on nearest-neighbor distances.
@@ -58,15 +59,29 @@ except ImportError as e:
 #               default), in which case the function is still called with
 #               rhos = nus.
 #
+#   chooser_fn: a function that gets alphas (if needs_alpha), Ks, dim, and ns
+#               (the array of bag sizes) and returns a partial() of a "core"
+#               function, with some things precomputed. If not present, just
+#               does partial(fn, [alphas,] Ks, dim).
+#
+#   needs_all_ks: whether this function needs *all* the neighbor distances up
+#                 to the max K value, rather than just the values of K that are
+#                 actually used. Default false.
+#
+#   chooser_fn.returns_ks: whether the chooser_fn returns the max value of K
+#                          needed. This allows an estimator function to require
+#                          a higher value of K than requested by the user. Only
+#                          if needs_all_ks; default false.
+#
 # Arguments:
 #
 #   alphas (if needs_alpha; array-like, scalar or 1d): the alpha values to use
 #
 #   Ks (array-like, scalar or 1d): the K values used
 #
-#   num_q (scalar): the number of points in the sample from q
-#
 #   dim (scalar): the dimension of the feature space
+#
+#   num_q (scalar): the number of points in the sample from q
 #
 #   rhos: an array of within-bag nearest neighbor distances for a sample from p.
 #         rhos[i, j] should be the distance from the ith sample from p to its
@@ -85,7 +100,7 @@ def linear(Ks, dim, num_q, rhos, nus):
     '''
     return _get_linear(Ks, dim)(num_q, rhos, nus)
 
-def _get_linear(Ks, dim):
+def _get_linear(Ks, dim, ns=None):
     # Estimated with alpha=0, beta=1:
     #   B_{k,d,0,1} = (k - 1) / pi^(dim/2) * gamma(dim/2 + 1)
     #   (using gamma(k) / gamma(k - 1) = k - 1)
@@ -112,7 +127,7 @@ def alpha_div(alphas, Ks, dim, num_q, rhos, nus):
     '''
     return _get_alpha_div(alphas, Ks, dim)(num_q, rhos, nus)
 
-def _get_alpha_div(alphas, Ks, dim):
+def _get_alpha_div(alphas, Ks, dim, ns=None):
     alphas = np.reshape(alphas, (-1, 1))
     Ks = np.reshape(Ks, (1, -1))
 
@@ -129,6 +144,85 @@ def _get_alpha_div(alphas, Ks, dim):
 alpha_div.self_value = 1
 alpha_div.needs_alpha = True
 alpha_div.chooser_fn = _get_alpha_div
+
+
+def jensen_shannon_core(Ks, dim, num_q, rhos, nus):
+    r'''
+    Estimate the Shannon entropy of an equally-weighted mixture of the two
+    distributions based on nearest-neighbor distances, according to a special
+    case of the estimator in
+
+        Hideitsu Hino and Noboru Murata (2013).
+        Information estimators for weighted observations. Neural Networks.
+        http://linkinghub.elsevier.com/retrieve/pii/S0893608013001676
+
+    Here we assign weights such that points from each dataset are all equally
+    weighted, but the two datasets have equal total weights (of 1/2). We also
+    use the version in which M = n \alpha is specified; we use the values of K
+    for that here, because when the datasets are equally-sized it's basically
+    the same thing.
+
+    The estimator works out to:
+        log volume of the unit ball - log M + log (n + m - 1) + digamma(M)
+        + 1/2 mean_X( d * log radius of largest ball
+                                with no more than M/(n+m-1) weight
+                                where X points have weight 1 / (2 (n - 1))
+                                  and Y points have weight 1 / (2 m)
+                      - digamma(# of neighbors in that ball))
+        + 1/2 mean_Y( d * log radius of largest ball
+                                with no more than M/(n+m-1) weight
+                                where X points have weight 1 / (2 n)
+                                  and Y points have weight 1 / (2 (m - 1))
+                      - digamma(# of neighbors in that ball))
+
+    This function returns only that mean_X (when called in one direction)
+    or the mean_Y (in the other). The rest of it is added on in the meta
+    function jensen_shannon.
+    '''
+    ns = np.array([rhos.shape[0], num_q])
+    return _get_jensen_shannon_core(Ks, dim, ns)[0](num_q, rhos, nus)
+
+def _get_jensen_shannon_core(Ks, dim, ns):
+    # precompute the possible digamma(i) values
+    # the max/min possible values for i are the ceils/floors of:
+    #   2 n M / (n + m - 1)
+    #   2 (n-1) M / (n + m - 1) + 1
+    # for any valid value of n, m.
+
+    min_n = np.min(ns)
+    max_n = np.max(ns)
+
+    min_K = np.min(Ks)
+    max_K = np.max(Ks)
+
+    # TODO: could probably math this out a bit more.
+    # TODO: are these bounds wrong?????
+    i_bounds = [np.inf, -np.inf]
+    def add_i(i):
+        if i < i_bounds[0]:
+            i_bounds[0] = i
+        if i > i_bounds[1]:
+            i_bounds[1] = i
+    for n in [max_n, min_n]:
+        for m in [max_n, min_n]:
+            nm1 = n + m - 1
+            for M in [max_K, min_K]:
+                add_i(2 * n * M / nm1)
+                add_i(2 * (n - 1) * M / nm1 + 1)
+    min_i = int(np.floor(i_bounds[0])) - 1
+    if min_i <= 0:
+        raise ValueError("have i = 0 possible; K is too small...")
+    digamma_vals = psi(np.arange(min_i, int(np.ceil(i_bounds[1]) + 2)))
+
+    return partial(_jensen_shannon_core, Ks, dim, min_i, digamma_vals), max_K
+
+jensen_shannon_core.needs_alpha = False
+jensen_shannon_core.chooser_fn = _get_jensen_shannon_core
+jensen_shannon_core.needs_all_ks = True
+jensen_shannon_core.chooser_fn.returns_ks = True
+jensen_shannon_core.self_value = np.nan
+# Obviously, the self_value should be the entropy estimate. But since we'll
+# just subtract that later, don't bother computing it.
 
 
 ################################################################################
@@ -310,6 +404,43 @@ def quadratic(Ks, dim, rhos, required=None):
     return Bs / (N - 1) * np.mean(rhos ** (-dim), axis=0)
 
 
+def jensen_shannon(Ks, dim, rhos, required):
+    r'''
+    The remainder of the Jensen-Shannon estimator. (See the docstring for
+    jensen_shannon_core.)
+    '''
+    ns = np.array([rho.shape[0] for rho in rhos])
+    n_bags = ns.size
+    cores, = required
+    assert cores.shape == (n_bags, n_bags, 1, Ks.size)
+
+    entropies = np.empty((n_bags, Ks.size), dtype=np.float32)
+    for i, rho in enumerate(rhos):  # TODO parallelize?
+        entropies[i, :] = (
+            np.log(ns[i] - 1) + dim * np.mean(np.log(rho), axis=0))
+        # don't include the log volume of the unit ball or the log(K) factors;
+        # they cancel out with the same terms below
+    # TODO: our definitions of M here are (very) slightly inconsistent, I think
+
+    est = cores
+    est += cores.transpose(1, 0, 2, 3)
+    est -= entropies.reshape(n_bags, 1, 1, Ks.size)
+    est -= entropies.reshape(1, n_bags, 1, Ks.size)
+    est /= 2
+    est += psi(Ks)[None, None, None, :]
+    est += np.log(-1 + ns[:, np.newaxis] + ns[np.newaxis, :])[:, :, None, None]
+
+    # diagonal is zero
+    all_bags = lazy_range(n_bags)
+    est[all_bags, all_bags, :, :] = 0
+
+    # TODO: enforce 0 <= JS <= ln(2)?
+    return est
+jensen_shannon.needs_alpha = False
+jensen_shannon.needs_results = [
+    MetaRequirement(jensen_shannon_core, alpha=None, needs_transpose=True)]
+
+
 ################################################################################
 
 func_mapping = {
@@ -321,6 +452,9 @@ func_mapping = {
     'renyi': renyi,
     'tsallis': tsallis,
     'l2': l2,
+    'js-core': jensen_shannon_core,
+    'js': jensen_shannon,
+    'jensen-shannon': jensen_shannon,
 }
 
 
@@ -361,7 +495,7 @@ def topological_sort(deps):
 
 _FuncInfo = namedtuple('_FuncInfo', 'alphas pos')
 _MetaFuncInfo = namedtuple('_MetaFuncInfo', 'alphas pos deps')
-def _parse_specs(specs, Ks, dim):
+def _parse_specs(specs, Ks, dim, ns):
     '''
     Set up the different functions we need to call.
 
@@ -544,15 +678,20 @@ def _parse_specs(specs, Ks, dim):
         needs_alpha = getattr(func, 'needs_alpha', False)
 
         new = None
+        args = (Ks, dim)
+        if needs_alpha:
+            args = (info.alphas,) + args
+
         if hasattr(func, 'chooser_fn'):
-            if needs_alpha:
-                new = func.chooser_fn(info.alphas, Ks, dim)
+            args += (ns,)
+            if (getattr(func, 'needs_all_ks', False) and
+                    getattr(func.chooser_fn, 'returns_ks', False)):
+                new, k = func.chooser_fn(*args)
+                new.k_needed = k
             else:
-                new = func.chooser_fn(Ks, dim)
-        elif needs_alpha:
-            new = partial(func, info.alphas, Ks, dim)
+                new = func.chooser_fn(*args)
         else:
-            new = partial(func, Ks, dim)
+            new = partial(func, *args)
 
         for attr in dir(func):
             if not (attr.startswith('__') or attr.startswith('func_')):
@@ -618,8 +757,18 @@ class _DivEstimator(object):
             raise ValueError(msg.format(Ks.max(), features._n_pts.min()))
         self.max_K = Ks.max()
 
-        self.funcs, self.metas, self.n_meta_only = _parse_specs(specs, Ks, dim)
+        self.funcs, self.metas, self.n_meta_only = \
+                _parse_specs(specs, Ks, dim, features._n_pts)
         self.specs = specs
+
+        self.save_all_Ks = False
+        for func in self.funcs:
+            if hasattr(func, 'k_needed'):
+                self.max_K = max(self.max_K, func.k_needed)
+                self.save_all_Ks = True
+                # TODO: could be more efficient about this
+                # eg if we need [1, 2, ..., 5] and 20, no need to save 6 to 19
+                # (but that won't happen with the current estimators)
 
         if cores is None:
             from multiprocessing import cpu_count
@@ -663,13 +812,15 @@ class _DivEstimator(object):
         self.status_fn('\nGetting within-bag distances...')
         # need to throw away the closet neighbor, which will always be self
         # this means that K=1 corresponds to column 1 in the array
-        Ks = self.Ks
+        which_Ks = slice(1, None) if self.save_all_Ks else self.Ks
         max_K = self.max_K
         min_dist = self.min_dist
         maximum = np.maximum
         pbar = progress() if self.progressbar else identity
+
         self.rhos = [
-            maximum(min_dist, np.sqrt(idx.nn_index(bag, max_K + 1)[1][:, Ks]))
+            maximum(min_dist,
+                    np.sqrt(idx.nn_index(bag, max_K + 1)[1][:, which_Ks]))
             for bag, idx in izip(self.features.features, pbar(self.indices))]
         if self.progressbar:
             pbar.finish()
@@ -689,14 +840,19 @@ class _DivEstimator(object):
 
         self.outputs = _estimate_cross_divs(
             self.features, self.indices, self.rhos,
-            mask.view(np.uint8), self.funcs, self.Ks,
+            mask.view(np.uint8), self.funcs,
+            self.Ks, self.max_K, self.save_all_Ks,
             self.specs, self.n_meta_only,
             self.progressbar, self.flann_args['cores'], self.min_dist)
 
     def finalize(self):
+        if self.save_all_Ks:
+            rhos = [rho[:, self.Ks - 1] for rho in self.rhos]
+        else:
+            rhos = self.rhos
         for meta, info in iteritems(self.metas):
             required = [self.outputs[:, :, [i], :] for i in info.deps]
-            r = meta(self.rhos, required)
+            r = meta(rhos, required)
             if r.ndim == 3:
                 r = r[:, :, np.newaxis, :]
             self.outputs[:, :, info.pos, :] = r
@@ -728,7 +884,12 @@ def estimate_divs(features,
                          estimate each div pair. Any not estimated are returned
                          as nan in the output. Default: estimate all.
         specs: a list of strings of divergence specs. TODO: document
-        Ks: a list of K values to estimate
+        Ks: a list of K values to estimate the divergences with.
+            Note that if you're estimating Jensen differences, we use the K
+            values as the Hino-Murata "M" value, which if all the sets are the
+            same size corresponds to the K-nearest-neighbor, but for different-
+            sized sets may involve doing a KNN search for a higher value of K.
+            (In the worst case with very differently-sized sets, it's doubled.)
         cores: number of threads to use for estimating in parallel. None uses
                all cores on the machine.
         algorithm: the FLANN algorithm to use. Defaults to kdtree_single when

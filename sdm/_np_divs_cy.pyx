@@ -97,6 +97,7 @@ cdef void _alpha_div(float[:] omas, float[:, ::1] Bs,
             if results[poses[i], j] < 0.:
                 results[poses[i], j] = 0.
 
+# TODO: jensen_shannon_core
 
 ################################################################################
 
@@ -106,6 +107,7 @@ def _estimate_cross_divs(features, indices, rhos,
                          np.ndarray mask, funcs, integral[:] Ks,
                          specs, int n_meta_only,
                          bint progressbar, int cores, float min_dist):
+    # TODO: update to handle passing all Ks or only some
     cdef int a, i, j, k
     cdef int num_p, num_q, i_start, i_end, j_start, j_end
 
@@ -185,6 +187,8 @@ def _estimate_cross_divs(features, indices, rhos,
             for i in range(alpha_pos.shape[0]):
                 if alpha_pos[i] < 0:
                     alpha_pos[i] += num_funcs
+
+        # TODO: jensen_shannon_core
 
         else:
             msg = "cython code can't handle function {}"
