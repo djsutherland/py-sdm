@@ -26,6 +26,7 @@ from ._np_divs import (_linear as py_linear,
 
 
 @cython.boundscheck(False)
+@cython.wraparound(False)
 @cython.cdivision(True)
 cdef void _linear(float[:] Bs, int dim, int num_q,
                   float[:, ::1] nus,
@@ -45,6 +46,7 @@ cdef void _linear(float[:] Bs, int dim, int num_q,
 
 
 @cython.boundscheck(False)
+@cython.wraparound(False)
 @cython.cdivision(True)
 cdef void kl(int dim, int num_q,
              float[:, ::1] rhos, float[:, ::1] nus,
@@ -66,6 +68,7 @@ cdef void kl(int dim, int num_q,
 
 
 @cython.boundscheck(False)
+@cython.wraparound(False)
 @cython.cdivision(True)
 cdef void _alpha_div(float[:] omas, float[:, ::1] Bs,
                      int dim, int num_q,
@@ -103,6 +106,7 @@ cdef void _alpha_div(float[:] omas, float[:, ::1] Bs,
 
 
 @cython.boundscheck(False)
+@cython.wraparound(False)
 def _estimate_cross_divs(features, indices, rhos,
                          np.ndarray mask, funcs, integral[:] Ks,
                          specs, int n_meta_only,
@@ -318,6 +322,7 @@ def _estimate_cross_divs(features, indices, rhos,
 
 
 @cython.boundscheck(False)
+@cython.wraparound(False)
 cdef bint handle_pbar(object pbar, long * jobs_since_last_tick,
                       uint8_t[:] is_done) nogil except 1:
     jobs_since_last_tick[0] += 1
