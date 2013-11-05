@@ -92,7 +92,8 @@ def _jensen_shannon_core(Ks, dim, min_i, digamma_vals, num_q, rhos, nus):
         assert i.min() >= min_i
 
         est += dim * np.log(combo['dist'][i - 1]) - digamma_vals[i - min_i]
-    return est / num_p
+    est /= num_p
+    return est
 
 
 ################################################################################

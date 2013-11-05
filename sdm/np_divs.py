@@ -774,13 +774,10 @@ class _DivEstimator(object):
                 raise TypeError(msg.format(mask.dtype))
         self.mask = mask
 
-        self.Ks = Ks = np.array(np.squeeze(Ks), ndmin=1)
+        self.Ks = Ks = np.array(np.squeeze(Ks), ndmin=1, dtype=np.int32)
         if Ks.ndim != 1:
             msg = "Ks should be 1-dim, got shape {}"
             raise TypeError(msg.format(Ks.shape))
-        if not is_integer_type(Ks):
-            msg = "Ks should be of integer type, not {}"
-            raise TypeError(msg.format(Ks.dtype))
         if Ks.min() < 1:
             raise ValueError("Ks should be positive; got {}".format(Ks.min()))
         if Ks.max() >= features._n_pts.min():
