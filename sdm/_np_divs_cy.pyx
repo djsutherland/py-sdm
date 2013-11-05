@@ -1,7 +1,7 @@
 from __future__ import division
 
 cimport cython
-from cython cimport view, integral
+from cython cimport view
 from cython.parallel import prange, threadid
 from libc.stdlib cimport malloc, free
 from libc.math cimport log, sqrt, fmax
@@ -108,7 +108,7 @@ cdef void _alpha_div(float[:] omas, float[:, ::1] Bs,
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def _estimate_cross_divs(features, indices, rhos,
-                         np.ndarray mask, funcs, integral[:] Ks,
+                         np.ndarray mask, funcs, int[:] Ks,
                          specs, int n_meta_only,
                          bint progressbar, int cores, float min_dist):
     # TODO: update to handle passing all Ks or only some
