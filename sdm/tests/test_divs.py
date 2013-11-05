@@ -1,3 +1,4 @@
+from __future__ import division
 from functools import partial
 import os
 import sys
@@ -9,6 +10,7 @@ else:
 
 import numpy as np
 import h5py
+from scipy.special import psi
 
 if __name__ == '__main__':
     _this_dir = os.path.dirname(os.path.abspath(__file__))
@@ -177,6 +179,24 @@ def test_with_and_without_js():
     assert_close(js_with, js_without, atol=5e-5,
                  msg="JS different with/without others")
 
+
+def test_js_simple():
+    # verified by hand
+    x = np.reshape([0, 1, 3], (3, 1))
+    y = np.reshape([.2, 1.2, 3.2, 6.2], (4, 1))
+
+    mix_ent = np.log(2) + np.log(3) + psi(2) \
+        + (np.log(.2) + np.log(.8) + np.log(1.8) - psi(1) - 2*psi(2)) / 6 \
+        + (np.log(.2) + np.log(2) + np.log(3.2) - psi(1) - 3*psi(2)) / 8
+    x_ent = np.log(2) + (np.log(3) + np.log(2) + np.log(3)) / 3
+    y_ent = np.log(3) + (np.log(3) + np.log(2) + np.log(3) + np.log(5)) / 4
+    right_js = mix_ent - (x_ent + y_ent) / 2
+    expected = np.array([[0, right_js], [right_js, 0]])
+    # TODO: what about clamping???
+
+    est = estimate_divs(Features([x, y]), specs=['js'], Ks=[2],
+                        status_fn=None).squeeze()
+    assert_close(est, expected, atol=5e-5, msg="JS estimate not as expected")
 
 ################################################################################
 
