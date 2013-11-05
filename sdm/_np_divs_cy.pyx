@@ -22,8 +22,11 @@ from .mp_utils import progress
 
 from ._np_divs import (_linear as py_linear,
                        kl as py_kl,
-                       _alpha_div as py_alpha_div)
+                       _alpha_div as py_alpha_div,
+                       _jensen_shannon_core as py_js_core)
 
+cdef float fnan = float("NaN")
+cdef float finf = float("inf")
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -100,7 +103,84 @@ cdef void _alpha_div(float[:] omas, float[:, ::1] Bs,
             if results[poses[i], j] < 0.:
                 results[poses[i], j] = 0.
 
-# TODO: jensen_shannon_core
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.cdivision(True)
+cdef void _jensen_shannon_core(const int[:] Ks, int dim,
+                               int min_i, const float[:] digamma_vals,
+                               int num_q,
+                               const float[:, ::1] rhos,
+                               const float[:, ::1] nus,
+                               const int[:] Ks_order, float min_sq_dist,
+                               float[:] alphas_tmp, float[:] results) nogil:
+    # NOTE: rhos contains all the neighbors up to max_K
+    # NOTE: nus here is the "dists_out" array, which is a squared distance
+    #       that hasn't been thresholded by min_dist
+    cdef int i
+    cdef int num_p = rhos.shape[0]
+
+    cdef double t = 2 * num_p - 1
+    cdef double p_wt = 1 / t
+    cdef double q_wt = num_p / (num_q * t)
+
+    cdef int max_K = rhos.shape[1]
+    cdef int num_Ks = Ks.shape[0]
+
+    cdef double alpha, max_wt = -1
+    for i in range(num_Ks):
+        alphas_tmp[i] = alpha = Ks[i] / (num_p + num_q - 1.)
+        if alpha > max_wt:
+            max_wt = alpha
+
+    for i in range(num_Ks):
+        results[i] = 0
+
+    # mergesort rhos and nus
+    # keeping track of the incremental weights until we hit each alpha
+    cdef double curr_quantile, log_curr_dist, log_last_dist
+    cdef double next_rho_log_dist, next_nu_log_dist
+    cdef int next_rho, next_nu, next_alpha
+
+    for i in range(num_p):
+        curr_quantile = 0.
+        next_alpha = 0
+        log_curr_dist = log_last_dist = fnan
+
+        next_rho = 0
+        next_rho_log_dist = log(rhos[i, next_rho])
+
+        next_nu = 0
+        next_nu_log_dist = log(fmax(min_sq_dist, nus[i, next_nu])) / 2.
+
+        while next_alpha < num_Ks:
+            log_last_dist = log_curr_dist
+            if next_rho_log_dist < next_nu_log_dist:
+                log_curr_dist = next_rho_log_dist
+                curr_quantile += p_wt
+                next_rho += 1
+                if next_rho == max_K:
+                    next_rho_log_dist = finf
+                else:
+                    next_rho_log_dist = log(rhos[i, next_rho])
+            else:
+                log_curr_dist = next_nu_log_dist
+                curr_quantile += q_wt
+                next_nu += 1
+                if next_nu == max_K:
+                    next_nu_log_dist = finf
+                else:
+                    next_nu_log_dist = \
+                        log(fmax(min_sq_dist, nus[i, next_nu])) / 2.
+
+            while (next_alpha < num_Ks and
+                   curr_quantile > alphas_tmp[Ks_order[next_alpha]]):
+                results[Ks_order[next_alpha]] += (
+                    dim * log_last_dist
+                    - digamma_vals[next_rho + next_nu - 1 - min_i]
+                ) / num_p
+                next_alpha += 1
+
 
 ################################################################################
 
@@ -108,23 +188,32 @@ cdef void _alpha_div(float[:] omas, float[:, ::1] Bs,
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def _estimate_cross_divs(features, indices, rhos,
-                         np.ndarray mask, funcs, int[:] Ks,
+                         np.ndarray mask, funcs,
+                         int[:] Ks, int max_K, bint save_all_Ks,
                          specs, int n_meta_only,
                          bint progressbar, int cores, float min_dist):
     # TODO: update to handle passing all Ks or only some
     cdef int a, i, j, k
     cdef int num_p, num_q, i_start, i_end, j_start, j_end
 
-    cdef float[:, ::1] rhos_stacked = \
-        np.ascontiguousarray(np.vstack(rhos), dtype=np.float32)
+    cdef float[:, ::1] all_rhos_stacked, rhos_stacked
+
+    if save_all_Ks:
+        all_rhos_stacked = np.ascontiguousarray(np.vstack(rhos),
+                                                dtype=np.float32)
+        rhos_stacked = np.ascontiguousarray(
+            np.asarray(all_rhos_stacked)[:, np.asarray(Ks) - 1])
+    else:
+        rhos_stacked = np.ascontiguousarray(np.vstack(rhos), dtype=np.float32)
+
     cdef float[:, ::1] all_features = \
         np.asarray(features._features, dtype=np.float32)
     cdef long[:] boundaries = features._boundaries
 
     cdef int n_bags = len(features)
     cdef int num_Ks = Ks.size
-    cdef int max_K = np.max(Ks)
     cdef int dim = features.dim
+    cdef float min_sq_dist = min_dist * min_dist
 
     ############################################################################
     ### Handle the funcs we have.
@@ -144,6 +233,12 @@ def _estimate_cross_divs(features, indices, rhos,
     cdef float[:] alpha_omas
     cdef float[:, ::1] alpha_Bs
     cdef int[:] alpha_pos
+
+    cdef bint do_js = False
+    cdef int js_min_i
+    cdef float[:] js_digamma_vals
+    cdef int[:] js_Ks_order
+    cdef int js_pos
 
     for func, info in iteritems(funcs):
         assert isinstance(func, partial)
@@ -192,7 +287,20 @@ def _estimate_cross_divs(features, indices, rhos,
                 if alpha_pos[i] < 0:
                     alpha_pos[i] += num_funcs
 
-        # TODO: jensen_shannon_core
+        elif real_func is py_js_core:
+            do_js = True
+            assert save_all_Ks
+            the_Ks, the_dim, js_min_i, the_digamma_vals = func.args
+            assert np.all(the_Ks == Ks)
+            assert the_dim == dim
+            assert the_digamma_vals.ndim == 1
+            js_digamma_vals = np.asarray(the_digamma_vals, dtype=np.float32)
+
+            js_Ks_order = np.argsort(Ks).astype(np.int32)
+
+            js_pos, = info.pos
+            if js_pos < 0:
+                js_pos += num_funcs
 
         else:
             msg = "cython code can't handle function {}"
@@ -212,7 +320,7 @@ def _estimate_cross_divs(features, indices, rhos,
     # the results variable
     cdef float[:, :, :, ::1] outputs = np.empty(
         (n_bags, n_bags, num_funcs, len(Ks)), dtype=np.float32)
-    outputs[:, :, :, :] = np.nan
+    outputs[:, :, :, :] = fnan
 
     # temporay working variables
     cdef int max_pts = np.max(features._n_pts)
@@ -225,6 +333,7 @@ def _estimate_cross_divs(features, indices, rhos,
         np.empty((cores, max_pts, max_K), dtype=np.float32)
     cdef float[:, :, ::1] neighbors = \
         np.empty((cores, max_pts, num_Ks), dtype=np.float32)
+    cdef float[:, ::1] alphas_tmp = np.empty((cores, num_Ks), dtype=np.float32)
     cdef int tid
     cdef long job_i, n_jobs = mask_is.shape[0]
 
@@ -274,6 +383,8 @@ def _estimate_cross_divs(features, indices, rhos,
                     if do_alpha:
                         for k in range(alpha_pos.shape[0]):
                             outputs[i, j, alpha_pos[k], :] = 1
+
+                    # no need to set js self-values to nan, they already are
                 else:
                     j_start = boundaries[j]
                     j_end = boundaries[j + 1]
@@ -309,6 +420,16 @@ def _estimate_cross_divs(features, indices, rhos,
                                    rhos_stacked[i_start:i_end],
                                    neighbors[tid, :num_p, :],
                                    alpha_pos, outputs[i, j, :, :])
+
+                    if do_js:
+                        _jensen_shannon_core(Ks, dim,
+                                             js_min_i, js_digamma_vals,
+                                             num_q,
+                                             all_rhos_stacked[i_start:i_end],
+                                             dists_out[tid, :num_p, :],
+                                             js_Ks_order, min_sq_dist,
+                                             alphas_tmp[tid],
+                                             outputs[i, j, js_pos, :])
 
                 if progressbar:
                     is_done[job_i] = 1

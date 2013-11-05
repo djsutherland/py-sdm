@@ -151,8 +151,8 @@ def jensen_shannon_core(Ks, dim, num_q, rhos, nus):
     Estimates
           1/2 mean_X( d * log radius of largest ball in X+Y around X_i
                                 with no more than M/(n+m-1) weight
-                                where X points have weight 1 / (2 (n - 1))
-                                  and Y points have weight 1 / (2 m)
+                                where X points have weight 1 / (2 n - 1)
+                                  and Y points have weight n / (m (2 n - 1))
                       - digamma(# of neighbors in that ball))
 
     This is the core pairwise component of the estimator of Jensen-Shannon
@@ -163,10 +163,11 @@ def jensen_shannon_core(Ks, dim, num_q, rhos, nus):
     return _get_jensen_shannon_core(Ks, dim, ns)[0](num_q, rhos, nus)
 
 def _get_jensen_shannon_core(Ks, dim, ns):
-    # precompute the possible digamma(i) values
-    # the max/min possible values for i are the ceils/floors of:
-    #   2 n M / (n + m - 1)
-    #   2 (n-1) M / (n + m - 1) + 1
+    # precompute the max/min possible digamma(i) values: the floors/ceils of
+    #
+    #   M/(n+m-1) / (1 / (2 n - 1))
+    #   M/(n+m-1) / (n / (m (2 n - 1)))
+    #
     # for any valid value of n, m.
 
     min_n = np.min(ns)
@@ -183,16 +184,17 @@ def _get_jensen_shannon_core(Ks, dim, ns):
             i_bounds[0] = i
         if i > i_bounds[1]:
             i_bounds[1] = i
+
     for n in [max_n, min_n]:
         for m in [max_n, min_n]:
-            nm1 = n + m - 1
+            base = (2 * n - 1) / (n + m - 1)
             for M in [max_K, min_K]:
-                add_i(2 * n * M / nm1)
-                add_i(2 * (n - 1) * M / nm1 + 1)
-    min_i = int(np.floor(i_bounds[0])) - 1
+                add_i(base * M)
+                add_i(base * M * (m / n))
+    min_i = int(np.floor(i_bounds[0]))
     if min_i <= 0:
         raise ValueError("have i = 0 possible; K is too small...")
-    digamma_vals = psi(np.arange(min_i, int(np.ceil(i_bounds[1]) + 2)))
+    digamma_vals = psi(np.arange(min_i, int(np.ceil(i_bounds[1]) + 1)))
 
     return partial(_jensen_shannon_core, Ks, dim, min_i, digamma_vals), max_K
 
