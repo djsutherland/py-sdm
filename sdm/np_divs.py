@@ -148,36 +148,16 @@ alpha_div.chooser_fn = _get_alpha_div
 
 def jensen_shannon_core(Ks, dim, num_q, rhos, nus):
     r'''
-    Estimate the Shannon entropy of an equally-weighted mixture of the two
-    distributions based on nearest-neighbor distances, according to a special
-    case of the estimator in
-
-        Hideitsu Hino and Noboru Murata (2013).
-        Information estimators for weighted observations. Neural Networks.
-        http://linkinghub.elsevier.com/retrieve/pii/S0893608013001676
-
-    Here we assign weights such that points from each dataset are all equally
-    weighted, but the two datasets have equal total weights (of 1/2). We also
-    use the version in which M = n \alpha is specified; we use the values of K
-    for that here, because when the datasets are equally-sized it's basically
-    the same thing.
-
-    The estimator works out to:
-        log volume of the unit ball - log M + log (n + m - 1) + digamma(M)
-        + 1/2 mean_X( d * log radius of largest ball
+    Estimates
+          1/2 mean_X( d * log radius of largest ball in X+Y around X_i
                                 with no more than M/(n+m-1) weight
                                 where X points have weight 1 / (2 (n - 1))
                                   and Y points have weight 1 / (2 m)
                       - digamma(# of neighbors in that ball))
-        + 1/2 mean_Y( d * log radius of largest ball
-                                with no more than M/(n+m-1) weight
-                                where X points have weight 1 / (2 n)
-                                  and Y points have weight 1 / (2 (m - 1))
-                      - digamma(# of neighbors in that ball))
 
-    This function returns only that mean_X (when called in one direction)
-    or the mean_Y (in the other). The rest of it is added on in the meta
-    function jensen_shannon.
+    This is the core pairwise component of the estimator of Jensen-Shannon
+    divergence based on the Hino-Murata weighted information estimator. See
+    the docstring for jensen_shannon for an explanation.
     '''
     ns = np.array([rhos.shape[0], num_q])
     return _get_jensen_shannon_core(Ks, dim, ns)[0](num_q, rhos, nus)
@@ -404,37 +384,88 @@ def quadratic(Ks, dim, rhos, required=None):
     return Bs / (N - 1) * np.mean(rhos ** (-dim), axis=0)
 
 
-def jensen_shannon(Ks, dim, rhos, required):
+def jensen_shannon(Ks, dim, rhos, required, clamp=False):
     r'''
-    The remainder of the Jensen-Shannon estimator. (See the docstring for
-    jensen_shannon_core.)
+    Estimate the difference between the Shannon entropy of an equally-weighted
+    mixture between X and Y and the mixture of the Shannon entropies:
+
+        JS(X, Y) = H[ (X + Y) / 2 ] - (H[X] + H[Y]) / 2
+
+    We use a special case of the Hino-Murata weighted information estimator with
+    a fixed M = n \alpha, about equivalent to the K-nearest-neighbor approach
+    used for the other estimators:
+
+        Hideitsu Hino and Noboru Murata (2013).
+        Information estimators for weighted observations. Neural Networks.
+        http://linkinghub.elsevier.com/retrieve/pii/S0893608013001676
+
+
+    The estimator for JS(X, Y) is:
+
+        log volume of the unit ball - log M + log(n + m - 1) + digamma(M)
+        + 1/2 mean_X( d * log radius of largest ball in X+Y around X_i
+                                with no more than M/(n+m-1) weight
+                                where X points have weight 1 / (2 n - 1)
+                                  and Y points have weight n / (m (2 n - 1))
+                      - digamma(# of neighbors in that ball) )
+        + 1/2 mean_Y( d * log radius of largest ball in X+Y around Y_i
+                                with no more than M/(n+m-1) weight
+                                where X points have weight m / (n (2 m - 1))
+                                  and Y points have weight 1 / (2 m - 1)
+                      - digamma(# of neighbors in that ball) )
+
+        - 1/2 (log volume of the unit ball - log M + log(n - 1) + digamma(M))
+        - 1/2 mean_X( d * log radius of the largest ball in X around X_i
+                                with no more than M/(n-1) weight
+                                where X points have weight 1 / (n - 1))
+                      - digamma(# of neighbors in that ball) )
+
+        - 1/2 (log volume of the unit ball - log M + log(m - 1) + digamma(M))
+        - 1/2 mean_Y( d * log radius of the largest ball in Y around Y_i
+                                with no more than M/(n-1) weight
+                                where X points have weight 1 / (m - 1))
+                      - digamma(# of neighbors in that ball) )
+
+        =
+
+        log(n + m - 1) + digamma(M)
+        + 1/2 mean_X( d * log radius of largest ball in X+Y around X_i
+                                with no more than M/(n+m-1) weight
+                                where X points have weight 1 / (2 n - 1)
+                                  and Y points have weight n / (m (2 n - 1))
+                      - digamma(# of neighbors in that ball) )
+        + 1/2 mean_Y( d * log radius of largest ball in X+Y around Y_i
+                                with no more than M/(n+m-1) weight
+                                where X points have weight m / (n (2 m - 1))
+                                  and Y points have weight 1 / (2 m - 1)
+                      - digamma(# of neighbors in that ball) )
+        - 1/2 [log(n-1) + mean_X( d * log rho_M(X_i) )]
+        - 1/2 [log(m-1) + mean_Y( d * log rho_M(Y_i) )]
     '''
     ns = np.array([rho.shape[0] for rho in rhos])
     n_bags = ns.size
     cores, = required
     assert cores.shape == (n_bags, n_bags, 1, Ks.size)
 
-    entropies = np.empty((n_bags, Ks.size), dtype=np.float32)
+    bits = np.empty((n_bags, Ks.size), dtype=np.float32)
     for i, rho in enumerate(rhos):  # TODO parallelize?
-        entropies[i, :] = (
-            np.log(ns[i] - 1) + dim * np.mean(np.log(rho), axis=0))
-        # don't include the log volume of the unit ball or the log(K) factors;
-        # they cancel out with the same terms below
-    # TODO: our definitions of M here are (very) slightly inconsistent, I think
+        bits[i, :] = dim * np.mean(np.log(rho), axis=0)
+    bits += np.log(ns - 1)[:, np.newaxis]
 
-    est = cores
-    est += cores.transpose(1, 0, 2, 3)
-    est -= entropies.reshape(n_bags, 1, 1, Ks.size)
-    est -= entropies.reshape(1, n_bags, 1, Ks.size)
+    est = cores + cores.transpose(1, 0, 2, 3)  # intentionally make a copy
+    est -= bits.reshape(n_bags, 1, 1, Ks.size)
+    est -= bits.reshape(1, n_bags, 1, Ks.size)
     est /= 2
-    est += psi(Ks)[None, None, None, :]
     est += np.log(-1 + ns[:, np.newaxis] + ns[np.newaxis, :])[:, :, None, None]
+    est += psi(Ks)[None, None, None, :]
 
     # diagonal is zero
     all_bags = lazy_range(n_bags)
     est[all_bags, all_bags, :, :] = 0
 
-    # TODO: enforce 0 <= JS <= ln(2)?
+    if clamp:  # know that 0 <= JS <= ln(2)
+        np.maximum(0, est, out=est)
+        np.minimum(np.log(2), est, out=est)
     return est
 jensen_shannon.needs_alpha = False
 jensen_shannon.needs_results = [

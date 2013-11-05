@@ -66,11 +66,12 @@ def _jensen_shannon_core(Ks, dim, min_i, digamma_vals, num_q, rhos, nus):
     # - digamma(# of neighbors in that ball)
 
     # NOTE: this is a stupidly slow implementation. the cython one should
-    #       be much better.
+    #       be much better, and also parallelize.
     num_p = rhos.shape[0]
 
-    p_wt = 1 / (2 * (num_p - 1))
-    q_wt = 1 / (2 * num_q)
+    t = 2 * num_p - 1
+    p_wt = 1 / t
+    q_wt = num_p / (num_q * t)
 
     alphas = Ks / (num_p + num_q - 1)
 
@@ -90,7 +91,7 @@ def _jensen_shannon_core(Ks, dim, min_i, digamma_vals, num_q, rhos, nus):
         i = quantiles.searchsorted(alphas, side='right')  # number pts in ball
         assert i.min() >= min_i
 
-        est += np.log(combo['dist'][i - 1]) - digamma_vals[i - min_i]
+        est += dim * np.log(combo['dist'][i - 1]) - digamma_vals[i - min_i]
     return est / num_p
 
 
