@@ -432,7 +432,6 @@ class BaseSDM(sklearn.base.BaseEstimator):
 
     def _div_args(self, for_cache=True):
         d = {
-            'n_proc': self.n_proc,
             'min_dist': self.min_dist,
             'status_fn': self._status_fn,
             'progressbar': self.progressbar,
@@ -441,11 +440,13 @@ class BaseSDM(sklearn.base.BaseEstimator):
             d.update({
                 'div_func': self.div_func,
                 'K': self.K,
+                'n_proc': self.n_proc,
             })
         else:
             d.update({
                 'specs': [self.div_func],
                 'Ks': [self.K],
+                'cores': self.n_proc,
             })
         return d
 
