@@ -26,9 +26,9 @@ except ImportError:
         c_time = os.path.getmtime('sdm/{}.c'.format(name))
         if pyx_time >= c_time:
             raise ValueError
-    except (OSError, ValueError):
-        msg = "{} extension needs to be compiled but cython isn't available"
-        raise ImportError(msg.format(name))
+    except (OSError, ValueError) as e:
+        msg = "{} extension needs to be compiled but cython isn't available:"
+        raise ImportError(msg.format(name) + '\n' + str(e))
     else:
         source_file = "sdm/{}.c".format(name)
 else:
