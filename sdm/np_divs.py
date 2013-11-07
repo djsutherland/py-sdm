@@ -24,7 +24,7 @@ import numpy as np
 import scipy.io
 from scipy.special import gamma, gammaln, psi
 
-from cyflann import FLANNIndex
+from cyflann import FLANNIndex, FLANNParameters
 
 from .features import Features
 from .utils import (eps, izip, lazy_range, strict_map, raw_input, identity,
@@ -809,6 +809,11 @@ class _DivEstimator(object):
             algorithm = pick_flann_algorithm(dim)
         flann_args['algorithm'] = algorithm
 
+        try:
+            FLANNParameters(**flann_args)
+        except AttributeError as e:
+            msg = "_DivEstimator got an unexpected keyword argument:\n  {}"
+            raise TypeError(msg.format(e))
         self.flann_args = flann_args
 
         if min_dist is None:
