@@ -167,9 +167,9 @@ let ``sdm`` do them all separately.
 divergence functions and Ks:
 `issue #12 <https://github.com/dougalsutherland/py-sdm/issues/12>`_.)
 
-The ``extract_divs`` command does this, using a command along the lines of::
+The ``estimate_divs`` command does this, using a command along the lines of::
 
-    extract_divs --div-funcs kl renyi:.8 renyi:.9 renyi:.99 -K 1 3 5 10 --
+    estimate_divs --div-funcs kl renyi:.8 renyi:.9 renyi:.99 -K 1 3 5 10 --
         feats_pca.h5 feats_pca.divs.h5
 
 (where the ``--`` indicates that the ``-K`` arguments are done and it's time for
