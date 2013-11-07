@@ -47,7 +47,7 @@ Install cyflann (e.g. `pip install cyflann`), and then try again:
 ext_modules = [
     Extension("sdm.{}".format(name), [source_file],
               extra_compile_args=['-fopenmp'],
-              extra_link_args=['-fopenmp', '-lflann'])
+              extra_link_args=['-fopenmp', cyflann.get_flann_lib()])
 ]
 
 
@@ -70,7 +70,7 @@ setup(
         'progressbar',
         'scikit-learn >= 0.13',
         'nose',
-        'cyflann',
+        'cyflann >= 0.1.12',
 
         # only for image feat extraction; should be "extras"
         'scikit-image >= 0.6',
