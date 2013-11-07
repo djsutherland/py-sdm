@@ -182,7 +182,7 @@ class Features(object):
         data['category'] = categories
         data['name'] = names
         for name, vals in iteritems(the_extras):
-            data[name] = vals
+            data[name] = list(vals) if vals.ndim > 1 else vals
 
     def _get_dtype(self, categories, names, extras):
         dt = [
@@ -192,9 +192,11 @@ class Features(object):
         ]
         # in python 2 only, have to encode the names...sigh.
         if sys.version_info.major == 2:
-            dt += [(n.encode(), vals.dtype) for n, vals in iteritems(extras)]
+            dt += [(n.encode(), 'O' if vals.ndim > 1 else vals.dtype)
+                   for n, vals in iteritems(extras)]
         else:
-            dt += [(n, vals.dtype) for n, vals in iteritems(extras)]
+            dt += [(n, 'O' if vals.ndim > 1 else vals.dtype)
+                   for n, vals in iteritems(extras)]
         return dt
 
     ############################################################################
