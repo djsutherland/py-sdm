@@ -25,7 +25,13 @@ except ImportError:
         pyx_time = os.path.getmtime('sdm/{}.pyx'.format(name))
         c_time = os.path.getmtime('sdm/{}.c'.format(name))
         if pyx_time >= c_time:
-            raise ValueError
+            import datetime
+            msg = "{name}.pyx file has mtime {pyx_time}, {name}.c has {c_time}"
+            raise ValueError(msg.format(
+                name=name,
+                pyx_time=datetime.datetime.fromtimestamp(pyx_time),
+                c_time=datetime.datetime.fromtimestamp(c_time),
+            ))
     except (OSError, ValueError) as e:
         msg = "{} extension needs to be compiled but cython isn't available:"
         raise ImportError(msg.format(name) + '\n' + str(e))
