@@ -279,7 +279,7 @@ def parse_args(args=None):
         help="Append normalized y coord of patches; does by default."))
 
     std = parser.add_argument_group('Standardization')
-    std._add_action(ActionNoYes('normalize-feats', default=True,
+    std._add_action(ActionNoYes('standardize-feats', default=True,
         help="Normalize features to mean 0, variance 1 at the end (default)."))
 
     parser._add_action(ActionNoYes('verbose', 'quiet', default=True,
