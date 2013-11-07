@@ -153,7 +153,8 @@ Many more options are available via ``sdm cv --help``.
 
 ``sdm`` also supports predicting using a training / test set through
 ``sdm predict`` rather than ``sdm cv``, but there isn't currently code to
-produce the input files it assumes.
+produce the input files it assumes. If this would be useful for you, let me
+know and I'll write it....
 
 
 Precomputing Divergences
