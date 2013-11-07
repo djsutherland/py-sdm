@@ -474,6 +474,14 @@ jensen_shannon.needs_results = [
     MetaRequirement(jensen_shannon_core, alpha=None, needs_transpose=True)]
 
 
+def js_clamp(Ks, dim, rhos, required):
+    # TODO: less hacky solution to this problem
+    js, = required
+    est = np.maximum(0, js)
+    np.minimum(np.log(2), est, out=est)
+    return est
+
+
 ################################################################################
 
 func_mapping = {
@@ -488,6 +496,7 @@ func_mapping = {
     'js-core': jensen_shannon_core,
     'js': jensen_shannon,
     'jensen-shannon': jensen_shannon,
+    'js_clamp': js_clamp,
 }
 
 
