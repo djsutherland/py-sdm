@@ -247,18 +247,25 @@ def extract_image_features(paths, cats, imread_mode=IMREAD_MODES,
     imread_mode, _ = _find_working_imread(imread_mode)
 
     # do the actual extraction, skipping any images we get no features from
-    n_skipped = [0]  # python closure silliness
-    def predicate(f_d):
-        if f_d[0].size == 0:
-            n_skipped[0] += 1
-            return False
-        return True
+    frames = []
+    descrs = []
+    n_skipped = 0
+    keep = np.ones(len(paths), dtype=bool)
     load_features = partial(_load_features, imread_mode=imread_mode, **kwargs)
-    frames, descrs = zip(*filter(predicate, do_map(load_features, paths)))
+    for i, (frame, descr) in enumerate(do_map(load_features, paths)):
+        if frame.size == 0:
+            n_skipped += 1
+            keep[i] = False
+        else:
+            frames.append(frame)
+            descrs.append(descr)
 
     if n_skipped[0]:
         msg = "Skipped {} images that got no features out.".format(n_skipped[0])
         warnings.warn(msg)
+        cats = np.asarray(cats)[keep]
+        image_names = np.asarray(image_names)[keep]
+        extras = {name: vals[keep] for name, vals in extras.iteritems()}
 
     if pool is not None:
         pool.close()
