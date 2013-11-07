@@ -202,7 +202,7 @@ def process_image_features(features, verbose=False, inplace=False,
         if not inplace:
             features = ret
 
-    if normalize_feats:
+    if standardize_feats:
         pr("Standardizing features...")
         ret = features.standardize(scaler=scaler, ret_scaler=True,
                                    inplace=inplace)
