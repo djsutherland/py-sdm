@@ -5,7 +5,7 @@ from bisect import bisect
 from collections import defaultdict
 import csv
 from functools import partial
-from itertools import islice, takewhile
+from itertools import imap, islice, takewhile
 import os
 import random
 import warnings
@@ -106,13 +106,26 @@ def _load_features(filename, imread_mode=IMREAD_MODES, size=None, **kwargs):
 
 
 def _load_extras(paths):
-    "Returns a list of dicts mapping extra_name to a value for each file."
+    """
+    Returns a dict of extra names mapping to a float for each image.
+
+    Loads from:
+        *.csv in each directory in paths
+            If the name is "whatever.csv", then the contents should be lines
+            like "imagename1,4.12" (no header); this is loaded as an extra
+            named "whatever" with value 4.12 for "imagename1".
+        image_name.jpg.whatever
+            a text file containing only the value of the extra "whatever"
+            for "image_name.jpg"; loaded with np.loadtxt().
+    """
+    path_idx = dict(imap(reversed, enumerate(paths)))
     dirnames = set(os.path.dirname(path) for path in paths)
 
-    lists = {}
-    csv_contents = defaultdict(dict)
+    extras = defaultdict(lambda: [np.nan] * len(paths))  # name => extra values
+    lists = {}  # dirname => sorted files in that dir
     for dirname in dirnames:
         lists[dirname] = ls = sorted(os.listdir(dirname))
+
         for csv_filename in (f for f in ls if f.endswith('.csv')):
             name = csv_filename[:-len('.csv')]
             vals = {}
@@ -120,32 +133,32 @@ def _load_extras(paths):
                 for line in csv.reader(f):
                     try:
                         fname, val = line
-                        vals[fname] = float(val)
+                        val = float(val)
                     except ValueError:
                         warnings.warn('Bad line in {} (length {})'.format(
                             os.path.join(dirname, csv_filename), len(line)))
                         break
+                    else:
+                        path = os.path.join(dirname, fname)
+                        if path in path_idx:
+                            vals[path] = val
                 else:
-                    csv_contents[dirname][name] = vals
+                    for path, val in vals.iteritems():
+                        extras[name][path_idx[path]] = val
 
-    extras = []
     for path in paths:
         dirname, basename = os.path.split(path)
         files_in_dir = lists[dirname]
         pos = bisect(files_in_dir, basename)
         extension_files = takewhile(lambda x: x.startswith(basename),
                                     islice(files_in_dir, pos, None))
-        extra = {}
         for fname in extension_files:
             extra_name = fname[len(basename):]
             if extra_name[0] in '._-':
                 extra_name = extra_name[1:]
-            extra[extra_name] = np.loadtxt(os.path.join(dirname, fname))
-        for extra_name, vals in iteritems(csv_contents[dirname]):
-            if basename in vals:
-                extra[extra_name] = vals[basename]
-        extras.append(extra)
-    return extras
+            val = np.loadtxt(os.path.join(dirname, fname))
+            extras[extra_name][path_idx[path]] = val
+    return {name: np.asarray(val) for name, val in extras.iteritems()}
 
 
 def _sample_uniform(lst, n):
