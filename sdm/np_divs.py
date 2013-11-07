@@ -480,6 +480,10 @@ def js_clamp(Ks, dim, rhos, required):
     est = np.maximum(0, js)
     np.minimum(np.log(2), est, out=est)
     return est
+js_clamp.needs_alpha = False
+js_clamp.needs_results = [
+    MetaRequirement(jensen_shannon, alpha=None, needs_transpose=False)]
+
 
 
 ################################################################################
