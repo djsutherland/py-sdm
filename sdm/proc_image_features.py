@@ -36,7 +36,7 @@ class FillBlanks(BaseEstimator, TransformerMixin):
 
     def fit(self, X, y=None):
         "Does nothing, since this transform doesn't require fitting."
-        pass
+        return self
 
     def transform(self, X, y=None, copy=None):
         copy = copy if copy is not None else self.copy
@@ -67,7 +67,7 @@ class ZeroBlanks(BaseEstimator, TransformerMixin):
 
     def fit(self, X, y=None):
         "Does nothing, since this transform doesn't require fitting."
-        pass
+        return self
 
     def transform(self, X, y=None, copy=None):
         copy = copy if copy is not None else self.copy
