@@ -260,8 +260,8 @@ def extract_image_features(paths, cats, imread_mode=IMREAD_MODES,
             frames.append(frame)
             descrs.append(descr)
 
-    if n_skipped[0]:
-        msg = "Skipped {} images that got no features out.".format(n_skipped[0])
+    if n_skipped:
+        msg = "Skipped {} images that got no features out.".format(n_skipped)
         warnings.warn(msg)
         cats = np.asarray(cats)[keep]
         image_names = np.asarray(image_names)[keep]
