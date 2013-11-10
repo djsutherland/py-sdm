@@ -342,7 +342,7 @@ def _estimate_cross_divs(features, indices, rhos,
     cdef long * jobs_since_last_tick = &jobs_since_last_tick_val
     cdef uint8_t[:] is_done
     if progressbar:
-        is_done = np.empty(n_jobs, dtype=np.uint8)
+        is_done = np.zeros(n_jobs, dtype=np.uint8)
         pbar = progress(maxval=n_jobs)
         pbar.start()
 
