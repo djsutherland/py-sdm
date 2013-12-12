@@ -640,6 +640,55 @@ class Features(object):
             return kmeans.cluster_centers_
         return do
 
+
+    def bag_of_words(self, n_codewords, max_iter=100, num_rep=1,
+                     cast_dtype=np.float32,
+                     library='vlfeat', algorithm='lloyd'):
+        '''
+        Transforms each bag into a single vector with the bag of words
+        representation:
+            1. Run k-means (with n_codewords means) on the full set of all
+               points from all bags.
+            2. Represent each bag by the count of points assigned to each
+               codeword.
+
+        Returns:
+            - an n_bags x n_codewords integer array of histograms
+            - an n_codewords x dim array of cluster centers
+        '''
+
+        if n_codewords > self.total_points:
+            msg = "asked for {} codewords with only {} points"
+            raise ValueError(msg.format(n_codewords, self.total_points))
+
+        if self.dtype.kind != 'f':
+            feats = np.asarray(self._features, dtype=cast_dtype)
+        else:
+            feats = self._features
+
+        if library == 'vlfeat':
+            from vlfeat import vl_kmeans
+            centers, assignments = vl_kmeans(feats,
+                num_centers=n_codewords, algorithm=algorithm,
+                max_iter=max_iter, num_rep=num_rep, quantize=True)
+        else:
+            if algorithm == 'minibatch':
+                from sklearn.cluster import MiniBatchKMeans
+                cls = partial(MiniBatchKMeans, compute_labels=True)
+            else:
+                from sklearn.cluster import KMeans
+                cls = partial(KMeans, n_jobs=1)
+
+            kmeans = cls(n_clusters=n_codewords,
+                         max_iter=max_iter, n_init=num_rep)
+            assignments = kmeans.fit_predict(feats)
+            centers = kmeans.cluster_centers_
+
+        grouped = [np.bincount(g, minlength=n_codewords)
+                   for g in _group(self._boundaries, assignments)]
+        return np.asarray(grouped), centers
+
+
     ############################################################################
     ### generic I/O helpers
 
