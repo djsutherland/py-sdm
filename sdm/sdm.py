@@ -1771,7 +1771,7 @@ def do_cv(args):
             feats = Features.load_from_hdf5(args.input_file)
 
         if args.labels_name:
-            labels = feats[args.labels_name]
+            labels = getattr(feats, args.labels_name)
         elif args.labels_name is None and classifier:
             labels = feats.categories
         else:
