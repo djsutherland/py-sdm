@@ -281,7 +281,8 @@ class Features(object):
 
     def __getitem__(self, key):
         if (isinstance(key, str_types) or
-                (isinstance(key, tuple) and any(isinstance(x) for x in key))):
+                (isinstance(key, tuple) and
+                 any(isinstance(x, str_types) for x in key))):
             raise TypeError("Features indexing only subsets rows")
 
         if np.isscalar(key):
