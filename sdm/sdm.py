@@ -1042,7 +1042,7 @@ class BaseSDMClassifier(BaseSDM):
         if not self.probability:
             raise NotImplementedError(
                 "probability estimates must be enabled to use this method")
-        elif getattr(self, 'svm_', None) is not None:
+        elif getattr(self, 'svm_', None) is None:
             pass  # hasn't been fit; _prediction_km() will complain right away
         elif not self.svm_.probability:
             msg = ("Although probability estimates are enabled, it looks like "
@@ -1070,6 +1070,11 @@ class BaseSDMClassifier(BaseSDM):
             divergences are calculated and used to project the Gram matrix, but
             are not used in training the SVM.
     """)
+
+    def _svm_params(self, tuning=False):
+        d = super(BaseSDMClassifier, self)._svm_params(tuning=tuning)
+        d['probability'] = self.probability
+        return d
 
 
 class SDC(BaseSDMClassifier):
