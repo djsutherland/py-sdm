@@ -1,8 +1,9 @@
 This is a Python implementation of nonparametric divergence estimators.
 
-For an introduction to the method, see http://cs.cmu.edu/~dsutherl/sdm/
+For an introduction to the method and why you'd want to use it,
+see http://cs.cmu.edu/~dsutherl/sdm/.
 
-Homepage: https://github.com/dougalsutherland/py-sdm/
+Code homepage: https://github.com/dougalsutherland/py-sdm/.
 
 Code by Dougal J. Sutherland <dsutherl@cs.cmu.edu>
 based partially on code by Liang Xiong <lxiong@cs.cmu.edu>.
