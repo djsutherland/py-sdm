@@ -1,21 +1,11 @@
-This is a Python implementation of the nonparametric divergence estimators
-described by
+This is a Python implementation of nonparametric divergence estimators.
 
-Barnabas Poczos, Liang Xiong, Jeff Schneider (2011).
-*Nonparametric divergence estimation with applications to machine learning on distributions.*
-Uncertainty in Artificial Intelligence.
-http://autonlab.org/autonweb/20287.html
+For an introduction to the method, see http://cs.cmu.edu/~dsutherl/sdm/
 
-and also their use in support vector machines, as described by
-
-Dougal J. Sutherland, Liang Xiong, Barnabas Poczos, Jeff Schneider (2012).
-*Kernels on Sample Sets via Nonparametric Divergence Estimates.*
-http://arxiv.org/abs/1202.0302
+Homepage: https://github.com/dougalsutherland/py-sdm/
 
 Code by Dougal J. Sutherland <dsutherl@cs.cmu.edu>
 based partially on code by Liang Xiong <lxiong@cs.cmu.edu>.
-
-Homepage: https://github.com/dougalsutherland/py-sdm/
 
 
 Installation
