@@ -747,9 +747,10 @@ class Features(object):
     ############################################################################
     ### Stuff relating to hdf5 feature files
 
-    def save_as_hdf5(self, filename, **attrs):
+    def save_as_hdf5(self, filename, file_root=None, **attrs):
         '''
-        Saves into an HDF5 file.
+        Saves into an HDF5 file filename,
+        rooted at file_root (default: root of the file).
 
         Also saves any keyword args as a dateset under '/meta'.
 
@@ -759,6 +760,9 @@ class Features(object):
         '''
         import h5py
         with h5py.File(filename, 'w') as f:
+            if file_root is not None:
+                f = f.require_group(file_root)
+
             skip_set = frozenset(['category', 'name'])
             for row in self:
                 g = f.require_group(row['category']).create_group(row['name'])
@@ -771,11 +775,17 @@ class Features(object):
                 meta[k] = v
 
     @classmethod
-    def load_from_hdf5(cls, filename, load_attrs=False, features_dtype=None,
+    def load_from_hdf5(cls, filename, file_root=None,
+                       load_attrs=False, features_dtype=None,
                        cats=None, pairs=None, subsample_fn=None,
                        names_only=False):
         '''
         Reads a Features instance from an h5py file created by save_features().
+
+        filename is the path to the hdf5 file.
+
+        If file_root is passed, it gives the path within the hdf5 file of the
+        features object. (By default, assumes it's at the root.)
 
         If load_attrs, also returns a dictionary of meta values loaded from
         root attributes, '/_meta' attributes, '/_meta' datasets.
@@ -798,6 +808,9 @@ class Features(object):
         import h5py
 
         with h5py.File(filename, 'r') as f:
+            if file_root is not None:
+                f = f[file_root]
+
             bag_names = []
             for cat, cat_g in iteritems(f):
                 if cat != '_meta' and (cats is None or cat in cats):
