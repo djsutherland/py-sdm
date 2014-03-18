@@ -742,12 +742,13 @@ class BaseSDM(sklearn.base.BaseEstimator):
         for k, v in iteritems(d):
             setattr(self, k + '_', v)
 
-    def _tuned_params(self):
+    def _tuned_params(self, _skip_names=frozenset([
+            'svm_', 'test_transformer_', 'tune_evals_', 'train_bags_'])):
         return dict(
             (name[:-1], getattr(self, name))
             for name in dir(self)
             if name.endswith('_') and not name.startswith('_')
-                and name not in ('svm_', 'test_transformer_', 'tune_evals_')
+               and name not in _skip_names
         )
 
     def _svm_params(self, tuning=False):
