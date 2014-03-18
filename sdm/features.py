@@ -747,19 +747,24 @@ class Features(object):
     ############################################################################
     ### Stuff relating to hdf5 feature files
 
-    def save_as_hdf5(self, filename, file_root=None, **attrs):
+    def save_as_hdf5(self, filename, file_root=None, append=False, **attrs):
         '''
         Saves into an HDF5 file filename,
         rooted at file_root (default: root of the file).
 
-        Also saves any keyword args as a dateset under '/meta'.
+        If the file already exists it, overwrites it completely unless
+        append=True. In that case, it probably only makes sense if you're
+        using a different file_root; otherwise the meta attributes will clash
+        and there may be a crash due to name conflicts or something.
+
+        Also saves any keyword args as a dateset under '/_meta'.
 
         Each bag is saved as "features" and "frames" in /category/filename; any
         "extras" get added there as a (probably scalar) dataset named by the
         extra's name.
         '''
         import h5py
-        with h5py.File(filename, 'w') as f:
+        with h5py.File(filename, 'a' if append else 'w') as f:
             if file_root is not None:
                 f = f.require_group(file_root)
 
