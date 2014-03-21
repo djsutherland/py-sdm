@@ -1805,6 +1805,9 @@ def do_predict(args):
         out[k + '_vals'] = v
     if label_class_names is not None:
         out['label_names'] = label_class_names
+    if isinstance(test_bags, Features):
+        out['test_cats'] = test_bags.categories
+        out['test_names'] = test_bags.names
     status_fn('Saving output to {}'.format(args.output_file))
     if args.output_format == 'mat':
         scipy.io.savemat(args.output_file, out, oned_as='column')
