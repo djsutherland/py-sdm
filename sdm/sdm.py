@@ -563,9 +563,9 @@ class BaseSDM(sklearn.base.BaseEstimator):
         params = self._svm_params(tuning=False)
         clf = self.svm_class(**params)
         if self.oneclass:
-            clf.fit(train_km, sample_weight=sample_weight)
+            clf.fit(train_km, sample_weight=train_sample_weight)
         else:
-            clf.fit(train_km, train_y, sample_weight=sample_weight)
+            clf.fit(train_km, train_y, sample_weight=train_sample_weight)
         self.svm_ = clf
 
         if ret_km:
@@ -628,7 +628,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
         return self.eval_score(labels, preds)
 
     def transduct(self, train_bags, train_labels, test_bags, divs=None,
-                  mode='predict', save_fit=False):
+                  train_weight=None, mode='predict', save_fit=False):
         '''
         Trains an SDM transductively, where the kernel matrix is constructed on
         the training + test points, the SVM is trained on training points, and
@@ -652,6 +652,9 @@ class BaseSDM(sklearn.base.BaseEstimator):
             (num_train + num_test, num_train + num_test), ordered with the
             training bags first and then the test bags following.
             Transparent caching is not yet supported here.
+
+        train_weight (optional): a vector of weights applied to each training
+            sample, where 1 means unweighted.
 
         mode (default 'predict'): one of 'predict', 'dec', 'proba', 'log_proba'.
             Returns the results of predict(), decision_function(),
@@ -723,7 +726,11 @@ class BaseSDM(sklearn.base.BaseEstimator):
         test_fake_labels.fill(-1 if self.classifier else np.nan)
         combo_labels = np.hstack((train_labels, test_fake_labels))
 
-        full_km = self.fit(combo_bags, combo_labels, divs=divs, ret_km=True)
+        if train_weight is not None:
+            train_weight = np.r_[train_weight, np.zeros(n_test)]
+
+        full_km = self.fit(combo_bags, combo_labels, sample_weight=train_weight,
+                           divs=divs, ret_km=True)
         preds = pred_fn(test_bags, km=full_km[-n_test:, :n_train])
 
         if not save_fit:
@@ -897,6 +904,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
     ############################################################################
     ### Cross-validation helper
     def crossvalidate(self, bags, labels, project_all=True,
+                      sample_weight=None,
                       num_folds=10, stratified_cv=False, folds=None,
                       ret_fold_info=False, ret_tune_info=False,
                       divs=None, divs_cache=None):
@@ -957,23 +965,27 @@ class BaseSDM(sklearn.base.BaseEstimator):
 
             if self.classifier:
                 status('Train distribution: {}'.format(
-                        dict(Counter(labels[train]))))
+                    dict(Counter(labels[train]))))
                 status('Test distribution: {}'.format(
-                        dict(Counter(labels[test]))))
+                    dict(Counter(labels[test]))))
+
+            weights = None if sample_weight is None else sample_weight[train]
 
             if project_all:
                 preds[test] = self.transduct(
-                        None, labels[train], None,
-                        divs=divs[np.ix_(both, both)], save_fit=True)
+                    None, labels[train], None,
+                    train_weight=weights,
+                    divs=divs[np.ix_(both, both)], save_fit=True)
             else:
-                self.fit(None, labels[train], divs=divs[np.ix_(train, train)])
+                self.fit(None, labels[train], sample_weight=weights,
+                         divs=divs[np.ix_(train, train)])
                 pred_divs = (divs[np.ix_(test, train)] +
                              divs[np.ix_(train, test)].T) / 2
                 preds[test] = self.predict(None, divs=pred_divs)
 
             score = self.eval_score(labels[test], preds[test])
-            status('Fold {score_name}: {score:{score_fmt}}'.format(score=score,
-                        score_name=self.score_name, score_fmt=self.score_fmt))
+            status('Fold {}: {score:{score_fmt}}'.format(
+                self.score_name, score=score, score_fmt=self.score_fmt))
 
             params.append(self._tuned_params())
             tune_info.append(self.tune_evals_)
