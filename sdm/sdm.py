@@ -723,7 +723,8 @@ class BaseSDM(sklearn.base.BaseEstimator):
         test_fake_labels.fill(-1 if self.classifier else np.nan)
         combo_labels = np.hstack((train_labels, test_fake_labels))
 
-        full_km = self.fit(combo_bags, combo_labels, divs=divs, ret_km=True)
+        full_km = BaseSDM.fit(self, X=combo_bags, y=combo_labels, divs=divs,
+                              ret_km=True)
         preds = pred_fn(test_bags, km=full_km[-n_test:, :n_train])
 
         if not save_fit:
