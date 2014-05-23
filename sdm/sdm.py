@@ -1406,7 +1406,7 @@ class OneClassSDM(BaseSDM):
             y = np.zeros(divs.shape[0])
         else:
             raise ValueError("need to pass either train_bags or divs to fit")
-        return super(OneClassSDM, self).fit(
+        return super(OneClassSDM, self).transduct(
             train_bags, y, test_bags, divs=divs, train_weight=train_weight,
             mode=mode, save_fit=save_fit)
 
