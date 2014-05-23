@@ -729,8 +729,8 @@ class BaseSDM(sklearn.base.BaseEstimator):
         if train_weight is not None:
             train_weight = np.r_[train_weight, np.zeros(n_test)]
 
-        full_km = self.fit(combo_bags, combo_labels, sample_weight=train_weight,
-                           divs=divs, ret_km=True)
+        full_km = BaseSDM.fit(self, X=combo_bags, y=combo_labels, divs=divs,
+                              sample_weight=train_weight, ret_km=True)
         preds = pred_fn(test_bags, km=full_km[-n_test:, :n_train])
 
         if not save_fit:
