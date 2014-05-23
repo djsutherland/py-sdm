@@ -1394,9 +1394,21 @@ class OneClassSDM(BaseSDM):
         else:
             raise ValueError("need to pass either X or divs to fit")
         return super(OneClassSDM, self).fit(
-                X, y, sample_weight=sample_weight, ret_km=ret_km,
-                divs=divs, divs_cache=divs_cache)
+            X, y, sample_weight=sample_weight, ret_km=ret_km,
+            divs=divs, divs_cache=divs_cache)
     fit.__doc__ = BaseSDM._fit_docstr.format(y_doc='')
+
+    def transduct(self, train_bags, test_bags, divs=None, train_weight=None,
+                  mode='predict', save_fit=False):
+        if train_bags is not None:
+            y = np.zeros(len(train_bags))
+        elif divs is not None:
+            y = np.zeros(divs.shape[0])
+        else:
+            raise ValueError("need to pass either train_bags or divs to fit")
+        return super(OneClassSDM, self).fit(
+            train_bags, y, test_bags, divs=divs, train_weight=train_weight,
+            mode=mode, save_fit=save_fit)
 
 
 sdm_for_mode = {
