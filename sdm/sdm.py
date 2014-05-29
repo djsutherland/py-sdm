@@ -799,8 +799,11 @@ class BaseSDM(sklearn.base.BaseEstimator):
         if self.scale_sigma:
             param_d['sigma'] = param_d['sigma'] * np.median(divs[divs > 0])
             # make sure not to modify self.sigma_vals...
-        folds = ForkedData(
-                    list(KFold(n=num_bags, n_folds=num_folds, shuffle=True)))
+
+        # HACK: support specifying the RNG for the KFold
+        folds = ForkedData(list(KFold(
+            n=num_bags, n_folds=num_folds, shuffle=True,
+            random_state=getattr(self, '_tuning_fold_rng', None))))
         param_d['fold_idx'] = np.arange(num_folds)
         param_names, param_lens = zip(*sorted(
                 (name, len(vals)) for name, vals in iteritems(param_d)))
@@ -907,7 +910,8 @@ class BaseSDM(sklearn.base.BaseEstimator):
                       sample_weight=None,
                       num_folds=10, stratified_cv=False, folds=None,
                       ret_fold_info=False, ret_tune_info=False,
-                      divs=None, divs_cache=None):
+                      divs=None, divs_cache=None,
+                      tuning_fold_seed=None):
         # TODO: document crossvalidate()
         # TODO: nicer interface for ret_tune_info
         status = self.status_fn
@@ -952,6 +956,10 @@ class BaseSDM(sklearn.base.BaseEstimator):
         else:
             num_folds = len(folds)
 
+        # specify seed for tuning folds
+        if tuning_fold_seed is not None:
+            self._tuning_fold_rng = np.random.RandomState(tuning_fold_seed)
+
         old_save_bags = self.save_bags
         self.save_bags = False  # avoid keeping copies around
 
@@ -991,6 +999,7 @@ class BaseSDM(sklearn.base.BaseEstimator):
             tune_info.append(self.tune_evals_)
             self.clear_fit()
 
+        del self._tuning_fold_rng
         self.save_bags = old_save_bags
 
         score = self.eval_score(labels, preds)
