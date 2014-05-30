@@ -999,7 +999,10 @@ class BaseSDM(sklearn.base.BaseEstimator):
             tune_info.append(self.tune_evals_)
             self.clear_fit()
 
-        del self._tuning_fold_rng
+        try:
+            del self._tuning_fold_rng
+        except AttributeError:
+            pass
         self.save_bags = old_save_bags
 
         score = self.eval_score(labels, preds)
