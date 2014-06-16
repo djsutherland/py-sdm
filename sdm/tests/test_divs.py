@@ -180,6 +180,29 @@ def test_with_and_without_js():
                  msg="JS different with/without others")
 
 
+def test_kl_simple():
+    # verified by hand
+    # Dhat(P||Q) = \log m/(n-1) + d / n  \sum_{i=1}^n \log \nu_k(i)/rho_k(i)
+    x = np.reshape([0., 1, 3], (3, 1))
+    y = np.reshape([.2, 1.2, 3.2, 7.2], (4, 1))
+
+    n = x.shape[0]
+    m = y.shape[0]
+
+    x_to_y = np.log(m / (n-1)) + 1/n * (
+        np.log(1.2 / 3) + np.log(.8 / 2) + np.log(1.8 / 3))
+    y_to_x = np.log(n / (m-1)) + 1/m * (
+        np.log(.8 / 3) + np.log(1.2 / 2) + np.log(2.2 / 3) + np.log(6.2 / 6))
+
+    res = estimate_divs(Features([x, y]), specs=['kl'], Ks=[2]).squeeze()
+    print res
+    print x_to_y, y_to_x
+    # assert res[0, 0] == 0
+    # assert res[1, 1] == 0
+    assert np.allclose(res[1, 0], y_to_x), "{} vs {}".format(res[1, 0], y_to_x)
+    assert np.allclose(res[0, 1], x_to_y), "{} vs {}".format(res[0, 1], x_to_y)
+
+
 def test_js_simple():
     # verified by hand
     x = np.reshape([0, 1, 3], (3, 1))
