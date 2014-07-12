@@ -194,11 +194,14 @@ def test_kl_simple():
     y_to_x = np.log(n / (m-1)) + 1/m * (
         np.log(.8 / 3) + np.log(1.2 / 2) + np.log(2.2 / 3) + np.log(6.2 / 6))
 
+    # NOTE: clamping makes this test useless.
+    x_to_y = max(x_to_y, 0)
+    y_to_x = max(y_to_x, 0)
+
     res = estimate_divs(Features([x, y]), specs=['kl'], Ks=[2]).squeeze()
-    print res
-    print x_to_y, y_to_x
-    # assert res[0, 0] == 0
-    # assert res[1, 1] == 0
+
+    assert res[0, 0] == 0
+    assert res[1, 1] == 0
     assert np.allclose(res[1, 0], y_to_x), "{} vs {}".format(res[1, 0], y_to_x)
     assert np.allclose(res[0, 1], x_to_y), "{} vs {}".format(res[0, 1], x_to_y)
 
