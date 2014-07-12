@@ -405,44 +405,42 @@ def jensen_shannon(Ks, dim, rhos, required, clamp=False):
     The estimator for JS(X, Y) is:
 
         log volume of the unit ball - log M + log(n + m - 1) + digamma(M)
-        + 1/2 mean_X( d * log radius of largest ball in X+Y around X_i
-                                with no more than M/(n+m-1) weight
+        + 1/2 mean_X( d * log distance to the M/(n+m-1) quantile of X_i in X+Y
                                 where X points have weight 1 / (2 n - 1)
                                   and Y points have weight n / (m (2 n - 1))
                       - digamma(# of neighbors in that ball) )
-        + 1/2 mean_Y( d * log radius of largest ball in X+Y around Y_i
-                                with no more than M/(n+m-1) weight
+        + 1/2 mean_Y( d * log distance to the M/(n+m-1) quantile of Y_i in X+Y
                                 where X points have weight m / (n (2 m - 1))
                                   and Y points have weight 1 / (2 m - 1)
                       - digamma(# of neighbors in that ball) )
 
         - 1/2 (log volume of the unit ball - log M + log(n - 1) + digamma(M))
-        - 1/2 mean_X( d * log radius of the largest ball in X around X_i
-                                with no more than M/(n-1) weight
+        - 1/2 mean_X( d * log distance to the M/(n-1) quantile of X_i in X
                                 where X points have weight 1 / (n - 1))
                       - digamma(# of neighbors in that ball) )
 
         - 1/2 (log volume of the unit ball - log M + log(m - 1) + digamma(M))
-        - 1/2 mean_Y( d * log radius of the largest ball in Y around Y_i
-                                with no more than M/(n-1) weight
+        - 1/2 mean_Y( d * log distance to the M/(n-1) quantile of Y_i in Y
                                 where X points have weight 1 / (m - 1))
                       - digamma(# of neighbors in that ball) )
 
         =
 
         log(n + m - 1) + digamma(M)
-        + 1/2 mean_X( d * log radius of largest ball in X+Y around X_i
-                                with no more than M/(n+m-1) weight
+        + 1/2 mean_X( d * log distance to the M/(n+m-1) quantile of X_i in X+Y
                                 where X points have weight 1 / (2 n - 1)
                                   and Y points have weight n / (m (2 n - 1))
                       - digamma(# of neighbors in that ball) )
-        + 1/2 mean_Y( d * log radius of largest ball in X+Y around Y_i
-                                with no more than M/(n+m-1) weight
+        + 1/2 mean_Y( d * log distance to the M/(n+m-1) quantile of Y_i in X+Y
                                 where X points have weight m / (n (2 m - 1))
                                   and Y points have weight 1 / (2 m - 1)
                       - digamma(# of neighbors in that ball) )
         - 1/2 [log(n-1) + mean_X( d * log rho_M(X_i) )]
         - 1/2 [log(m-1) + mean_Y( d * log rho_M(Y_i) )]
+
+    where the alpha-quantile of a point in a weighted set is the highest k
+    such that w_(j) <= alpha, where w_(j) is the weight of the (j)th nearest
+    neighbor (not including the point itself).
     '''
     ns = np.array([rho.shape[0] for rho in rhos])
     n_bags = ns.size
