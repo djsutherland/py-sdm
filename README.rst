@@ -8,6 +8,10 @@ Code homepage: https://github.com/dougalsutherland/py-sdm/.
 Code by Dougal J. Sutherland <dsutherl@cs.cmu.edu>
 based partially on code by Liang Xiong <lxiong@cs.cmu.edu>.
 
+**NOTE:** this package will soon be superceded by the more-generic and
+better-integrated-with-scikit-learn package
+`skl-groups <https://github.com/dougalsutherland/skl-groups/>`_.
+
 
 Installation
 ------------
