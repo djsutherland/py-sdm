@@ -357,7 +357,7 @@ def _estimate_cross_divs(features, indices, rhos,
             index_array[i] = (<FLANNIndex> indices[i])._this
 
         with nogil:
-            for job_i in prange(n_jobs, num_threads=cores, schedule='guided'):
+            for job_i in prange(n_jobs, num_threads=cores, schedule='dynamic'):
                 tid = threadid()
                 i = mask_is[job_i]
                 j = mask_js[job_i]
