@@ -797,13 +797,20 @@ class BaseSDM(sklearn.base.BaseEstimator):
         # figure out the hypergrid of parameter options
         param_d = self._param_grid_dict()
         if self.scale_sigma:
-            param_d['sigma'] = param_d['sigma'] * np.median(divs[divs > 0])
+            gt = divs[divs > 0]
+            if gt.size == 0:
+                raise ValueError("all divergences are zero...")
+            param_d['sigma'] = param_d['sigma'] * np.median(gt)
             # make sure not to modify self.sigma_vals...
 
+        # HACK: support just giving the folds directly
         # HACK: support specifying the RNG for the KFold
-        folds = ForkedData(list(KFold(
-            n=num_bags, n_folds=num_folds, shuffle=True,
-            random_state=getattr(self, '_tuning_fold_rng', None))))
+        if hasattr(self, '_tune_folds'):
+            folds = ForkedData(list(self._tune_folds))
+        else:
+            folds = ForkedData(list(KFold(
+                n=num_bags, n_folds=num_folds, shuffle=True,
+                random_state=getattr(self, '_tuning_fold_rng', None))))
         param_d['fold_idx'] = np.arange(num_folds)
         param_names, param_lens = zip(*sorted(
                 (name, len(vals)) for name, vals in iteritems(param_d)))
