@@ -97,7 +97,7 @@ def _load_features(filename, imread_mode=IMREAD_MODES, size=None, **kwargs):
         if new_x is None:
             newsize = (int(np.round(curr_x * new_y / curr_y)), new_y)
         elif new_y is None:
-            newsize = (new_x, int(np.round(curr_y * new_x / curr_y)))
+            newsize = (new_x, int(np.round(curr_y * new_x / curr_x)))
         else:
             newsize = size
         img = skimage.transform.resize(img, newsize)
