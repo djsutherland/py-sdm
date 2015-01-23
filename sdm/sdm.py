@@ -896,7 +896,8 @@ class BaseSDM(sklearn.base.BaseEstimator):
 
         cv_means = scores.mean(axis=fold_idx_idx)
         best_elts = cv_means == cv_means.min()
-        best_indices = np.random.choice(np.transpose(best_elts.nonzero()))
+        b = np.transpose(best_elts.nonzero())
+        best_indices = b[np.random.choice(b.shape[0])]
         assert len(nonfold_param_names) == len(best_indices)
         the_params = dict(
                 (name, param_d[name][idx])
