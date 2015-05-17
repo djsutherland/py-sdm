@@ -174,7 +174,7 @@ SAMPLERS = {
     'uniform': _sample_uniform,
 }
 
-DEFAULT_EXTENSIONS = frozenset(['jpg', 'png', 'bmp'])
+DEFAULT_EXTENSIONS = frozenset(['jpg', 'jpeg', 'png', 'bmp'])
 def find_paths(dirs, img_per_cla=None, sampler='first',
                extensions=DEFAULT_EXTENSIONS):
     '''
