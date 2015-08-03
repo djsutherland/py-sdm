@@ -242,7 +242,7 @@ def _estimate_cross_divs(features, indices, rhos,
 
     for func, info in iteritems(funcs):
         assert isinstance(func, partial)
-        assert func.keywords is None
+        assert not func.keywords
         real_func = func.func
 
         if real_func is py_linear:
