@@ -39,7 +39,7 @@ except ImportError:
         source_file = "sdm/{}.c".format(name)
 else:
     try:
-        import cyflann
+        from cyflann.extensions import FLANNExtension
     except ImportError as e:
         msg = \
 """The Cython extension requires cyflann to be installed before compilation.
@@ -51,10 +51,10 @@ Install cyflann (e.g. `pip install cyflann`), and then try again:
     setup_args['cmdclass'] = {'build_ext': build_ext}
 
 ext_modules = [
-    Extension("sdm.{}".format(name), [source_file],
-              include_dirs=[numpy.get_include(), cyflann.get_flann_include()],
-              extra_compile_args=['-fopenmp'],
-              extra_link_args=['-fopenmp', cyflann.get_flann_lib()])
+    FLANNExtension("sdm.{}".format(name), [source_file],
+                   include_dirs=[numpy.get_include()],
+                   extra_compile_args=['-fopenmp'],
+                   extra_link_args=['-fopenmp'])
 ]
 
 
@@ -75,9 +75,9 @@ setup(
     install_requires=[
         'h5py',
         'progressbar',
-        'scikit-learn >= 0.13',
+        'scikit-learn >= 0.18',
         'nose',
-        'cyflann >= 0.1.12',
+        'cyflann >= 0.2',
 
         # only for image feat extraction; should be "extras"
         'scikit-image >= 0.6',
